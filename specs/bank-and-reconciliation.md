@@ -591,3 +591,129 @@ Decentro real-time path (§7) and its double-counting hazard (BR-13) have no
 counterpart there either.
 
 Nothing from the reference is reproduced.
+
+---
+
+## 18. Credit cards (Phase 2) — observations from a real statement
+
+Credit cards are out of scope for Phase 1 (§2). These notes come from a real
+ICICI Bank retail card statement and exist so that whoever builds Phase 2 does
+not start from guesses. **No code implements any of this.**
+
+### 18.1 Layout
+
+Transaction table:
+
+```
+Date | SerNo. | Transaction Details | Reward | Intl.# | Amount (in ₹)
+```
+
+- Dates `dd/MM/yyyy`
+- **One amount column**, not a debit/credit pair. Direction is carried by a
+  `CR` suffix — `13,603.92 CR` — which marks a payment or refund
+- Transaction details wrap over several physical lines
+- A separate `EMI / PERSONAL LOAN ON CREDIT CARDS` table:
+  `Loan Type | Creation Date | Finish Date | No. of Installments |
+   EMI/Loan Amount | Pending Installments | Outstanding | Monthly Installment`
+- Summary boxes: Total Amount Due, Minimum Amount Due, Previous Balance,
+  Purchases/Charges, Cash Advances, Payments/Credits, Credit Limit,
+  Available Credit, Cash Limit, Available Cash
+- The file is a fixed-width PDF, so it needs the parser described in the PDF
+  gap, not the delimited reader
+
+### 18.2 CC-1 — the statement carries its own arithmetic check
+
+The statement **prints the equation**, with the operators set between the
+summary boxes:
+
+```
+Previous Balance + Purchases/Charges + Cash Advances − Payments/Credits
+    = Total Amount Due
+
+      5,590.89   +     22,522.67     +      0.00     −     19,194.81
+    = 8,918.75                                                    ✓
+```
+
+This is BR-6 on a different instrument, and it confirms the pattern generalises:
+**every well-formed Indian statement can be made to verify itself.** Apply the
+same rule — if it does not balance, the parse is wrong, so reject the import.
+
+### 18.3 CC-2 — `CR` means direction here, not a positive balance
+
+On a savings-account *balance*, `CR` means the customer holds funds (see the
+defect log: reading it as negative was a real bug). On a credit-card
+*transaction line*, `CR` marks money coming **off** the card — a payment or a
+refund — which reduces a liability.
+
+Same two letters, different meaning, depending on whether the column is a
+balance or a movement and whether the account is an asset or a liability. The
+amount parser therefore exposes the marker as `suffix` separately from
+`negative`; a card parser must read the suffix and must not reuse the balance
+interpretation.
+
+### 18.4 CC-3 — a card is a liability, so the postings differ
+
+```
+Spend        Expense Dr              / Credit Card Payable Cr
+Payment      Credit Card Payable Dr  / Bank Cr
+Refund       Credit Card Payable Dr  / Expense Cr
+Card fee     Bank Charges Dr + Input GST Dr / Credit Card Payable Cr
+```
+
+`Total Amount Due` is the closing balance of the liability account, and it
+reconciles the same way a bank account does — against the ledger balance of
+`Credit Card Payable`, not against a cash figure.
+
+### 18.5 CC-4 — the double-counting hazard, exactly as in BR-13
+
+The card spend appears on the **card** statement. The payment to the card
+appears on the **bank** statement. They are the same money seen twice, one step
+apart.
+
+Recording the card spend as an expense *and* the bank payment as an expense
+doubles the cost. The bank-side line must settle the `Credit Card Payable`
+liability and never touch an expense account. This is the single most likely
+bug in a card feed and is the same shape as the Decentro settlement hazard.
+
+### 18.6 CC-5 — a card statement is not a tax invoice
+
+**No ITC may be claimed on the strength of a card statement line.** Section
+16(2)(a) requires a tax invoice, and a statement line has no supplier GSTIN, no
+HSN, and no tax split — it is proof of *payment*, not proof of *tax*.
+
+So business spending on a card creates a collection problem: the merchant's
+invoice must still be obtained for every claimable purchase. The card statement
+is useful for *completeness* — it proves a purchase happened, so it can drive a
+checklist of missing invoices — which is a genuinely valuable use of it and the
+reverse of how it is usually treated.
+
+The card issuer's **own fees** are different: the statement shows GST on them
+explicitly (`... @18%` lines), and the bank does issue a tax invoice for those,
+so that GST is claimable in the ordinary way (§9).
+
+### 18.7 CC-6 — EMI conversion is borrowing, not expense
+
+A purchase converted to EMI becomes a loan. The statement shows it amortised as
+separate `Principal Amount Amortization` and `Interest Amount Amortization`
+lines, plus GST on the interest.
+
+```
+Conversion   Credit Card Payable Dr / EMI Loan Cr        (reclassification)
+Instalment   EMI Loan Dr + Interest Expense Dr + Input GST Dr
+                                   / Credit Card Payable Cr
+```
+
+Treating the whole instalment as an expense overstates cost and understates
+borrowings. The interest is a finance cost and belongs below operating profit
+(Lesson 8), so getting this wrong distorts operating margin as well as the
+balance sheet.
+
+### 18.8 Open questions for Phase 2
+
+- Do the target clients actually put business spend on cards, or on the current
+  account? This determines whether Phase 2 matters at all.
+- Are the cards in the **firm's** name or the proprietor's? A personal card used
+  for business spend is a director's-loan / drawings question before it is a
+  reconciliation question.
+- Is a spreadsheet export available from the card portal, as it is for the SBI
+  savings account? If so, the PDF work is avoidable here too.
