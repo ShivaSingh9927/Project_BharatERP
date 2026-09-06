@@ -512,6 +512,97 @@ real client's statement must not be, without their firm knowingly choosing it.
 
 ---
 
+## Stage 12 — PaddleOCR, measured against LlamaParse
+
+Self-hosted OCR was probed because the LlamaParse dependency is load-bearing in
+three separate ways at once — accuracy, recurring cost, and a cross-border
+transfer the CA firm carries the liability for. Removing one vendor that sits on
+all three is worth an afternoon.
+
+`paddlepaddle 3.3.1` + `paddleocr 3.7.0` (PP-OCRv6_medium det + rec), CPU only,
+in a `uv` venv outside the repo. Models cache to `~/.paddlex` (~100 MB).
+
+### The apples-to-apples comparison
+
+Same Karur Vysya image, same scorer — the statement's own row arithmetic:
+
+| | LlamaParse | PaddleOCR |
+|---|---|---|
+| Rows reconciled | 25 / 28 = **89.3%** | 28 / 28 = **100%** |
+| Misread balances | 2 | 0 |
+| Per page | ~10 s | 93 s |
+| Cost | metered | zero |
+| Data leaves India | yes | no |
+
+Across all seven sample images: **122 agreed / 5 failed = 96.1%**, mean
+recognition confidence 0.981–0.998, 47–93 s per page.
+
+### All five failures were the harness or the document, not the OCR
+
+Worth recording in full, because the first run reported 61.5% on Federal Bank
+and that number was entirely my own probe's fault:
+
+| Case | Apparent | Actual cause |
+|---|---|---|
+| Federal Bank, 5 rows | OCR misread | **Probe.** `Withdrawals` and `Deposits` are mutually exclusive, so clustering x-centres merged them into one column. Fixed by using the `C`/`D` type column → 100% |
+| ICICI, 2 rows | OCR misread | **Probe.** That statement prints `1,14,197.8 1` — broken kerning in the source PDF. The probe's number test rejected it, so it compared against a stale previous row |
+| ICICI `Total:` row | OCR misread | **Probe.** A summary line is not a transaction |
+| Bank of Baroda | OCR misread | **Probe.** The MICR code `382012141` from the preamble was scored as a balance |
+| IndusInd `_.jpeg` row 24 | OCR misread | **The document is wrong.** 48,827.03 − 8,105.00 = 40,722.03, but it prints 41,722.03. Verified by cropping and upscaling the pixels |
+
+**Genuine digit misreads across seven statements: zero.**
+
+### The errors it does make are in letters and punctuation
+
+Never in a digit, which is the opposite of what LlamaParse got wrong — and it
+matters, because two of these three would have caused real damage:
+
+| Read as | Should be | Consequence |
+|---|---|---|
+| `BARBOMANSAX` | `BARB0MANSAX` | 🟠 letter `O` for digit `0`. The 5th character of an IFSC is **always** `0`, so `IFSC_RE` rejects it — the IFSC/UTR guard from P-17 silently stops working |
+| `10,176.90cz` | `10,176.90cr` | 🔴 **the Dr/Cr direction marker.** This is the P-14 defect class exactly: a mangled suffix means an unparseable sign, and a permissive reading means an inverted one |
+| `22.196.90` | `22,196.90` | 🟠 comma read as a full stop — digits correct, value destroyed |
+
+So an integration must treat the *marker* characters as the untrusted part. The
+probe's `SUFFIX` regex accepts `c[rzi]` / `d[rz]` deliberately; that is a
+guess about which glyph confusions occur and needs widening against more
+samples, not narrowing.
+
+### What this changes
+
+PaddleOCR replaces LlamaParse as the default OCR path: it is more accurate on
+the one image where both were measured, free, and removes the DPDP transfer and
+the open ICAI confidentiality question entirely. LlamaParse stays supported as
+an opt-in second opinion — a *second reading* of a page whose arithmetic already
+failed is genuinely useful, and disagreement between two engines localises the
+bad cell as well as the arithmetic does.
+
+Unchanged: **neither is an import path.** 96.1% per row is not importable, and
+the value is still locating the cells a human corrects.
+
+### An unplanned finding worth keeping
+
+The IndusInd sample is internally inconsistent by exactly ₹1,000 — a fabricated
+template from the web. BR-6 caught it without being asked to. Detecting a
+**doctored statement** is a real product capability for a CA reviewing a loan
+file or an unfamiliar client's records, and it costs nothing extra: it is the
+same check, already running.
+
+### Known limitations
+
+- 47–93 s per page on CPU, versus ~10 s for the hosted service. A 15-page
+  statement is ~15 minutes, so this must be a background job, not a request.
+- `enable_mkldnn=False` is **required**: paddle's oneDNN CPU backend fails with
+  `ConvertPirAttribute2RuntimeAttribute not support`. It is not a tuning flag.
+- Nothing is integrated yet. The probe reimplements row and column clustering in
+  Python; the real path should render boxes onto a fixed-width text canvas and
+  reuse `fixedWidth.ts` and `columnRoles.ts`, which are already tested and
+  already handle the Dr/Cr suffix, the C/D flag and the preamble.
+- `python3-venv` is absent on this machine; `uv` was used instead. A deployment
+  needs one of them present.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -564,6 +655,16 @@ encodes a domain convention, check the convention rather than the test.
 `1,00,000.00` returned from a parser and failing three modules later. Both
 produced errors far from their cause. *Countermeasure:* coerce where the format
 is known, and let the type carry the guarantee onwards.
+
+**10. The measuring instrument is the defect.** Stage 12. A throwaway probe
+scored PaddleOCR at 61.5% on Federal Bank and 84.6% on IndusInd; all of it was
+the probe's own column clustering and number parsing, and the real figure was
+100%. Had that first run been reported as a vendor result, a good engine would
+have been rejected on the strength of my own bug. *Countermeasure:* before
+believing a bad score, reproduce one failing case by hand against the source —
+here, cropping the pixels showed both that the OCR was right and that the
+*document* was wrong. A benchmark harness needs the same scepticism as the thing
+it benchmarks, and a scrappy one deserves more.
 
 And one from Stage 1: **asserting an integration works before probing it.**
 Four of five vendor entries are corrected beliefs.
@@ -628,7 +729,12 @@ misleading. No unit test can hold that opinion.
 
 ### External dependencies
 
-- LlamaParse and Sandbox rate cards not obtained
+- LlamaParse rate card not obtained — now lower priority, since PaddleOCR
+  (self-hosted, free, more accurate on the one image where both were measured)
+  is the intended default OCR path and LlamaParse only an opt-in second opinion
+- Sandbox rate card not obtained
+- PaddleOCR needs `python3-venv` or `uv` present at deploy time, and
+  `enable_mkldnn=False` on CPU or paddle's oneDNN backend crashes
 - Taxpayer-session concurrency untestable until the user's GST registration is live (gst-engine §15.10)
 - Sandbox keys are **live** (`key_live_`/`secret_live_`), running on free credits — no sandbox tier exists
 

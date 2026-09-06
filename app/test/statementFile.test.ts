@@ -503,7 +503,7 @@ describe('a real SBI spreadsheet layout', () => {
  * FIRST ROW OF THE TABLE rather than in a preamble or summary.
  */
 const BOB_FILE = `Account Statement from 01-06-2022 to 12-12-2022
-Account Number,01560100026841
+Account Number,00000000000000
 IFSC Code,BARB0EXAMPLE
 
 Serial No,Transaction Date,Value Date,Description,Cheque Number,Debit,Credit,Balance
