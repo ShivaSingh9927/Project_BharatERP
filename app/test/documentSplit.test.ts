@@ -349,3 +349,89 @@ describe('a heading that names three document types at once', () => {
       .toBe('tax_invoice');
   });
 });
+
+// ---------------------------------------------------------------------------
+/*
+ * The Zepto shape: letterhead first, heading afterwards.
+ *
+ * Every other vendor in the corpus puts its title at or near the top. Zepto
+ * prints the seller name, address, GSTIN and FSSAI licence FIRST and the
+ * heading below all of it — the seventh non-blank line. With the window at 3
+ * the document came back `unknown`.
+ */
+const GROCER = gstin('09', 'AAACG6666G');   // Uttar Pradesh
+
+const LETTERHEAD_FIRST = P(
+`Seller Name: Example Groceries Private Limited
+1/EX-1/10, Example Vihar, Kanpur, Uttar Pradesh - 208017
+
+GSTIN: ${GROCER}
+FSSAI: 00000000000000
+
+
+
+                                                  TAX INVOICE/BILL OF SUPPLY
+
+  Invoice No.: 00000C0000000001              Place Of Supply : UTTAR PRADESH (9)
+  Order No.: EXAMPLEORDER0001                Date : 09-08-2026`,
+
+`Whether GST is payable on reverse-charge - No.
+
+Order Delivered From -
+EXAMPLE ENTERPRISES`,
+);
+
+describe('a heading that sits below the letterhead', () => {
+  it('is found even though it is the seventh line, not the first', () => {
+    const segs = splitDocuments(LETTERHEAD_FIRST);
+    expect(segs).toHaveLength(1);
+    expect(segs[0]!.kind).toBe('unspecified');
+    expect(segs[0]!.documentNumber).toBe('00000C0000000001');
+    expect(segs[0]!.supplierGstin).toBe(GROCER);
+  });
+
+  /*
+   * Widening the window was only safe because position stopped being the sole
+   * defence. A heading OPENS its line; boilerplate MENTIONS one mid-sentence.
+   * These two cases are the whole justification for the change — if either
+   * fails, the window must go back to being narrow.
+   */
+  it('still ignores boilerplate that mentions a heading mid-sentence', () => {
+    /*
+     * The isolating case. Page 2 names a DIFFERENT supplier, so the identity
+     * test would fire — the only thing holding the two pages together is that
+     * "tax invoice" appears inside a sentence rather than opening a line.
+     *
+     * An earlier version of this test also gave page 2 its own line-initial
+     * "Invoice Number # …". That was a bad premise: such a page really does
+     * look like a new document, and asserting it must not split was asking the
+     * splitter to ignore its strongest signal.
+     */
+    const segs = splitDocuments(P(
+      `Tax Invoice\nGSTIN - ${MARKETPLACE}\nInvoice Number # MMM0000000000012`,
+      `Consignor GSTIN ${LOGISTICS} acted on behalf of the seller.\n`
+      + `This is a computer-generated tax invoice.`,
+    ));
+    expect(segs).toHaveLength(1);
+    expect(segs[0]!.pages).toEqual([1, 2]);
+  });
+
+  it('does not read a bare date label as a title', () => {
+    // "Invoice Date" opens its own line on several layouts and is never a
+    // heading. Read as one, a continuation page carrying only a date label
+    // becomes the start of a document.
+    const segs = splitDocuments(P(
+      `Tax Invoice\nGSTIN - ${MARKETPLACE}\nInvoice Number # PPP0000000000015`,
+      `Invoice Date : 04.09.2026\nGSTIN - ${LOGISTICS}`,
+    ));
+    expect(segs).toHaveLength(1);
+  });
+
+  it('accepts a heading with data run onto the same line', () => {
+    // The reason the rule is "starts the line" and not "is the whole line" —
+    // Flipkart puts the order and invoice numbers beside the title.
+    const segs = splitDocuments(
+      `Tax Invoice   Order Id: OD0001   Invoice No: OOO0000000000014   GSTIN: ${SELLER}`);
+    expect(segs[0]!.kind).toBe('tax_invoice');
+  });
+});

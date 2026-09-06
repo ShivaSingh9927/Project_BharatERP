@@ -90,19 +90,44 @@ const HEADINGS: Array<{ kind: DocumentKind; re: RegExp }> = [
   { kind: 'unspecified',    re: COMBINED_HEADING },
   { kind: 'tax_invoice',    re: /\btax\s+invoice\b/i },
   { kind: 'bill_of_supply', re: /\bbill\s+of\s+supply\b/i },
-  { kind: 'invoice',        re: /\binvoice\b/i },
+  // "Invoice Date" is a field label, never a title, and it opens its own line
+  // on several layouts. Left in, a continuation page carrying nothing but a
+  // date label would look like the start of a new document. "Invoice Number"
+  // is deliberately NOT excluded: it names the identity we then compare, so
+  // treating it as a title is self-consistent — a page that restates the same
+  // number merges, which is exactly the Kamatera case.
+  { kind: 'invoice',        re: /\binvoice\b(?!\s+date\b)/i },
 ];
 
 /**
- * How far into a page a heading may sit and still count as opening it.
+ * How far into a page a heading may sit and still count as opening it, counted
+ * in non-blank lines so a whitespace-padded page is treated like a tight one.
  *
- * Counted in non-blank lines, so a page padded with whitespace is not treated
- * differently from a tight one. Three is deliberate: Kamatera's own heading
- * sits on the third non-blank line, beneath a logo line and an address line.
- * Going wider starts catching boilerplate ("this is a computer-generated tax
- * invoice") in page footers.
+ * This was 3, which is where the footer risk lives: "this is a computer-
+ * generated tax invoice" appears near the bottom of many documents, and a wide
+ * window would read it as a heading.
+ *
+ * A real Zepto invoice showed 3 to be far too tight. Its heading
+ * "TAX INVOICE/BILL OF SUPPLY" sits on the SEVENTH non-blank line, below the
+ * seller name, address, GSTIN and FSSAI licence — the letterhead comes first
+ * and the heading after it. The document came back `unknown`.
+ *
+ * The window could only be widened safely once position stopped being the only
+ * defence, which is what `HEADING_AT_LINE_START` below provides.
  */
-const HEADING_WITHIN_LINES = 3;
+const HEADING_WITHIN_LINES = 12;
+
+/**
+ * A heading OPENS its line. Boilerplate MENTIONS its heading mid-sentence.
+ *
+ * That distinction, not distance from the top of the page, is what separates
+ * "Tax Invoice" as a title from "...is a computer-generated tax invoice" as a
+ * footnote — and it holds across every document in the corpus. Flipkart runs
+ * data onto the same line as the title ("Tax Invoice   Order Id: ...   Invoice
+ * No: ..."), so requiring the heading to be the WHOLE line would break it;
+ * requiring it to START the line does not.
+ */
+const HEADING_AT_LINE_START = true;
 
 const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/;
 
@@ -138,8 +163,18 @@ function nonBlankHead(page: string, n: number): string {
 }
 
 function headingOf(page: string): DocumentKind | null {
-  const head = nonBlankHead(page, HEADING_WITHIN_LINES);
-  for (const h of HEADINGS) if (h.re.test(head)) return h.kind;
+  const lines = page.split('\n').filter((l) => l.trim() !== '')
+    .slice(0, HEADING_WITHIN_LINES)
+    .map((l) => (HEADING_AT_LINE_START ? l.trimStart() : l));
+  // Kind priority, not line order: a page whose title is "Tax Invoice/Bill of
+  // Supply" must resolve to `unspecified` even though a later line in the head
+  // might match something narrower on its own.
+  for (const h of HEADINGS) {
+    for (const line of lines) {
+      const m = h.re.exec(line);
+      if (m && m.index === 0) return h.kind;
+    }
+  }
   return null;
 }
 
