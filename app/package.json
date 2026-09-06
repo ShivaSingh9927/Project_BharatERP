@@ -6,7 +6,7 @@
   "scripts": {
     "db:up": "docker compose up -d && tsx src/db/wait.ts",
     "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && npm run db:up && npm run migrate && npm run seed",
+    "db:reset": "tsx src/db/reset.ts && npm run migrate && npm run seed",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/seed/run.ts",
     "test": "vitest run",
