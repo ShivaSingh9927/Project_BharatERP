@@ -40,9 +40,17 @@ non-localhost `DATABASE_URL`).
 | Sales invoices → GL posting | ✅ |
 | Rule 46(b) invoice numbering | ✅ |
 | Outstanding derived from settlements | ✅ |
+| Document ingestion + extraction provenance (bboxes) | ✅ schema |
+| ITC eligibility — Section 17(5) blocked credits | ✅ |
+| GSTR-2B claimability gating | ✅ |
+| TDS section master + threshold-crossing | ✅ |
+| Reverse charge (dual-leg posting) | ✅ |
+| 180-day ITC reversal monitor | ✅ |
+| Supplier payment with TDS withholding | ✅ |
 
-Not yet: HTTP API, e-Invoice IRP calls, e-Way Bill, bills/purchases, bank
-reconciliation, GST returns, period close, multi-currency, cost centers.
+Not yet: HTTP API, e-Invoice IRP calls, e-Way Bill, the LlamaParse/DeepSeek
+extraction calls themselves, bank reconciliation, GST returns, period close,
+multi-currency, cost centers.
 
 ## Two decisions worth knowing before you change anything
 
@@ -108,6 +116,18 @@ Two bugs were caught by writing these rather than by reading the code: an RLS
 policy that could not see its own parent row during a `BEFORE INSERT` trigger,
 and a Balance Sheet sign error that summed income *plus* expenses and reported
 retained profit as ₹8,60,000 instead of ₹1,40,000.
+
+## Round-off polarity is inverted between sales and purchases
+
+Not a symmetry to be tidied away. On a sales invoice the rounded figure sits on
+the **debit** side (Debtors), so rounding up needs an extra credit. On a
+purchase bill it sits on the **credit** side (Creditors), so rounding up needs
+an extra **debit**. Reverse-charge postings use unrounded values on both sides
+and take no round-off at all.
+
+Getting this wrong produced `V-1: unbalanced — debits 12454.90, credits
+12455.10` and was caught by the deferred constraint at COMMIT rather than by
+review.
 
 ## Identifier validation is two-layered, and both layers earn their place
 
