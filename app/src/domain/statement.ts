@@ -34,6 +34,16 @@ export interface ArithmeticCheck {
   difference: string;
   /** 1-based index of the first row whose running balance disagrees. */
   firstBadRow: number | null;
+  /**
+   * EVERY row whose stated running balance disagrees with the movement.
+   *
+   * The first bad row alone is enough to start debugging a mis-parse, but not
+   * enough to fix an OCR'd statement: a scan may have two wrong digits in
+   * thirty rows, and knowing all of them turns retyping the page into
+   * correcting two cells. Note that one wrong balance produces TWO adjacent
+   * failures, since each balance is checked against the row before and after.
+   */
+  badRows: Array<{ row: number; expected: string; stated: string }>;
   detail: string;
 }
 
@@ -65,6 +75,7 @@ export function verifyStatementArithmetic(
   let credits = 0n;
   let running = opening;
   let firstBadRow: number | null = null;
+  const badRows: ArithmeticCheck['badRows'] = [];
 
   for (const [i, r] of rows.entries()) {
     const d = paise(r.debit ?? '0');
@@ -73,8 +84,16 @@ export function verifyStatementArithmetic(
     credits += c;
     running = running + c - d;
 
-    if (firstBadRow === null && r.runningBalance !== undefined) {
-      if (paise(r.runningBalance) !== running) firstBadRow = i + 1;
+    if (r.runningBalance !== undefined) {
+      const stated = paise(r.runningBalance);
+      if (stated !== running) {
+        if (firstBadRow === null) firstBadRow = i + 1;
+        badRows.push({ row: i + 1, expected: money(running), stated: money(stated) });
+      }
+      // Continue from what the STATEMENT says, not from our own running total.
+      // Otherwise a single bad balance makes every subsequent row disagree and
+      // the report cannot distinguish one error from thirty.
+      running = stated;
     }
   }
 
@@ -91,13 +110,15 @@ export function verifyStatementArithmetic(
     declaredClosing: money(declared),
     difference: money(difference),
     firstBadRow,
+    badRows,
     detail: ok
       ? `${money(opening)} + ${money(credits)} − ${money(debits)} = ${money(computed)}, ` +
         'which matches the declared closing balance'
       : `${money(opening)} + ${money(credits)} − ${money(debits)} = ${money(computed)}, ` +
         `but the statement declares ${money(declared)} — a difference of ${money(difference)}` +
         (firstBadRow !== null
-          ? `. The running balance first disagrees at row ${firstBadRow}, so start there.`
+          ? `. The running balance disagrees at row(s) ` +
+            `${badRows.map((b) => b.row).join(', ')} — start there.`
           : '. No running-balance column, so the failing row cannot be pinpointed.'),
   };
 }

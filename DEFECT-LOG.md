@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the sample-statement review:** 246 tests
+**Status as of the OCR build:** 260 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -437,6 +437,81 @@ rejection.
 
 ---
 
+## Stage 11 — OCR, measured before it was built
+
+LlamaParse was probed against a published sample statement (~90 DPI) **before**
+any integration was written, on the principle from Stage 1 that a plausible
+vendor is not a verified one.
+
+### The measurement
+
+It returned a clean **markdown table** — already delimited, so the entire
+fixed-width apparatus is bypassed and the shared table parser handles the rest.
+The header block and the account-summary box were read perfectly, including
+`13,312.62 / 78,248.52 / 91,176.21 / 384.93` and `CR:67/DR:67`.
+
+Accuracy was scored objectively, by asking of every row whether
+`balance[i] − balance[i−1] == credit − debit`:
+
+| | |
+|---|---|
+| Rows | 29 |
+| Row-level reconciliation | **25 agreed / 3 failed — 89.3%** |
+| Actual digit errors | **2 balances**, in one page |
+| Debits and credits | **all correct** |
+
+Two wrong figures in thirty rows is not good enough to import. But no
+confidence score would have said *which* two — and the arithmetic says it
+exactly:
+
+```
+row 16: 2082.49 + 105.00 → expected 2187.49, stated 1877.49
+row 17: 1877.49 − 1000.00 → expected  877.49, stated 1887.49
+row 18: 1887.49 −  800.00 → expected 1087.49, stated  387.49
+```
+
+Three consecutive failures bracketing two bad cells, because each balance is
+checked against the row before and the row after.
+
+### What that changes about the feature
+
+**The useful output of OCR is not the statement — it is the list of cells to
+fix.** That turns retyping a page into correcting two numbers, and it is only
+possible because a bank statement carries its own arithmetic. The same
+principle as BR-6, applied per row instead of per document.
+
+So OCR ships as an **error locator with a human in the loop**, not as an import
+path. It is opt-in twice — a key must be configured *and* the caller must pass
+`ocr: true` — and it is never a silent fallback when a text layer is missing,
+because a third-party upload must be someone's decision rather than the
+consequence of a bad scan.
+
+| # | Change | Why |
+|---|---|---|
+| O-1 | 🟠 `badRows` now reports **every** disagreeing row, not just the first | One bad row was enough to debug a mis-parse and useless for fixing a scan. |
+| O-2 | 🔴 The balance walk **resumes from the stated balance** | It previously carried its own running total forward, so one misread digit made every subsequent row disagree — a thirty-row report that says nothing. Now one error stays one error. |
+| O-3 | 🟠 A never-numeric column could win the money-column search | Passing a date column as the debit candidate makes the expected movement `credit − 0`, which is indistinguishable from the correct reading on every credit-only row. On a statement with more credits than debits that degenerate trio outscored the real one. Candidates that never hold a number are now dropped inside `findMoneyColumns`, so no caller has to know. |
+| O-4 | 🟡 The header scan stopped at row 30 | OCR turns every line of prose into a row, so the transactions header sat at row 33 and was never reached. Raised to 60; a data row is still excluded by the numeric-cell test rather than by its position. |
+
+### Known limitation: one page of a multi-page statement cannot pass BR-6
+
+The sample is page 1 of a longer statement, so its rows sum to ₹31,191 of debits
+against a stated total of ₹91,176.21. BR-6 correctly refuses it. Importing a
+scanned statement therefore needs **every page**, or per-page opening and
+closing balances — not one page at a time.
+
+### Cost and privacy, stated plainly
+
+The free tier is 10,000 credits. One 15-page statement × 50 clients × 12 months
+does not fit inside it, so this is a recurring cost where `pdftotext` is free —
+which is why OCR is reached only when there is genuinely no text layer.
+
+And the upload is a DPDP Act decision for the CA firm as data fiduciary. The
+sample statements used here came from the web, so no client data was sent; a
+real client's statement must not be, without their firm knowingly choosing it.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -516,7 +591,8 @@ misleading. No unit test can hold that opinion.
 |---|---|---|
 | G-5 | ~~No `.xlsx` reader~~ — **done** | Dependency-free zip + sheet reader; the real encrypted SBI export now parses end to end. Decryption is an **optional** import, so an encrypted file without the package gives a clear instruction rather than a crash. HDFC and SBI templates are validated against real files; ICICI, Axis and Kotak remain guesses |
 | G-14 | ~~PDF statements~~ — **done** | Local `pdftotext` + gutter detection + column inference. Both real PDFs pass BR-6 with row counts matching the statements' own Dr/Cr totals. **Scanned PDFs still fail** (no text layer — needs OCR) and are reported as such |
-| G-17 | **Scanned PDFs and images are unsupported** | No text layer means OCR, which is not built. Detected and reported with the fix ("download from net banking rather than scanning"). Worth building against 300 DPI sources, not the ~90 DPI web images tested here |
+| G-17 | ~~Scanned PDFs and images~~ — **built, with a human in the loop** | LlamaParse behind a double opt-in. Measured at 89.3% row-level reconciliation on a ~90 DPI sample (2 misread balances in 29 rows), so it is an **error locator**, not an import path — the arithmetic names the cells to fix. Not viable unattended; a 300 DPI source would need re-measuring |
+| G-19 | **A single page of a multi-page scan cannot pass BR-6** | Its rows cannot sum to the whole statement's totals. Needs all pages, or per-page balances |
 | G-18 | The PDF password is passed on the command line | `pdftotext` has no stdin channel for it, so it is briefly visible in the process list to the same user. Never written to disk or stored. Worth revisiting if PDF import becomes a shared-service path |
 | G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-16 | Credit cards remain Phase 2, now specified | A real ICICI card statement is documented in `specs/bank-and-reconciliation.md` §18 — layout, the liability postings, the BR-13-shaped double-counting hazard, why a card statement can never support an ITC claim, and EMI conversion as borrowing. **No code implements any of it.** ICICI's *bank account* template is still an unvalidated guess; a card statement does not test it |
@@ -569,6 +645,7 @@ misleading. No unit test can hold that opinion.
 | Bank | 52 | Decentro webhook path, 1:N allocation, learned rules |
 | Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
-| PDF / fixed-width | 31 | Scanned PDFs (OCR); forward-marker coverage |
+| PDF / fixed-width | 31 | Forward-marker coverage |
+| OCR / markdown | 14 | Live provider calls (mocked by design); multi-page scans; 300 DPI accuracy |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **246** | |
+| **Total** | **260** | |

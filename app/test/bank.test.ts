@@ -145,7 +145,10 @@ describe('BR-6 — the statement must reconcile against itself (T-1)', () => {
     expect(r.difference).toBe('-20000.00');
     // The running balance disagrees from the first line after the gap.
     expect(r.firstBadRow).toBe(2);
-    expect(r.detail).toContain('row 2');
+    expect(r.detail).toContain('row(s) 2');
+    // Only ONE row is reported, not every row after it: the walk resumes from
+    // what the statement states, so a single error stays a single error.
+    expect(r.badRows).toHaveLength(1);
   });
 
   it('fails when a digit is misread', () => {

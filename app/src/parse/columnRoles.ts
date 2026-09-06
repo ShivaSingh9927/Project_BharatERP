@@ -165,6 +165,17 @@ function scoreSigned(
  * a special case.
  */
 export function findMoneyColumns(rows: string[][], candidates: number[]): MoneyColumns {
+  // Drop any candidate that never holds a number.
+  //
+  // A date column is never money, but it is not harmless either: because its
+  // cells always read as null, pairing it as the debit column makes the
+  // expected movement `credit − 0`, which is indistinguishable from the
+  // correct reading on every credit-only row. On a statement with more credits
+  // than debits that degenerate trio can outscore the real one. Callers that
+  // pre-filter are unaffected; the guard is here so no caller has to know.
+  const usable = candidates.filter((c) =>
+    rows.some((r) => paiseOf(r[c]) !== null));
+
   let best: MoneyColumns = {
     balance: null, debit: null, credit: null, amount: null,
     agreed: 0, disagreed: 0, method: 'none',
@@ -173,8 +184,8 @@ export function findMoneyColumns(rows: string[][], candidates: number[]): MoneyC
   const better = (agreed: number, disagreed: number): boolean =>
     agreed - disagreed > best.agreed - best.disagreed;
 
-  for (const balance of candidates) {
-    const others = candidates.filter((c) => c !== balance);
+  for (const balance of usable) {
+    const others = usable.filter((c) => c !== balance);
 
     for (const debit of others) {
       for (const credit of others) {

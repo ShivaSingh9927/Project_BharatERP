@@ -32,6 +32,7 @@ import { paise, money } from '../domain/tax.ts';
 import { looksLikeZip, looksLikeEncryptedOffice } from './zip.ts';
 import { readXlsxSheet, decryptOfficeFile } from './xlsx.ts';
 import { isPdf } from './pdf.ts';
+import { isImage } from './ocr.ts';
 
 export interface ColumnMap {
   txnDate: number;
@@ -127,7 +128,12 @@ function findHeaderRow(
 ): { index: number; template: BankTemplate; columns: ColumnMap } | null {
   let best: { index: number; template: BankTemplate; columns: ColumnMap; score: number } | null = null;
 
-  const limit = Math.min(rows.length, 30);
+  // 60, not 30. An OCR'd statement turns every line of prose into its own row,
+  // so the transactions table can start well below where a CSV's would — on a
+  // real sample the header sat at row 33 and was never reached. Scanning
+  // further is safe because a data row is excluded by the numeric-cell test
+  // below, not by being far down the file.
+  const limit = Math.min(rows.length, 60);
   for (let i = 0; i < limit; i++) {
     const row = rows[i]!;
     if (isBlankRow(row) || row.length < 3) continue;
@@ -582,9 +588,23 @@ function buildFromColumns(
  */
 export async function parseStatementBytes(
   buffer: Buffer,
-  opts: { bank?: string; dateFormat?: DateFormat; password?: string } = {},
+  opts: {
+    bank?: string;
+    dateFormat?: DateFormat;
+    password?: string;
+    /**
+     * Send the document to a third-party OCR service.
+     *
+     * Opt-in, never a fallback. A statement carries the account number, the
+     * address and every counterparty the client pays, so uploading one is a
+     * decision for the firm as data fiduciary — it must be made per import,
+     * knowingly, and it is refused outright when a text layer already exists.
+     */
+    ocr?: boolean;
+    ocrApiKey?: string;
+  } = {},
 ): Promise<ParsedStatementFile & {
-  format: 'xlsx' | 'xlsx_encrypted' | 'pdf' | 'delimited';
+  format: 'xlsx' | 'xlsx_encrypted' | 'pdf' | 'delimited' | 'ocr';
 }> {
   if (looksLikeEncryptedOffice(buffer)) {
     if (!opts.password) {
@@ -609,9 +629,60 @@ export async function parseStatementBytes(
     // Imported lazily: the PDF route shells out to an external binary, and the
     // CSV and spreadsheet paths must not depend on it being present.
     const { parsePdfStatement } = await import('./pdf.ts');
-    const parsed = parsePdfStatement(buffer, opts);
-    return { ...parsed, format: 'pdf' };
+    try {
+      const parsed = parsePdfStatement(buffer, opts);
+      return { ...parsed, format: 'pdf' };
+    } catch (e) {
+      // A scan has no text layer. OCR is offered only if the caller already
+      // asked for it — the alternative, quietly uploading the document on
+      // failure, would make a third-party transfer the consequence of a bad
+      // scan rather than of anyone's decision.
+      const scanned = e instanceof Error && /contains no text/.test(e.message);
+      if (!scanned || !opts.ocr) throw e;
+      return { ...(await parseViaOcr(buffer, opts)), format: 'ocr' };
+    }
+  }
+
+  if (isImage(buffer)) {
+    if (!opts.ocr) {
+      throw new ValidationError(
+        'this is an image, so reading it needs OCR — which uploads the ' +
+        'document to a third-party service and must be enabled deliberately. ' +
+        "Prefer the bank's spreadsheet or PDF export where one exists.", 'BR-3');
+    }
+    return { ...(await parseViaOcr(buffer, opts)), format: 'ocr' };
   }
 
   return { ...parseStatementFile(buffer.toString('utf8'), opts), format: 'delimited' };
+}
+
+/**
+ * Parse a scanned document through OCR.
+ *
+ * The OCR service returns markdown tables, which are already delimited — so the
+ * whole fixed-width apparatus is bypassed and the shared table parser does the
+ * rest. What OCR changes is not the layout problem but the *digit* problem, so
+ * the result carries a blunt warning: the row-level balance check is the only
+ * thing standing between a misread digit and the books.
+ */
+async function parseViaOcr(
+  buffer: Buffer,
+  opts: { bank?: string; dateFormat?: DateFormat; ocrApiKey?: string },
+): Promise<ParsedStatementFile> {
+  const { ocrDocument } = await import('./ocr.ts');
+  const ocr = await ocrDocument(buffer, { apiKey: opts.ocrApiKey });
+
+  const parsed = parseStatementTable(ocr.grid, opts);
+
+  return {
+    ...parsed,
+    warnings: [
+      'This statement was read by OCR from an image, so every figure in it is ' +
+      'a machine reading of pixels rather than a value the bank published. ' +
+      'Measured on a sample, two balances in thirty were misread. Check the ' +
+      'row-level balance report before accepting anything.',
+      `OCR provider: ${ocr.provider}, ${ocr.elapsedMs}ms.`,
+      ...parsed.warnings,
+    ],
+  };
 }
