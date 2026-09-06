@@ -219,8 +219,19 @@ export interface TdsShortfall {
 
 /**
  * Rates a customer plausibly deducts, with the section each implies.
- * PLACEHOLDER — verify with the CA advisor. The Income Tax Act 2025 renumbered
- * the 194-series, so the codes here are the categories, not the citations.
+ *
+ * CA-reviewed 2026-09-07 (answer A2.1): this set was confirmed COMPLETE for a
+ * typical SMB's deductions. Unchanged as a result — the inference was right.
+ *
+ * The `section` strings are CATEGORIES, not citations, and must stay that way
+ * until the Income-tax Act, 2025 renumbering is confirmed against the bare Act.
+ * They are shown to a human deciding whether a shortfall really is TDS; they
+ * are not printed on anything statutory.
+ *
+ * Ordering matters at the margin: 0.1% and 1% can both explain a small
+ * shortfall on a large invoice, so `inferTdsShortfall` reports the first exact
+ * match and the caller confirms. Review answer B2 says even a certain match
+ * should not auto-post in v1.
  */
 const PLAUSIBLE_RATES: Array<{ rate: string; section: string }> = [
   { rate: '0.1', section: 'purchase of goods' },

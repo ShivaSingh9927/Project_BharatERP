@@ -1,5 +1,16 @@
 # CA Advisor Review Request
 
+> ## ✅ ANSWERED — 2026-09-07
+>
+> A CA has answered every question. The response, what was applied to the code,
+> and **what still needs a second opinion**, are recorded in
+> [`CA-REVIEW-ANSWERS.md`](CA-REVIEW-ANSWERS.md).
+>
+> This document is kept as the original request, unedited, so the questions can
+> be re-asked of a second reviewer without the first reviewer's answers
+> anchoring them.
+
+
 **What this is:** a single consolidated list of everything in BharatERP that
 needs a chartered accountant's answer. Split into two parts:
 

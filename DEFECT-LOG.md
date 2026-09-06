@@ -777,14 +777,19 @@ misleading. No unit test can hold that opinion.
 
 | # | Gap | Why it matters |
 |---|---|---|
-| G-2 | **All GST rates, TDS sections, and ITC categories are `PLACEHOLDER`** | The *shape* is committed, the *numbers* are not verified. Every one needs CA sign-off before a real filing |
+| G-2 | ~~All GST rates, TDS sections, ITC categories are `PLACEHOLDER`~~ — **partly closed 2026-09-07** | CA review received; see [`CA-REVIEW-ANSWERS.md`](CA-REVIEW-ANSWERS.md). All 14 markers resolved into a value or an explicit `UNVERIFIED` with a reason. **Still open:** the Income-tax Act 2025 section codes could not be corroborated and are marked `CODE UNVERIFIED` — a wrong code prints on every certificate and return |
+| G-19b | **HSN rates predate the 2025-09-22 GST rate rationalisation** | The review did not mention it at all, despite two of its answers being about rates. The 12% and 28% slabs were collapsed; every seeded HSN rate is older than that. Marked `UNVERIFIED` rather than given a false citation. Needs a second opinion |
+| G-22 | **`clients` is GSTIN-level; it must be PAN-level** | Review answer C1: one PAN, many GSTINs, one set of books. The ITR and balance sheet are filed at PAN level, so GSTIN-as-client makes multi-state consolidation impossible. Needs a `client_registrations` table. Blast radius is small today — only `bills.ts` and `invoicing.ts` read `cl.gstin` — and grows with every row of production data. **Cheapest to do before the next module** |
 | G-3 | `business_type` is hardcoded `NULL` in `bills.ts` | So *conditional* ITC always routes to a human. Safe, but it means the transport/catering exceptions never auto-resolve |
 | G-4 | Period close does not call `assertReconciledForClose()` | BR-23 is implemented but not wired into the close path |
+| G-23 | **No HSN → rate lookup exists at all** | `gst_rates` is written by the seed and **read by nothing**. Review answer A3.1 says an unmatched HSN must refuse to post rather than default to 18% — so this is a requirement for when the lookup is built, not a change that could be made now. The catch-all 18% seed row was removed so it cannot be reintroduced by accident |
 
 ### Built partially
 
 | # | Gap | Detail |
 |---|---|---|
+| G-20 | **Salary TDS has no home** | The review listed it as a missing category and as a category that is right — it is the most common SMB deduction. But it cannot be a rate-table row: s.192 deducts at the employee's *average rate on estimated annual income*, after exemptions, declarations and regime choice. There is no rate to store. Needs a payroll module; deliberately absent rather than approximated |
+| G-21 | **No negative-cash-balance check** | Review answer B4: cash books arrive monthly from a diary or spreadsheet, and a negative cash balance is mathematically impossible and the single most common error CAs fix. Small feature, high value. Note it conflicts with B5 (OD/CC accounts legitimately go negative), so the check must be per account type |
 | G-5 | ~~No `.xlsx` reader~~ — **done** | Dependency-free zip + sheet reader; the real encrypted SBI export now parses end to end. Decryption is an **optional** import, so an encrypted file without the package gives a clear instruction rather than a crash. HDFC and SBI templates are validated against real files; ICICI, Axis and Kotak remain guesses |
 | G-14 | ~~PDF statements~~ — **done** | Local `pdftotext` + gutter detection + column inference. Both real PDFs pass BR-6 with row counts matching the statements' own Dr/Cr totals. **Scanned PDFs still fail** (no text layer — needs OCR) and are reported as such |
 | G-17 | ~~Scanned PDFs and images~~ — **built, with a human in the loop** | LlamaParse behind a double opt-in. Measured at 89.3% row-level reconciliation on a ~90 DPI sample (2 misread balances in 29 rows), so it is an **error locator**, not an import path — the arithmetic names the cells to fix. Not viable unattended; a 300 DPI source would need re-measuring |
