@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: bharaterp-db
+    environment:
+      POSTGRES_USER: bharaterp
+      POSTGRES_PASSWORD: bharaterp_dev
+      POSTGRES_DB: bharaterp
+    ports:
+      - "55432:5432"
+    volumes:
+      - bharaterp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bharaterp -d bharaterp"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  bharaterp_pgdata:
