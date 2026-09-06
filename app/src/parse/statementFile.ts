@@ -593,14 +593,29 @@ export async function parseStatementBytes(
     dateFormat?: DateFormat;
     password?: string;
     /**
-     * Send the document to a third-party OCR service.
+     * Read the document with OCR.
      *
-     * Opt-in, never a fallback. A statement carries the account number, the
-     * address and every counterparty the client pays, so uploading one is a
-     * decision for the firm as data fiduciary — it must be made per import,
-     * knowingly, and it is refused outright when a text layer already exists.
+     * Opt-in, never a fallback, and never reached when a text layer already
+     * exists. Two different reasons converge on the same requirement:
+     *
+     *   - **Every figure is a reading of pixels**, not a value the bank
+     *     published. Measured on samples, PaddleOCR misread no digits but did
+     *     misread a Dr/Cr direction marker; a mangled marker is the P-14
+     *     sign-inversion class. Nothing here is safe to post unverified.
+     *   - **It is slow** — roughly a minute per page on CPU.
+     *
+     * With the default local provider there is no third-party transfer, so the
+     * data-protection objection does not apply; choosing `llamaparse` instead
+     * reintroduces it deliberately.
      */
     ocr?: boolean;
+    /**
+     * `paddleocr` (default) runs locally and nothing leaves the machine.
+     * `llamaparse` uploads the document to a hosted service — a DPDP Act
+     * decision for the firm as data fiduciary, so it is never a fallback and
+     * never inferred.
+     */
+    ocrProvider?: 'paddleocr' | 'llamaparse';
     ocrApiKey?: string;
   } = {},
 ): Promise<ParsedStatementFile & {
@@ -646,9 +661,11 @@ export async function parseStatementBytes(
   if (isImage(buffer)) {
     if (!opts.ocr) {
       throw new ValidationError(
-        'this is an image, so reading it needs OCR — which uploads the ' +
-        'document to a third-party service and must be enabled deliberately. ' +
-        "Prefer the bank's spreadsheet or PDF export where one exists.", 'BR-3');
+        'this is an image, so reading it needs OCR, which must be enabled ' +
+        'deliberately per import. Every figure it produces is a reading of ' +
+        'pixels rather than a value the bank published, and it takes about a ' +
+        "minute per page. Prefer the bank's spreadsheet or PDF export where " +
+        'one exists.', 'BR-3');
     }
     return { ...(await parseViaOcr(buffer, opts)), format: 'ocr' };
   }
@@ -656,32 +673,83 @@ export async function parseStatementBytes(
   return { ...parseStatementFile(buffer.toString('utf8'), opts), format: 'delimited' };
 }
 
+/** The warning every OCR'd statement carries, whichever engine read it. */
+const OCR_PREAMBLE =
+  'This statement was read by OCR from an image, so every figure in it is a ' +
+  'machine reading of pixels rather than a value the bank published. Check the ' +
+  'row-level balance report before accepting anything: where a figure is ' +
+  'wrong, the arithmetic names the row.';
+
 /**
  * Parse a scanned document through OCR.
  *
- * The OCR service returns markdown tables, which are already delimited — so the
- * whole fixed-width apparatus is bypassed and the shared table parser does the
- * rest. What OCR changes is not the layout problem but the *digit* problem, so
- * the result carries a blunt warning: the row-level balance check is the only
- * thing standing between a misread digit and the books.
+ * The two providers differ in more than accuracy, so they take different routes
+ * through the parser rather than being hidden behind one interface:
+ *
+ * **PaddleOCR (default, local)** reports positioned text boxes. Those are
+ * rendered onto a character canvas and handed to `parseLayoutText` — the same
+ * function the PDF path uses, because `pdftotext -layout` output and a rendered
+ * OCR canvas are the same problem in the same units. That reuse is deliberate:
+ * a throwaway probe that did its own row and column clustering produced four
+ * apparent OCR failures that were all its own, and the shared code already
+ * handles every one of them.
+ *
+ * **LlamaParse (opt-in, hosted)** returns markdown tables, which are already
+ * delimited, so the fixed-width apparatus is bypassed entirely.
+ *
+ * What OCR changes is not the layout problem but the *digit* problem — hence the
+ * blunt warning on the way out.
  */
 async function parseViaOcr(
   buffer: Buffer,
-  opts: { bank?: string; dateFormat?: DateFormat; ocrApiKey?: string },
+  opts: {
+    bank?: string;
+    dateFormat?: DateFormat;
+    ocrProvider?: 'paddleocr' | 'llamaparse';
+    ocrApiKey?: string;
+    password?: string;
+  },
 ): Promise<ParsedStatementFile> {
+  // Both imported lazily: one shells out to Python, the other reaches the
+  // network, and neither may be a load-bearing dependency of the CSV path.
+  if ((opts.ocrProvider ?? 'paddleocr') === 'paddleocr') {
+    const { paddleOcrDocument } = await import('./paddle.ts');
+    const { parseLayoutText } = await import('./layout.ts');
+    const { summariseRepairs } = await import('./ocrGlyphs.ts');
+
+    const ocr = paddleOcrDocument(buffer, {
+      password: opts.password,
+      fileName: 'statement',
+    });
+
+    const parsed = parseLayoutText(ocr.canvas.text, { ...opts, source: 'ocr' });
+
+    return {
+      ...parsed,
+      warnings: [
+        OCR_PREAMBLE,
+        `Read locally by ${ocr.version} — nothing was sent to a third party. ` +
+        `${ocr.pageCount} page(s), ${(ocr.elapsedMs / 1000).toFixed(0)}s, mean ` +
+        `confidence ${(ocr.meanConfidence * 100).toFixed(1)}%.`,
+        ...summariseRepairs(ocr.canvas.repairs),
+        ...ocr.warnings,
+        ...parsed.warnings,
+      ],
+    };
+  }
+
   const { ocrDocument } = await import('./ocr.ts');
   const ocr = await ocrDocument(buffer, { apiKey: opts.ocrApiKey });
-
   const parsed = parseStatementTable(ocr.grid, opts);
 
   return {
     ...parsed,
     warnings: [
-      'This statement was read by OCR from an image, so every figure in it is ' +
-      'a machine reading of pixels rather than a value the bank published. ' +
-      'Measured on a sample, two balances in thirty were misread. Check the ' +
-      'row-level balance report before accepting anything.',
-      `OCR provider: ${ocr.provider}, ${ocr.elapsedMs}ms.`,
+      OCR_PREAMBLE,
+      `⚠️ This document was UPLOADED to ${ocr.provider}, a third-party service ` +
+      'outside India, which is a DPDP Act decision for the firm as data ' +
+      'fiduciary. The local reader would not have sent it anywhere. ' +
+      `${ocr.elapsedMs}ms.`,
       ...parsed.warnings,
     ],
   };

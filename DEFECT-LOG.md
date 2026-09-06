@@ -603,6 +603,93 @@ same check, already running.
 
 ---
 
+## Stage 13 — wiring PaddleOCR in
+
+The measurement in Stage 12 scored OCR alone: given the text, do the balances
+move by the right amounts? Integration scores something much harder — OCR, plus
+column inference, plus row grouping, plus finding the opening and closing
+balances, plus BR-6 over the whole document. One dropped row fails it.
+
+That stricter question found four defects, **two of which were in the shared
+fixed-width path and therefore affected PDF imports as well**.
+
+### The architecture, and why
+
+OCR boxes are rendered onto a character canvas and handed to the *same*
+`parseLayoutText` the PDF reader uses. `pdftotext -layout` output and a rendered
+OCR canvas are the same problem in the same units, and that problem cost six
+defects on real HDFC and SBI files, so there is now exactly one implementation
+of it (`layout.ts`, extracted from `pdf.ts`).
+
+This was decided by the Stage 12 evidence: the throwaway probe that did its own
+clustering produced four apparent OCR failures that were all its own.
+
+| Defect | Grade | What happened |
+|---|---|---|
+| **I-1** `isDatedLine` missed a leading serial number | 🔴 | Bank of Baroda prints a `Serial No` column, so its rows read `2   01-06-2022  …` and **none of them counted as a transaction line**. `pageToGrid` then measured the header and opening-balance row as one region and the transactions as another; the two disagreed about column positions by one column, so the opening row's description landed in the debit column. **Affects PDFs too** — BoB is a top-five bank |
+| **I-2** a column boundary cut a number in half | 🔴 | The widest debit on an Axis page was `30000.00`; every other was five or six characters. Money is right-aligned so it grows LEFTWARD, and the gutter histogram's 5% tolerance let a boundary derived from the narrow values fall inside it. The slice produced `"…LTD  3000"` and `"0.00"`, the row was dropped as unparseable, and the statement came out **₹30,000 short**. `sliceCells` now snaps a split off the middle of a token, giving it to whichever cell holds most of it. **Affects PDFs too** |
+| **I-3** the glyph rules did not compose | 🟠 | `22.196.90cr` carries a dotted thousands separator *and* a suffix. The marker rule rejected it (its second letter is already correct) and the number rule rejected it (it does not end in a digit), so nothing fired, `parseAmount` threw, and one cell killed the entire import. Each rule now sees only its own part of the token |
+| **I-4** BR-6 passed a statement with a misread balance | 🔴 | `ok` was `difference === 0n` alone. Corrupt one *intermediate* running balance and leave the amounts alone: the totals still reconcile, because the balance column contributes nothing to `opening + credits − debits`. So a scan with a misread digit **would have imported silently**. `ok` now also requires `badRows` to be empty — we cannot tell from here whether the misreading was the balance (harmless) or an amount (not), and guessing is not available |
+
+I-4 is the most important of the four. It was found by a test that corrupted a
+balance and expected a refusal; it got a pass. Every prior stage had treated
+BR-6 as the last line of defence, and it had a hole in it the whole time.
+
+### Two regressions I introduced and reverted
+
+Recorded because the reasoning was persuasive and wrong, and only re-measuring
+caught it. ICICI's dense 90-DPI page fuses tokens (`Tds:7.70.001,14,267.81`), so
+the canvas was made to search for a character width with no collisions:
+
+1. Starting the search at the unsqueezed estimate and stopping at the first
+   attempt with zero collisions took **Bank of Baroda from 15 rows and a passing
+   check to 6 rows and a failing one**. *Zero collisions is not evidence of a
+   good canvas* — a canvas compressed enough to merge two columns has no
+   collisions either, because merged columns are one column and one column
+   cannot overlap itself.
+2. Narrowing further than `SQUEEZE` took **Karur Vysya from 29 rows to 13** and
+   lost its opening balance. This falsified the claim written at the top of
+   `ocrCanvas.ts` that spreading is harmless: spreading widens the gaps *inside*
+   a cell too, so once the gap between a value date and its description passes
+   `WIDE_GAP`, one logical column becomes two.
+
+ICICI never improved under either search. Trading two working statements for
+nothing is not a fix, so both were reverted and the file now says why.
+
+### End-to-end result on the seven web samples
+
+| Statement | Result |
+|---|---|
+| Axis | ✅ PASS — 23 rows (was failing until I-2) |
+| Federal Bank | ✅ PASS — 14 rows |
+| Bank of Baroda (scribd) | ✅ PASS — 15 rows |
+| Karur Vysya | ⚠️ Correct refusal — page 1 of a multi-page statement (G-19); `badRows=[1]` only, so its 29 rows are internally consistent |
+| IndusInd | ❌ `badRows=[2,5]` — row 5 is the **document's own ₹1,000 error** verified against the pixels; row 2 is a ₹20,500 withdrawal printed in the deposit column |
+| Bank of Baroda (`_ (1)`) | ❌ `badRows=[2,11]`; the document also contains `31/09/22`, a date that does not exist |
+| ICICI | ❌ Ours — token fusion on a dense three-table page at ~90 DPI |
+
+Three clean passes, one correct refusal, two failures caused by fabricated
+sample documents, one real limitation. Regression-checked against the real
+files: **SBI PDF and HDFC PDF both still PASS with unchanged row counts**, and
+283 tests pass.
+
+### Privacy and cost, restated
+
+Nothing leaves the machine. `pdftoppm` renders scanned PDF pages at 300 DPI and
+every temporary file — the written image, the rendered pages — is removed in a
+`finally`, as with the decrypted spreadsheet and the password-protected PDF.
+
+⚠️ `pdftoppm` takes its password on the command line, exactly as `pdftotext`
+does. Same exposure, same reason (no stdin channel), and it widens G-18 to a
+second call site.
+
+### Still not an import path
+
+Unchanged by any of this. Three of seven scans reconcile, and the value remains
+naming the cells a person must correct.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -655,6 +742,14 @@ encodes a domain convention, check the convention rather than the test.
 `1,00,000.00` returned from a parser and failing three modules later. Both
 produced errors far from their cause. *Countermeasure:* coerce where the format
 is known, and let the type carry the guarantee onwards.
+
+**11. The last line of defence was never tested against the thing it defends.**
+I-4. BR-6 is described throughout this log as the control that makes a wrong
+parse a refusal rather than a corrupt import, and eleven stages relied on it —
+but no test had ever corrupted a single figure and demanded a refusal. When one
+finally did, it got a pass. *Countermeasure:* for the controls you trust most,
+write the test that breaks the data rather than the test that exercises the
+code. A guard is only as good as the specific violation it has been shown.
 
 **10. The measuring instrument is the defect.** Stage 12. A throwaway probe
 scored PaddleOCR at 61.5% on Federal Bank and 84.6% on IndusInd; all of it was

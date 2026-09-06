@@ -99,7 +99,24 @@ export function verifyStatementArithmetic(
 
   const computed = opening + credits - debits;
   const difference = declared - computed;
-  const ok = difference === 0n;
+
+  /*
+   * A row-level disagreement fails the check even when the TOTALS agree.
+   *
+   * The two conditions catch different things and neither implies the other.
+   * Corrupt one intermediate running balance and leave the amounts alone: the
+   * totals still reconcile, because a balance column contributes nothing to
+   * `opening + credits − debits`. The document is nonetheless not what we think
+   * it is — and we cannot tell from here whether the misreading was the balance
+   * (harmless to the ledger) or an amount (not harmless at all), because a
+   * misread amount produces exactly the same symptom.
+   *
+   * Guessing is not available, so the import is refused and the rows are named.
+   * Found by a test that corrupted a balance and expected a refusal; it got a
+   * pass, which meant a scanned statement with a misread digit could have
+   * imported silently.
+   */
+  const ok = difference === 0n && badRows.length === 0;
 
   return {
     ok,
@@ -114,12 +131,20 @@ export function verifyStatementArithmetic(
     detail: ok
       ? `${money(opening)} + ${money(credits)} − ${money(debits)} = ${money(computed)}, ` +
         'which matches the declared closing balance'
-      : `${money(opening)} + ${money(credits)} − ${money(debits)} = ${money(computed)}, ` +
-        `but the statement declares ${money(declared)} — a difference of ${money(difference)}` +
-        (firstBadRow !== null
-          ? `. The running balance disagrees at row(s) ` +
-            `${badRows.map((b) => b.row).join(', ')} — start there.`
-          : '. No running-balance column, so the failing row cannot be pinpointed.'),
+      : difference === 0n
+        // Totals agree, so the failure is entirely row-level: the statement's
+        // own running balance contradicts the movement on specific rows.
+        ? `the totals reconcile (${money(opening)} + ${money(credits)} − ` +
+          `${money(debits)} = ${money(computed)}), but the running balance ` +
+          `disagrees at row(s) ${badRows.map((b) => b.row).join(', ')}. That is ` +
+          'either a misread balance or a misread amount and there is no way to ' +
+          'tell which from here, so check those rows against the statement.'
+        : `${money(opening)} + ${money(credits)} − ${money(debits)} = ${money(computed)}, ` +
+          `but the statement declares ${money(declared)} — a difference of ${money(difference)}` +
+          (firstBadRow !== null
+            ? `. The running balance disagrees at row(s) ` +
+              `${badRows.map((b) => b.row).join(', ')} — start there.`
+            : '. No running-balance column, so the failing row cannot be pinpointed.'),
   };
 }
 

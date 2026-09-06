@@ -145,15 +145,76 @@ export function splitBlocks(lines: string[]): Array<{ start: number; lines: stri
   return blocks;
 }
 
-/** Lines that begin with something date-shaped — i.e. transaction rows. */
-const DATED_LINE = /^\s*\d{1,2}[/\-. ][A-Za-z0-9]{2,4}[/\-. ]\d{2,4}\b/;
+/**
+ * Lines that begin with something date-shaped — i.e. transaction rows.
+ *
+ * An optional leading **serial number** is allowed before the date, because
+ * some layouts print one and the consequence of missing it is not a missing
+ * row — it is a silently mis-sliced table.
+ *
+ * Bank of Baroda prints `Serial No` as its first column, so its rows read
+ * `2    01-06-2022   01-06-2022   UPI/...`. Without this prefix none of them
+ * counts as dated, `pageToGrid` finds the table nowhere near where it is, and
+ * the header plus the opening-balance row get measured as one region while the
+ * transactions get measured as another. The two regions then disagree about
+ * where the columns are by exactly one column, so the opening row's
+ * description landed in the debit column and its balance in the credit column.
+ *
+ * The serial is bounded to four digits and must be followed by whitespace, so
+ * an amount or a reference cannot pose as one.
+ */
+const DATED_LINE = /^\s*(?:\d{1,4}\s+)?\d{1,2}[/\-. ][A-Za-z0-9]{2,4}[/\-. ]\d{2,4}\b/;
 
 export const isDatedLine = (line: string): boolean => DATED_LINE.test(line);
 
-/** Slice a line at the given boundaries. */
+/**
+ * Move a split point off the middle of a token.
+ *
+ * Column boundaries are computed for the page as a whole, but a single line can
+ * disagree with them — and when it does, a naive slice cuts a value in half.
+ *
+ * The case that exposed this: on a real Axis statement the widest debit on the
+ * page was `30000.00`, every other one being five or six characters. Money is
+ * right-aligned, so it grows LEFTWARD, and its first two characters sat to the
+ * left of a boundary derived from the narrower values. The gutter histogram
+ * allowed that because its 5% tolerance means a position occupied by only one
+ * line still counts as blank. The slice produced
+ *
+ *     ["06-05-2025", "KASIM /UPI/HDFC BANK LTD      3000", "0.00", …]
+ *
+ * so the row had no readable amount, was dropped as unparseable, and the
+ * statement came out ₹30,000 short — with BR-6 reporting a single bad row.
+ *
+ * The token is given to whichever cell holds most of it, and a tie goes to the
+ * RIGHT because the overflow that causes this is a right-aligned number
+ * reaching back into the gutter of the column before it. A left-aligned
+ * narration spilling rightwards keeps its majority on the left and so stays
+ * where it was.
+ */
+function snapToTokenEdge(line: string, at: number): number {
+  if (at <= 0 || at >= line.length) return at;
+  if (line[at - 1] === ' ' || line[at] === ' ') return at;
+
+  let start = at;
+  while (start > 0 && line[start - 1] !== ' ') start--;
+  let end = at;
+  while (end < line.length && line[end] !== ' ') end++;
+
+  return end - at >= at - start ? start : end;
+}
+
+/** Slice a line at the given boundaries, without cutting through a value. */
 export function sliceCells(line: string, boundaries: number[]): string[] {
-  return boundaries.map((start, i) => {
-    const end = i + 1 < boundaries.length ? boundaries[i + 1]! : line.length;
+  // Snapped first, then forced non-decreasing: two adjacent boundaries landing
+  // in the same token would otherwise cross and produce a negative-width slice.
+  const splits: number[] = [];
+  for (const b of boundaries) {
+    const snapped = snapToTokenEdge(line, b);
+    splits.push(Math.max(snapped, splits[splits.length - 1] ?? 0));
+  }
+
+  return splits.map((start, i) => {
+    const end = i + 1 < splits.length ? splits[i + 1]! : line.length;
     return line.slice(start, end).trim();
   });
 }
