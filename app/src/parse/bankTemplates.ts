@@ -106,8 +106,12 @@ export const TEMPLATES: BankTemplate[] = [
     columns: {
       txnDate: ['txn date', 'transaction date', 'date'],
       valueDate: ['value date'],
-      narration: ['description', 'particulars', 'narration'],
-      reference: ['ref no./cheque no', 'ref no', 'cheque no'],
+      // `Details` comes from the real spreadsheet export and was missing, so
+      // the SBI template did not match its own bank's file and fell back to
+      // Generic. The outcome was still correct — but only because Generic
+      // happened to list the alias.
+      narration: ['details', 'description', 'particulars', 'narration'],
+      reference: ['ref no/cheque no', 'ref no./cheque no', 'ref no', 'cheque no'],
       debit: ['debit'],
       credit: ['credit'],
       balance: ['balance'],

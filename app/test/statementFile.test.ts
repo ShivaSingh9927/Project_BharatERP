@@ -392,6 +392,111 @@ describe('a real HDFC statement layout', () => {
 });
 
 // ---------------------------------------------------------------------------
+/**
+ * Modelled on a REAL SBI spreadsheet export (net-banking `.xlsx`, converted to
+ * CSV). The **layout is exact**; every identifier is a dummy and every amount
+ * has been replaced with an invented figure that satisfies the same arithmetic
+ * — real transaction values do not belong in a repository.
+ *
+ * What this layout brings that nothing else did:
+ *
+ *   - a two-column label preamble of seventeen rows before the header
+ *   - `Details` as the narration heading — which the SBI template was missing
+ *   - narration containing embedded NEWLINES inside a single quoted cell
+ *   - a summary grid whose labels carry a ₹ symbol (`Brought Forward (₹)`)
+ *     and whose values sit on the row beneath
+ *   - balances written `1,00,000.00CR`, with no space before the marker
+ *
+ * The real file also carries its own `Dr Count` / `Cr Count`, which is an
+ * independent check that the parse read every row — the statement verifying
+ * itself twice over, once by balance and once by count.
+ */
+const SBI_XLSX_SHAPE = `,,,,,
+Mr. A N Other,State Bank of India,,,,
+"Address line, City, 000000",BRANCH ADDRESS,,,,
+Date of Statement  :  06-09-2026,Branch Code  :  000,,,,
+Clear Balance  :  1;05;000.00CR,Branch Name  :  EXAMPLE MAIN BRANCH,,,,
+Uncleared Amount  :  0.00,Branch Email ID  :  example@example.test,,,,
+MOD Bal   :  0.00,Branch Phone   :  0000000000,,,,
+Lien  :  0.00,CIF Number  :  000000000,,,,
+Limit  :  0.00,Account Number  :  00000000000,,,,
+Monthly Avg Balance  :  0.00,Product  :  EXAMPLE SAVING BANK,,,,
+Interest Rate  :  2.50 % p.a.,IFSC Code  :  SBIN0000000,,,,
+Drawing Power  :  0.00,Currency  :  INR,,,,
+,Account Status  :  OPEN,,,,
+,CKYCR Number  :  00000000000000,,,,
+,MICR Code  :  000000000,,,,
+Account Open Date  :  15/07/2022,Nominee  Name  :  XXXXXXXXXXX,,,,
+Statement From  :  01-09-2026  to  06-09-2026,,,,,
+Date,Details,Ref No/Cheque No,Debit,Credit,Balance
+01/09/2026,"WDL TFR   UPI/DR/000000000001/EXAMPLE/BANK/handle@upi/Co
+llect   0000000000000 AT 00000 EXAMPLE  MAIN BRANCH",,5000.00,,95000.00
+02/09/2026,"DEP TFR   UPI/CR/000000000002/EXAMPLE/BANK/handle@upi/Paym
+ent   0000000000000 AT 00000 EXAMPLE  MAIN BRANCH",,,20000.00,115000.00
+03/09/2026,"WDL TFR   UPI/DR/000000000003/EXAMPLE/BANK/handle@upi/Co
+llect   0000000000000 AT 00000 EXAMPLE  MAIN BRANCH",,10000.00,,105000.00
+,,,,,
+Statement Summary : 01-09-2026  To  06-09-2026,,,,,
+Brought Forward (₹),Dr Count,Cr Count,Total Debits (₹),Total Credits (₹),Closing Balance (₹)
+"1,00,000.00CR",2,1,"15,000.00","20,000.00","1,05,000.00CR"
+,,,,,
+This is a computer generated statement and does not require a signature.,,,,,
+`;
+
+describe('a real SBI spreadsheet layout', () => {
+  it('matches the SBI template rather than falling back to Generic', () => {
+    // The template originally lacked the 'details' alias, so it failed to
+    // match its own bank's export and silently fell through to Generic.
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    expect(p.bank).toBe('State Bank of India');
+    expect(p.warnings.join(' ')).not.toMatch(/did not match its columns/);
+  });
+
+  it('finds the header beneath a seventeen-row label preamble', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    expect(p.columns).toMatchObject({
+      txnDate: 0, narration: 1, reference: 2, debit: 3, credit: 4, balance: 5,
+    });
+  });
+
+  it('keeps a multi-line narration as one transaction', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    expect(p.rows).toHaveLength(3);
+    expect(p.rows[0]!.narration).toContain('WDL TFR');
+    expect(p.rows[0]!.narration).toContain('EXAMPLE  MAIN BRANCH');
+  });
+
+  it('splits debits and credits, and agrees with the summary Dr/Cr counts', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    // The statement states 2 debits and 1 credit — an independent check that
+    // every row was read, separate from the balance check.
+    expect(p.rows.filter((r) => r.debit !== '0.00')).toHaveLength(2);
+    expect(p.rows.filter((r) => r.credit !== '0.00')).toHaveLength(1);
+  });
+
+  it('mines a CR balance from the summary grid as POSITIVE', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    // 'Brought Forward (₹)' with the value on the next row, written CR.
+    expect(p.openingBalance).toBe('100000.00');
+    expect(p.closingBalance).toBe('105000.00');
+  });
+
+  it('and BR-6 passes on the real arithmetic', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    const check = verifyStatementArithmetic(p.openingBalance!, p.closingBalance!, p.rows);
+    expect(check.ok).toBe(true);
+    expect(check.totalDebits).toBe('15000.00');
+    expect(check.totalCredits).toBe('20000.00');
+  });
+
+  it('reads the period from the Statement From line', () => {
+    const p = parseStatementFile(SBI_XLSX_SHAPE);
+    expect(p.periodFrom).toBe('2026-09-01');
+    expect(p.periodTo).toBe('2026-09-06');
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('refusals', () => {
   it('refuses a file with no header row', () => {
     expect(() => parseStatementFile('Some summary text\nNothing tabular here\n'))

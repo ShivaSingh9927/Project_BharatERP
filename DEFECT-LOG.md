@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the statement-parser and reconciliation-screen build:** 184 tests
+**Status as of the statement-parser and reconciliation-screen build:** 191 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -190,6 +190,44 @@ needs column-position inference, row grouping, and per-page recalibration. If
 pilot CAs receive statements like this one, **CSV-first does not cover them** —
 which makes question B1 more urgent than it looked.
 
+### The `.xlsx` export answers B1 — and it works
+
+A real SBI **spreadsheet** export of the same account settles the format
+question decisively. Unlike the PDF, it is properly tabular:
+
+```
+Date | Details | Ref No/Cheque No | Debit | Credit | Balance
+```
+
+One row per transaction, narration in a single cell, plain unformatted amounts.
+Converted to CSV, **the existing parser read it correctly on the first attempt**:
+
+| Check | Result |
+|---|---|
+| Transactions read | 10 |
+| Debit / credit split | **9 / 1 — matching the statement's own `Dr Count` / `Cr Count`** |
+| BR-6 | PASS — `241933.51 + 50000.00 − 12120.00 = 279813.51` |
+| Opening balance | mined from `Brought Forward (₹)` in the foot summary |
+| Period | read from `Statement From : 01-09-2026 to 06-09-2026` |
+
+The `Dr Count`/`Cr Count` pair is worth noting as a second, independent
+completeness check: the balance test proves the *amounts* are right, the counts
+prove no *row* was missed. Worth adding to BR-6 where a statement provides them.
+
+Every fix from the two preceding sections was exercised by this file on real
+data — P-11 and P-12 (opening balance in a foot summary grid, value beneath its
+label), P-13 (the `Statement From` line), P-14 (`2,41,933.51CR` as positive).
+Two real files were enough to validate all four.
+
+| # | Defect | What happened | Resolution |
+|---|---|---|---|
+| P-16 | 🟡 **The SBI template did not match its own bank's export** | The real narration heading is `Details`, which the template did not list, so `mapColumns` returned null and the file fell through to Generic. The result was still correct — but only because Generic happened to list the alias. | Added `details`, and `ref no/cheque no` without the full stop. **The BR-5 warning added in P-6 is what caught this**, by reporting that a recognised bank's template had not fitted. |
+
+**Conclusion for the roadmap:** BR-3 is confirmed — spreadsheet exports are the
+path, and they largely work today. But note SBI's `.xlsx` is **encrypted OOXML**
+(`CDFV2 Encrypted`), so the spreadsheet path needs a decryption step *and* an
+`.xlsx` reader before it works without manual conversion. Neither is built.
+
 ### Deliberate divergence from the spec
 
 §5.2 models per-bank templates as a versioned `bank_statement_templates`
@@ -272,7 +310,9 @@ misleading. No unit test can hold that opinion.
 
 | # | Gap | Detail |
 |---|---|---|
-| G-5 | **No `.xlsx` or PDF reader** | CSV/TSV/delimited is done, with templates for HDFC, ICICI, SBI, Axis, Kotak and two generics. True `.xlsx` needs a dependency decision; PDF (BR-4, often password-protected) is untouched. **Every template's column headings are unverified against real files** — see B1 |
+| G-5 | **No `.xlsx` reader and no decryption** | CSV/TSV/delimited works, and a real SBI spreadsheet export parses correctly once converted. But SBI ships **encrypted OOXML**, so the path needs a decrypt step plus an `.xlsx` reader before it works unaided. HDFC and SBI templates are now validated against real files; ICICI, Axis and Kotak remain guesses |
+| G-14 | **PDF statements need a different parser entirely** | Fixed-width columns, no surviving header row, per-page column shifts, narrations spanning 4–5 lines. Not a variation on the CSV reader. Only worth building if pilot CAs cannot get spreadsheet exports |
+| G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-6 | **Learned rules do not apply** | `bank_transaction_rules` table exists; nothing reads it. Layer 3 of the matching engine is absent, so T-11 is untested |
 | G-7 | **1:N matching not implemented** | One payment against five invoices (T-9) — very common in B2B. The schema supports it; no code allocates it |
 | G-8 | **Decentro webhook path untested** | Layer 0 in `proposeMatch()` is written but has no test. **BR-13 (VA settlement double-counting) is not implemented at all** — flagged in the spec as the most likely source of a double-count bug |
@@ -320,6 +360,6 @@ misleading. No unit test can hold that opinion.
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
 | Bank | 48 | Decentro webhook path, 1:N allocation, learned rules |
-| Statement files | 42 | `.xlsx`; PDF/fixed-width entirely; banks other than HDFC and SBI |
+| Statement files | 49 | Encrypted `.xlsx` decryption; PDF/fixed-width; banks other than HDFC and SBI |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **184** | |
+| **Total** | **191** | |
