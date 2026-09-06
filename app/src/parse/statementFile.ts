@@ -24,12 +24,14 @@
 
 import { parseDelimited, isBlankRow } from './csv.ts';
 import { parseDate, parseAmount, looksNumeric, type DateFormat } from './values.ts';
-import { TEMPLATES, candidateTemplates, templateByName, type BankTemplate } from './bankTemplates.ts';
+import { TEMPLATES, candidateTemplates, templateByName,
+         type BankTemplate, type AmountConvention } from './bankTemplates.ts';
 import type { StatementRow } from '../domain/statement.ts';
 import { ValidationError } from '../domain/types.ts';
 import { paise, money } from '../domain/tax.ts';
 import { looksLikeZip, looksLikeEncryptedOffice } from './zip.ts';
 import { readXlsxSheet, decryptOfficeFile } from './xlsx.ts';
+import { isPdf } from './pdf.ts';
 
 export interface ColumnMap {
   txnDate: number;
@@ -268,7 +270,24 @@ export function parseStatementFile(
  */
 export function parseStatementTable(
   rows: string[][],
-  opts: { bank?: string; dateFormat?: DateFormat } = {},
+  opts: {
+    bank?: string;
+    dateFormat?: DateFormat;
+    /**
+     * Supply the column map directly, bypassing header detection.
+     *
+     * The PDF path needs this: a real SBI statement loses its header row in
+     * extraction, so the columns are inferred from the data instead
+     * (`columnRoles.ts`). Everything after that point — balance mining, period
+     * mining, skipped-row reporting, BR-6 — is identical, and must not be
+     * written a second time just because the columns arrived differently.
+     */
+    columns?: ColumnMap;
+    /** Where the data begins when the columns were supplied. */
+    dataStartRow?: number;
+    /** Label for the layout when no template was matched. */
+    layoutLabel?: string;
+  } = {},
 ): ParsedStatementFile {
   if (rows.length === 0) throw new ValidationError('the file contains no rows', 'BR-3');
 
@@ -293,6 +312,17 @@ export function parseStatementTable(
     namedBanks = new Set(candidateTemplates(preambleText)
       .filter((t) => t.detect.length > 0)
       .map((t) => t.bank));
+  }
+
+  // Columns supplied by the caller win outright — there is nothing to detect.
+  if (opts.columns) {
+    return buildFromColumns(rows, opts.columns, {
+      dataStartRow: opts.dataStartRow ?? 0,
+      template: (opts.bank ? templateByName(opts.bank) : undefined) ?? TEMPLATES[TEMPLATES.length - 1]!,
+      bankLabel: opts.layoutLabel ?? opts.bank ?? 'inferred layout',
+      dateFormat: opts.dateFormat,
+      warnings,
+    });
   }
 
   const found = findHeaderRow(rows, templates, namedBanks);
@@ -321,6 +351,44 @@ export function parseStatementTable(
       'instead. The bank may have changed its export format.');
   }
 
+  return buildFromColumns(rows, columns, {
+    dataStartRow: headerRowIndex + 1,
+    template, bankLabel: template.bank,
+    dateFormat: opts.dateFormat, warnings,
+  });
+}
+
+/**
+ * Build the parsed result once the columns are known.
+ *
+ * Shared by every input format. The column map may have come from a matched
+ * header (delimited text, a spreadsheet) or from inference over the data
+ * itself (a PDF whose header did not survive extraction) — and beyond this
+ * point nothing cares which, so nothing here is written twice.
+ */
+function buildFromColumns(
+  rows: string[][],
+  columns: ColumnMap,
+  a: {
+    dataStartRow: number;
+    template: BankTemplate;
+    bankLabel: string;
+    dateFormat?: DateFormat;
+    warnings: string[];
+  },
+): ParsedStatementFile {
+  const dateFormat = a.dateFormat ?? a.template.dateFormat;
+  const headerRowIndex = a.dataStartRow - 1;
+  const warnings = a.warnings;
+
+  // Derived from the columns, not from the template. An inferred layout has no
+  // template to speak for it, and the columns are the more direct evidence:
+  // if a debit or credit column was identified, the file separates them.
+  const convention: AmountConvention =
+    columns.debit !== null || columns.credit !== null ? 'separate_dr_cr'
+    : columns.amount !== null && columns.drCrFlag !== null ? 'amount_plus_type'
+    : 'single_signed';
+
   const out: StatementRow[] = [];
   const skippedRows: ParsedStatementFile['skippedRows'] = [];
 
@@ -347,11 +415,11 @@ export function parseStatementTable(
     let debit = '0.00';
     let credit = '0.00';
 
-    if (template.amountConvention === 'separate_dr_cr') {
+    if (convention === 'separate_dr_cr') {
       const d = parseAmount(cell(columns.debit));
       const c = parseAmount(cell(columns.credit));
       debit = d.value; credit = c.value;
-    } else if (template.amountConvention === 'single_signed') {
+    } else if (convention === 'single_signed') {
       const a = parseAmount(cell(columns.amount));
       if (a.negative) debit = a.value; else credit = a.value;
     } else {
@@ -392,11 +460,15 @@ export function parseStatementTable(
 
   if (out.length === 0) {
     throw new ValidationError(
-      `the header row was found at line ${headerRowIndex + 1} but no data rows ` +
-      'parsed beneath it — the date format is probably wrong', 'BR-5');
+      headerRowIndex >= 0
+        ? `the header row was found at line ${headerRowIndex + 1} but no data ` +
+          'rows parsed beneath it — the date format is probably wrong'
+        : 'no data rows parsed with the supplied column map — the date format ' +
+          'or the column positions are wrong',
+      'BR-5');
   }
 
-  const preamble = rows.slice(0, headerRowIndex);
+  const preamble = rows.slice(0, Math.max(0, headerRowIndex));
   const trailer = rows.slice(headerRowIndex + 1).filter((r) =>
     parseDate(r[columns.txnDate] ?? '', dateFormat) === null);
 
@@ -451,8 +523,8 @@ export function parseStatementTable(
   const { from, to } = mineDateRange(preamble, dateFormat);
 
   return {
-    bank: template.bank,
-    template,
+    bank: a.bankLabel,
+    template: a.template,
     headerRowIndex,
     columns,
     rows: out,
@@ -482,7 +554,9 @@ export function parseStatementTable(
 export async function parseStatementBytes(
   buffer: Buffer,
   opts: { bank?: string; dateFormat?: DateFormat; password?: string } = {},
-): Promise<ParsedStatementFile & { format: 'xlsx' | 'xlsx_encrypted' | 'delimited' }> {
+): Promise<ParsedStatementFile & {
+  format: 'xlsx' | 'xlsx_encrypted' | 'pdf' | 'delimited';
+}> {
   if (looksLikeEncryptedOffice(buffer)) {
     if (!opts.password) {
       // BR-4: password-protected statements are the norm, not an edge case.
@@ -500,6 +574,14 @@ export async function parseStatementBytes(
   if (looksLikeZip(buffer)) {
     const parsed = parseStatementTable(readXlsxSheet(buffer), opts);
     return { ...parsed, format: 'xlsx' };
+  }
+
+  if (isPdf(buffer)) {
+    // Imported lazily: the PDF route shells out to an external binary, and the
+    // CSV and spreadsheet paths must not depend on it being present.
+    const { parsePdfStatement } = await import('./pdf.ts');
+    const parsed = parsePdfStatement(buffer, opts);
+    return { ...parsed, format: 'pdf' };
   }
 
   return { ...parseStatementFile(buffer.toString('utf8'), opts), format: 'delimited' };

@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the `.xlsx` reader:** 213 tests
+**Status as of the PDF parser:** 240 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -315,6 +315,62 @@ encrypted .xlsx → decrypt → zip → sheet → template match → BR-6
 
 ---
 
+## Stage 9 — the PDF parser
+
+Text extraction is delegated to `pdftotext -layout` (poppler-utils) and stays
+**local**. Implementing PDF text extraction means fonts, encodings and CMaps,
+whose failure mode is silently wrong characters. And a bank statement carries
+the account number, the address and every counterparty a client pays, so
+sending them to a hosted parser is a data-protection decision for the CA firm
+as data fiduciary — not a library choice to make on their behalf.
+
+Both real PDFs now parse with BR-6 passing, and each one's transaction count
+matches the Dr/Cr totals the statement itself prints.
+
+| # | Defect | What happened | Caught by | Resolution |
+|---|---|---|---|---|
+| D-1 | 🟠 **The address block destroyed the table's columns** | Boundaries were measured over the whole page. The account-holder address sits exactly where the table's gutters are, so no gap was found between the date and narration columns and they merged into one 85-character column. | Both real PDFs failing outright | Measure per region. |
+| D-2 | 🔴 **A column empty on every transaction vanished** | Second attempt measured blocks separated by blank lines. HDFC puts blank lines BETWEEN transaction rows, so the header landed in its own block and the table was measured without it. The deposit column — empty on a month of withdrawals — had no ink, read as a gutter, and disappeared. Every column to its right shifted left and the **closing balance landed under "Deposit Amt."** | BR-6 | The table region is the span from the first dated line to the last, *including the header line above it* — the header is exactly the line that pins down columns no transaction fills. |
+| D-3 | 🔴 **A header label does not sit where its values sit** | The deepest of the three, and specific to fixed-width text. Numbers are right-aligned under left-aligned labels: `Deposit Amt.` begins at character 162 while its values begin at 184. Matching template aliases against the header mapped the credit column onto an empty span and the balance column onto the deposits — five debits, **no credits**, and a balance short by exactly the credits it had lost. | BR-6, off by exactly ₹133 — the two credits | For fixed-width input the columns are **always inferred from the data**, never from the header. The header is still used to identify the bank (which supplies the date format); it is simply unusable for positions. |
+| D-4 | 🟠 A reference number counted as an amount column | `0000624531110990` parses as a perfectly good number, so the reference column became a candidate for the debit column. | Inference test | A money column must also be *written* like money: a two-decimal fraction. References have no decimal point. |
+| D-5 | 🟠 A continuation line's text was read from the wrong column | SBI's `WDL TFR` marker sits above the first transaction and therefore lands in the *preamble* region, which is aligned differently. Reading `columns.narration` from it found an empty cell and the marker was silently lost. | Fixture test | A continuation line has no date and no amounts by definition, so all of its cells are narration — take the text from every cell. |
+| D-6 | 🟡 `Page No .: 1` was not recognised as furniture | The punctuation between "No" and the number varies more than the pattern allowed. | Fixture test | Separators matched loosely. |
+
+### The idea worth keeping: debit vs credit from the running balance
+
+With no header, two adjacent mostly-blank money columns are indistinguishable —
+nothing about the values says which is the withdrawal. But the **running balance
+does**: if the balance fell, that row's amount was a debit.
+
+So the assignment is derived from arithmetic the statement already carries, and
+the same evidence that decides it also scores it — the parser reports how many
+rows agreed and how many disagreed rather than asserting a guess. On the real
+SBI statement the evidence was unanimous. It also handles a layout with the
+columns in credit-then-debit order without any special casing.
+
+### Three of the six were caught by BR-6, not by tests
+
+D-2 and D-3 both produced parses where **every component reported success**:
+the PDF opened, the columns were found, the rows parsed, the dates were dates
+and the amounts were amounts. Only the arithmetic over the whole document knew
+that money had moved between columns. D-3 was out by exactly ₹133.00 — the two
+credits it had dropped — which is what made it diagnosable at all.
+
+Fixed-width parsing has more ways to be subtly wrong than any other format
+here, and BR-6 is the reason a wrong parse is a refusal rather than a corrupt
+import.
+
+### Known limitation
+
+Continuation lines attach to the row above by default, and a per-bank
+`forwardMarkers` list (`WDL TFR`, `DEP TFR`, …) attaches downward. The two cases
+are genuinely indistinguishable from text alone, so this is an explicit list
+rather than a heuristic. A marker not on the list attaches to the wrong
+transaction's narration — which degrades party and mode detection but cannot
+affect the arithmetic, since narration carries no money.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -386,7 +442,9 @@ misleading. No unit test can hold that opinion.
 | # | Gap | Detail |
 |---|---|---|
 | G-5 | ~~No `.xlsx` reader~~ — **done** | Dependency-free zip + sheet reader; the real encrypted SBI export now parses end to end. Decryption is an **optional** import, so an encrypted file without the package gives a clear instruction rather than a crash. HDFC and SBI templates are validated against real files; ICICI, Axis and Kotak remain guesses |
-| G-14 | **PDF statements need a different parser entirely** | Fixed-width columns, no surviving header row, per-page column shifts, narrations spanning 4–5 lines **and wrapping mid-token, so continuation lines must be joined with no separator**. Not a variation on the CSV reader. Only worth building if pilot CAs cannot get spreadsheet exports |
+| G-14 | ~~PDF statements~~ — **done** | Local `pdftotext` + gutter detection + column inference. Both real PDFs pass BR-6 with row counts matching the statements' own Dr/Cr totals. **Scanned PDFs still fail** (no text layer — needs OCR) and are reported as such |
+| G-17 | **Scanned PDFs are unsupported** | No text layer means OCR, which is not built. Detected and reported with the fix ("download from net banking rather than scanning") rather than failing obscurely |
+| G-18 | The PDF password is passed on the command line | `pdftotext` has no stdin channel for it, so it is briefly visible in the process list to the same user. Never written to disk or stored. Worth revisiting if PDF import becomes a shared-service path |
 | G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-16 | Credit cards remain Phase 2, now specified | A real ICICI card statement is documented in `specs/bank-and-reconciliation.md` §18 — layout, the liability postings, the BR-13-shaped double-counting hazard, why a card statement can never support an ITC claim, and EMI conversion as borrowing. **No code implements any of it.** ICICI's *bank account* template is still an unvalidated guess; a card statement does not test it |
 | G-6 | **Learned rules do not apply** | `bank_transaction_rules` table exists; nothing reads it. Layer 3 of the matching engine is absent, so T-11 is untested |
@@ -438,5 +496,6 @@ misleading. No unit test can hold that opinion.
 | Bank | 52 | Decentro webhook path, 1:N allocation, learned rules |
 | Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
+| PDF / fixed-width | 27 | Scanned PDFs (OCR); banks other than HDFC and SBI; forward-marker coverage |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **213** | |
+| **Total** | **240** | |
