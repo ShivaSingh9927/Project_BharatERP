@@ -192,3 +192,82 @@ describe('a bill line is never silently zero-rated (G-23)', () => {
     expect(b.warnings.some((w) => /Confirm the rate before filing/.test(w))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+/*
+ * G-24 — the `99` catch-all, and codes that have no single right answer.
+ *
+ * Every one of these HSN/SAC codes was taken off a REAL invoice. The defect
+ * they exposed: review answer A3.1 had us delete the empty-prefix 18% fallback,
+ * and a bare `99` row at 18% was left doing the same job. `99` prefixes every
+ * service there is, so no service code could fail to match, and the
+ * refuse-and-ask path was unreachable for the whole services schedule.
+ */
+describe('G-24 service codes are not all 18%', () => {
+  it('resolves a real SAC the invoice agrees with', async () => {
+    // Flipkart platform fee, SAC 998599, charged at IGST 18.0% on the paper.
+    const r = await resolve('998599', '2025-08-27');
+    expect(r.rows[0]!.gst_rate).toBe('18.00');
+  });
+
+  it('resolves a real HSN the invoice agrees with', async () => {
+    // Medicaments, HSN 30049011, charged at IGST 5.00% on the paper.
+    const r = await resolve('30049011', '2025-08-27');
+    expect(r.rows[0]!.gst_rate).toBe('5.00');
+  });
+
+  it('an unseeded service now refuses instead of answering 18%', async () => {
+    // 9954 is construction. Under the `99` row this returned 18% with a
+    // straight face; it must now fall through to no match at all.
+    const r = await resolve('995411', '2026-07-01');
+    expect(r.rowCount).toBe(0);
+  });
+
+  it('GTA matches a row, and that row withholds its rate', async () => {
+    const r = await ownerPool.query<{
+      gst_rate: string | null; requires_human_rate: boolean; human_rate_reason: string;
+    }>(`SELECT gst_rate, requires_human_rate, human_rate_reason
+          FROM resolve_gst_rate($1, $2)`, ['996511', '2026-07-01']);
+
+    // Matching matters: it is the difference between "we have never heard of
+    // this code" and "we know exactly what this is and why we cannot answer".
+    expect(r.rowCount).toBe(1);
+    expect(r.rows[0]!.requires_human_rate).toBe(true);
+    expect(r.rows[0]!.gst_rate).toBeNull();
+    expect(r.rows[0]!.human_rate_reason).toMatch(/5% or 12%/);
+  });
+
+  it('the DB forbids a withholding row from carrying a rate at all', async () => {
+    // The CHECK is the guarantee. Without it, `requires_human_rate` would be a
+    // flag a caller could forget to read, with a stale number sitting behind
+    // it — the shape of every dead control found so far.
+    await expect(ownerPool.query(
+      `INSERT INTO gst_rates (hsn_sac_prefix, description, effective_from,
+                              gst_rate, requires_human_rate, human_rate_reason)
+       VALUES ('9999', 'Contradiction', '2017-07-01', 18, true, 'why')`,
+    )).rejects.toThrow(/gst_rates_refusal_ck/);
+  });
+
+  it('a bill on a GTA line refuses, and says what to go and look up', async () => {
+    await expect(createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'RATE/GTA1', billDate: '2026-07-01',
+      lines: [{ description: 'Road freight', hsnSac: '996511', unitPrice: '1000',
+                expenseAccountId: A('Purchases') }],
+      createdBy: t.userId,
+    })).rejects.toThrow(/no single applicable rate.*forward charge/s);
+  });
+
+  it('...and accepts the line once a human states the rate', async () => {
+    // The refusal must be an ask, not a wall. The figure is printed on the
+    // vendor's invoice; the user reads it off and states it.
+    const b = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'RATE/GTA2', billDate: '2026-07-01',
+      lines: [{ description: 'Road freight', hsnSac: '996511', unitPrice: '1000',
+                gstRate: '5', expenseAccountId: A('Purchases') }],
+      createdBy: t.userId,
+    });
+    expect(b.totalGst).toBe('50.00');
+  });
+});

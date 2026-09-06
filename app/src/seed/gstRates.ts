@@ -39,15 +39,64 @@ import { ownerPool } from '../db/pool.ts';
  * catch-all row would quietly reintroduce exactly that behaviour.
  */
 interface RateSeed {
-  prefix: string; description: string; rate: string; cess?: string;
-  from: string; notification: string;
+  prefix: string; description: string; from: string; notification: string;
+  /** Absent when the code has no single correct rate — see `askHuman`. */
+  rate?: string;
+  cess?: string;
+  /**
+   * Why a rate cannot be resolved from this code alone. Setting it withholds
+   * the rate entirely: the DB CHECK forbids a refusing row from carrying one,
+   * so there is no number a caller can read by mistake.
+   */
+  askHuman?: string;
 }
 
 const UNVERIFIED = 'UNVERIFIED — predates the 2025-09-22 rate rationalisation';
 
 const RATES: RateSeed[] = [
-  { prefix: '99', description: 'Services (SAC)', rate: '18',
+  /*
+   * Support services. 18% here is the ONE service rate with corroboration
+   * beyond the seed: a real Flipkart platform-fee invoice under SAC 998599
+   * charges IGST at 18.0%.
+   *
+   * This replaces a bare `99` row at 18%. `99` prefixes every service in the
+   * scheme, so that row answered every service code that existed and made the
+   * refuse-and-ask path (A3.1) unreachable for half the schedule — the same
+   * defect as the empty-prefix fallback the review had us delete, one level
+   * down. Narrowing to 9985 means an unseeded service now refuses, which is
+   * the behaviour the review asked for.
+   */
+  { prefix: '9985', description: 'Support services', rate: '18',
     from: '2017-07-01', notification: UNVERIFIED },
+
+  /*
+   * Professional, technical and business services — 18%.
+   *
+   * Seeded as a four-digit heading, not as part of a wider net. The difference
+   * between this and the `99` row it replaces is the whole point: chapter 99 is
+   * every service there is, including several that are not 18% (goods transport
+   * below, passenger transport, restaurant supply). A heading is narrow enough
+   * that one rate can be true of all of it.
+   */
+  { prefix: '9983', description: 'Professional, technical and business services',
+    rate: '18', from: '2017-07-01', notification: UNVERIFIED },
+
+  /*
+   * Goods Transport Agency — deliberately RATELESS.
+   *
+   * There is no single correct number: GTA is 5% or 12%, and which applies
+   * turns on whether the supplier opted for forward charge and whether input
+   * credit is taken. Both are properties of the transaction, not of the code.
+   * Two invoices bearing 9965 can correctly carry different rates, so any
+   * seeded figure would be a guess with a citation attached.
+   */
+  { prefix: '9965', description: 'Goods transport services (GTA)',
+    from: '2017-07-01', notification: 'Rate depends on the transaction, not the SAC',
+    askHuman:
+      'Goods transport by a GTA is charged at 5% or 12%. Which one applies ' +
+      'depends on whether the supplier opted to pay under forward charge and ' +
+      'whether input credit is being claimed — neither is derivable from the ' +
+      'SAC. Read the rate off the vendor invoice and state it on the line.' },
   { prefix: '7318', description: 'Iron/steel fasteners', rate: '18',
     from: '2017-07-01', notification: UNVERIFIED },
   { prefix: '3506', description: 'Prepared adhesives', rate: '18',
@@ -94,9 +143,12 @@ export async function seedGstRates(): Promise<number> {
   for (const r of RATES) {
     await ownerPool.query(
       `INSERT INTO gst_rates (hsn_sac_prefix, description, effective_from,
-                              gst_rate, cess_rate, source_notification)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [r.prefix, r.description, r.from, r.rate, r.cess ?? '0', r.notification]);
+                              gst_rate, cess_rate, source_notification,
+                              requires_human_rate, human_rate_reason)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [r.prefix, r.description, r.from,
+       r.askHuman ? null : r.rate, r.cess ?? '0', r.notification,
+       r.askHuman !== undefined, r.askHuman ?? null]);
     n++;
   }
 

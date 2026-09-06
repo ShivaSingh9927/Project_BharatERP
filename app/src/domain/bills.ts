@@ -262,7 +262,10 @@ export async function createBill(
 
       const rr = await c.query<{
         gst_rate: string; source_notification: string | null; effective_from: string;
-      }>('SELECT gst_rate, source_notification, effective_from FROM resolve_gst_rate($1, $2)',
+        requires_human_rate: boolean; human_rate_reason: string | null;
+      }>(`SELECT gst_rate, source_notification, effective_from,
+                 requires_human_rate, human_rate_reason
+            FROM resolve_gst_rate($1, $2)`,
         [l.hsnSac, postingDate]);
 
       if (rr.rowCount === 0) {
@@ -275,6 +278,22 @@ export async function createBill(
       }
 
       const hit = rr.rows[0]!;
+
+      /*
+       * A matched row that withholds its rate. GTA (SAC 9965) is the case that
+       * found this: it is 5% or 12% depending on whether the supplier opted for
+       * forward charge and whether credit is claimed, so the SAC cannot decide.
+       *
+       * This refuses for the same reason the no-match branch above does, but it
+       * can say WHY, which the generic message cannot. On a vendor bill the
+       * answer is always to hand — it is printed on the paper.
+       */
+      if (hit.requires_human_rate) {
+        throw new ValidationError(
+          `line ${i + 1}: HSN/SAC "${l.hsnSac}" has no single applicable rate. ` +
+          `${hit.human_rate_reason}`, 'PB-6');
+      }
+
       lineRates.push(hit.gst_rate);
 
       // Provenance PR-7, and honesty about G-19b: every seeded HSN rate

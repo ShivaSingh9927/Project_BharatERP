@@ -743,6 +743,17 @@ encodes a domain convention, check the convention rather than the test.
 produced errors far from their cause. *Countermeasure:* coerce where the format
 is known, and let the type carry the guarantee onwards.
 
+**13. A control deleted at one level can survive at the next.** G-24. The
+empty-prefix 18% fallback was removed on the CA's instruction, and a `99` row at
+18% was left in place — which is the same fallback, since chapter 99 is every
+service there is. The *stated* rule ("no catch-all") was followed; the *behaviour*
+it existed to prevent was not. It survived review twice because the diff that
+removed the fallback looked correct in isolation. *Countermeasure:* after
+removing a default, prove the refusal path can actually be reached — construct
+an input that must be refused, and watch it be refused. And note what caught
+this: **real documents**. Every fixture was ours, and ours all happened to be
+18% services.
+
 **12. A grep is not a call graph.** G-23. `gst_rates` was recorded as "written by
 the seed and read by nothing" on the strength of grepping for the table name in
 TypeScript. The reader called a SQL function by name instead, so the grep was
@@ -793,6 +804,7 @@ misleading. No unit test can hold that opinion.
 | G-3 | ~~`business_type` is hardcoded `NULL` in `bills.ts`~~ — **CLOSED** | Migration `013_business_type.sql`. Two facts were missing, not one: the business type was a literal `SELECT NULL::text`, **and `blockedCategory` was never passed to `decideItc` at all** — so the exception lookup returned undefined every time and no client's trade could unblock anything. `blockedCategory` was exercised only by unit tests calling `decideItc` directly: covered, passing, unreachable from the path that posts. Also split *settled* from *undecided* — a known trade that does not qualify is `blocked` with nothing to ask, while an unrecorded trade is `conditional` and answerable by one question at the client level (A5.4). Reporting both as `blocked` had made the `conditional` branch of `canClaimItc` dead too |
 | G-4 | ~~Period close does not call `assertReconciledForClose()`~~ — **CLOSED** | There was no close path to wire it into: `accounting_periods.is_closed` existed, `resolve_open_fiscal_year` already refused to post into a closed period, and **no function in the codebase could set the flag**. BR-23 was a control with no moment at which to fire. `domain/periodClose.ts` adds `periodCloseCheck`, `closePeriod` and `reopenPeriod`. An untied bank account **blocks** rather than warns — a warning at close time is read by someone whose goal at that moment is to close. An override is allowed but demands a reason and records it, because refusing absolutely just moves the close to a hand-written `UPDATE` with no record of who decided it |
 | G-23 | ~~No HSN → rate lookup exists at all~~ — **CLOSED, and the original diagnosis was wrong** | I recorded "read by nothing" from a grep for `gst_rates` across the TypeScript, which missed it because sales invoicing calls the SQL function `resolve_gst_rate()` by name. The lookup existed and already refused an unmatched HSN. Two real defects were found in its place: `resolve_gst_rate` ordered only by prefix length, so **two rows sharing a prefix tied and a rate change resolved at random** — silently defeating the date-ranging the review endorsed; and purchase bills had no lookup at all, defaulting to `?? '0'`, which is worse than the 18% fallback because 0% looks deliberate. Both fixed in `014_gst_rate_resolution.sql`; the function now returns its `source_notification` so an unverified rate says so where it is used |
+| G-24 | ~~A bare `99` row re-created the 18% fallback A3.1 had us delete~~ — **CLOSED** | Found by resolving codes off **real invoices** rather than off our own fixtures. The review had us remove the empty-prefix catch-all because an unmatched HSN that quietly answers 18% produces a wrong liability nobody is shown. We removed it and left a bare `99` row at 18% doing the identical job one level down: `99` prefixes **every service in the scheme**, so no SAC could fail to match and the refuse-and-ask path was unreachable for the entire services half of the schedule. It hid because 18% is right for most services — a real Flipkart invoice under SAC `996511` (goods transport) showed where it is not. `016_gta_rate_refusal.sql` narrows `99` to the headings `9983`/`9985`, and adds a **rateless** `9965` row: GTA is 5% or 12% depending on whether the supplier opted for forward charge and whether credit is claimed, neither derivable from the SAC, so any seeded figure would be a guess wearing a citation. A CHECK forbids a withholding row from carrying a rate at all, so there is no stale number behind a flag a caller might forget to read |
 
 ### Built partially
 
@@ -864,4 +876,4 @@ misleading. No unit test can hold that opinion.
 | PDF / fixed-width | 31 | Forward-marker coverage |
 | OCR / markdown | 14 | Live provider calls (mocked by design); multi-page scans; 300 DPI accuracy |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **260** | |
+| **Total** | **341** | |

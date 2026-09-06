@@ -243,13 +243,23 @@ export async function createInvoice(
 
       if (gstRate === undefined) {
         const rr = await c.query(
-          'SELECT rate_id, gst_rate, cess_rate FROM resolve_gst_rate($1, $2)',
+          `SELECT rate_id, gst_rate, cess_rate, requires_human_rate, human_rate_reason
+             FROM resolve_gst_rate($1, $2)`,
           [line.hsnSac, input.postingDate],
         );
         if (rr.rowCount === 0) {
           throw new ValidationError(
             `no GST rate configured for HSN "${line.hsnSac}" as of ${input.postingDate}`,
             'SI-5');
+        }
+        // Some codes match a row that deliberately withholds its rate, because
+        // the code alone does not determine one (GTA is 5% or 12% depending on
+        // the transaction). Refusing WITH the reason beats refusing generically
+        // — the caller is told what to go and look up.
+        if (rr.rows[0]!.requires_human_rate) {
+          throw new ValidationError(
+            `line ${i + 1}: HSN/SAC "${line.hsnSac}" has no single applicable rate. ` +
+            rr.rows[0]!.human_rate_reason, 'SI-5');
         }
         rateId = rr.rows[0]!.rate_id;
         gstRate = rr.rows[0]!.gst_rate;
