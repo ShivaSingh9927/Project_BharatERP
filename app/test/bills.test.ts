@@ -200,6 +200,123 @@ describe('bill creation and GL posting (§9)', () => {
     expect(byName['Creditors'].credit).toBe('11800.00');
   });
 
+  /*
+   * The hotel bill: allowable lodging, blocked food. Routine, not an edge case
+   * (CA review A5.3), and the reason G-9 existed.
+   *
+   * The ledger was already right about this. What was wrong was everything the
+   * bill SAID: the header reported 'blocked' because one line was, and
+   * `itcClaimable` came back false while ₹1,800 of credit sat in the entry.
+   */
+  it('G-9 reports a mixed bill as mixed, not as wholly blocked', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'HOTEL/2026/001', billDate: '2026-05-07',
+      lines: [
+        { description: 'Conference room hire', unitPrice: '10000', gstRate: '18',
+          expenseAccountId: A('Professional Fees') },          // eligible
+        { description: 'Food and beverage', unitPrice: '5000', gstRate: '18',
+          expenseAccountId: A('Travel Expenses') },            // blocked
+      ],
+      createdBy: t.userId,
+    });
+
+    expect(bill.itcEligibility).toBe('mixed');
+    // The whole point: credit IS claimable on a bill that has a blocked line.
+    expect(bill.itcClaimable).toBe(true);
+    expect(bill.itcClaimableValue).toBe('1800.00');            // 18% of 10,000
+    expect(bill.itcBlockedValue).toBe('900.00');               // 18% of 5,000
+    expect(bill.warnings.some((w) => /mixed bill/.test(w))).toBe(true);
+  });
+
+  it('G-9 the ledger splits the same way the header now describes', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'HOTEL/2026/002', billDate: '2026-05-08',
+      lines: [
+        { description: 'Conference room hire', unitPrice: '10000', gstRate: '18',
+          expenseAccountId: A('Professional Fees') },
+        { description: 'Food and beverage', unitPrice: '5000', gstRate: '18',
+          expenseAccountId: A('Travel Expenses') },
+      ],
+      createdBy: t.userId,
+    });
+
+    const rows = await withFirm(t.firmId, (c) => c.query(
+      `SELECT a.name, le.debit::text, le.credit::text
+       FROM ledger_entries le JOIN accounts a ON a.id = le.account_id
+       WHERE le.voucher_id = $1`, [bill.voucherId]));
+    const by = Object.fromEntries(rows.rows.map((r) => [r.name, r]));
+
+    // Eligible line: cost net of tax, tax claimed as an asset.
+    expect(by['Professional Fees'].debit).toBe('10000.00');
+    expect(by['Input CGST Credit'].debit).toBe('900.00');      // half of 1,800
+    // Blocked line: tax capitalised into the expense, 5,000 + 900.
+    expect(by['Travel Expenses'].debit).toBe('5900.00');
+    expect(by['Creditors'].credit).toBe('17700.00');           // 15,000 + 2,700
+  });
+
+  it('G-9 names which line lost its credit, and why', async () => {
+    // A reviewer needs to see the reason on the line, not a verdict on the
+    // document — otherwise the only way to act on it is to open the PDF.
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'HOTEL/2026/003', billDate: '2026-05-09',
+      lines: [
+        { description: 'Conference room hire', unitPrice: '10000', gstRate: '18',
+          expenseAccountId: A('Professional Fees') },
+        { description: 'Food and beverage', unitPrice: '5000', gstRate: '18',
+          expenseAccountId: A('Travel Expenses') },
+      ],
+      createdBy: t.userId,
+    });
+
+    expect(bill.itcLines).toHaveLength(2);
+    const blocked = bill.itcLines.find((l) => l.eligibility === 'blocked')!;
+    expect(blocked.lineNo).toBe(2);
+    expect(blocked.account).toBe('Travel Expenses');
+    expect(blocked.gst).toBe('900.00');
+    expect(blocked.reason).toMatch(/17\(5\)/);
+  });
+
+  it('G-9 persists the split, because a return is built from it', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'HOTEL/2026/004', billDate: '2026-05-10',
+      lines: [
+        { description: 'Conference room hire', unitPrice: '10000', gstRate: '18',
+          expenseAccountId: A('Professional Fees') },
+        { description: 'Food and beverage', unitPrice: '5000', gstRate: '18',
+          expenseAccountId: A('Travel Expenses') },
+      ],
+      createdBy: t.userId,
+    });
+
+    const r = await withFirm(t.firmId, (c) => c.query<{
+      itc_eligibility: string; itc_claimable_value: string; itc_blocked_value: string;
+    }>(`SELECT itc_eligibility, itc_claimable_value::text, itc_blocked_value::text
+        FROM purchase_bills WHERE voucher_id = $1`, [bill.voucherId]));
+
+    expect(r.rows[0]!.itc_eligibility).toBe('mixed');
+    expect(r.rows[0]!.itc_claimable_value).toBe('1800.00');
+    expect(r.rows[0]!.itc_blocked_value).toBe('900.00');
+  });
+
+  it('G-9 a fully blocked bill still claims nothing', async () => {
+    // The narrowing must not have loosened the blocked case. The database
+    // refuses the contradiction too (itc_blocked_header_claims_nothing).
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'HOTEL/2026/005', billDate: '2026-05-11',
+      lines: [{ description: 'Food and beverage', unitPrice: '5000', gstRate: '18',
+                expenseAccountId: A('Travel Expenses') }],
+      createdBy: t.userId,
+    });
+    expect(bill.itcEligibility).toBe('blocked');
+    expect(bill.itcClaimable).toBe(false);
+    expect(bill.itcClaimableValue).toBe('0.00');
+  });
+
   it('T-3 blocked ITC puts the GST into the expense instead', async () => {
     const bill = await createBill(t.firmId, {
       clientId: t.clientId, partyId: supplier,

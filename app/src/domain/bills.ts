@@ -51,6 +51,12 @@ export interface CreateBillInput {
   claimedTotals?: { cgst?: string; sgst?: string; igst?: string; grandTotal?: string };
 }
 
+/**
+ * A bill's overall ITC position. Distinct from `ItcEligibility`, which applies
+ * to one account or one line and cannot be 'mixed' (G-9).
+ */
+export type BillItcStatus = ItcEligibility | 'mixed';
+
 export interface CreatedBill {
   voucherId: string;
   billNumber: string;
@@ -58,8 +64,20 @@ export interface CreatedBill {
   totalGst: string;
   grandTotal: string;
   intraState: boolean;
-  itcEligibility: ItcEligibility;
+  itcEligibility: BillItcStatus;
+  /** GST on eligible lines — the figure GSTR-3B claims. */
+  itcClaimableValue: string;
+  /** GST on blocked or undecided lines — capitalised into the expense. */
+  itcBlockedValue: string;
+  /**
+   * Whether ANY credit is claimable. On a mixed bill this is true while
+   * `itcEligibility` is 'mixed'; the amount is what matters, and it used to
+   * report false whenever a single line was blocked.
+   */
   itcClaimable: boolean;
+  /** Per-line detail, so a reviewer can see which line lost its credit. */
+  itcLines: Array<{ lineNo: number; account: string; eligibility: ItcEligibility;
+                    gst: string; reason: string }>;
   warnings: string[];
 }
 
@@ -147,7 +165,9 @@ export async function createBill(
       `SELECT NULL::text AS business_type`);   // business_type lands with the client profile
     const businessType = clientRow.rows[0]?.business_type ?? null;
 
-    const resolved = [];
+    const resolved: Array<BillLineInput & {
+      itc: ItcEligibility; accountName: string; itcReason: string;
+    }> = [];
     for (const [i, line] of input.lines.entries()) {
       const acc = await c.query<{ itc_eligibility: ItcEligibility | null; name: string }>(
         `SELECT itc_eligibility, name FROM accounts
@@ -171,16 +191,30 @@ export async function createBill(
         warnings.push(`line ${i + 1} (${acc.rows[0]!.name}): needs a CA decision on ITC`);
       }
 
-      resolved.push({ ...line, itc: decision.eligibility, accountName: acc.rows[0]!.name });
+      resolved.push({
+        ...line, itc: decision.eligibility, accountName: acc.rows[0]!.name,
+        itcReason: decision.reason,
+      });
     }
 
-    // A bill is treated as blocked if any line is. Mixed bills are split by
-    // the caller; keeping the header simple avoids a partial-claim state that
-    // GSTR-3B cannot express cleanly.
-    const billItc: ItcEligibility =
-      resolved.some((l) => l.itc === 'blocked') ? 'blocked'
-      : resolved.some((l) => l.itc === 'conditional') ? 'conditional'
-      : 'eligible';
+    /*
+     * The header describes the lines; it no longer overrides them (G-9).
+     *
+     * The previous rule was "blocked if any line is blocked", which made a
+     * hotel bill with allowable lodging and blocked food report as wholly
+     * blocked and claim nothing — while the ledger, correctly, claimed the
+     * lodging. The header contradicted the entry it summarised.
+     *
+     * A bill is only 'eligible' or 'blocked' when EVERY line agrees. Anything
+     * else is 'mixed', which is a thing GSTR-3B expresses perfectly well: it
+     * asks for an amount of credit, not for a verdict on a document.
+     */
+    const allAre = (e: ItcEligibility): boolean => resolved.every((l) => l.itc === e);
+    const billItc: BillItcStatus =
+      allAre('eligible') ? 'eligible'
+      : allAre('blocked') ? 'blocked'
+      : allAre('conditional') ? 'conditional'
+      : 'mixed';
 
     // --- compute ------------------------------------------------------------
     const totals = computeInvoice(
@@ -191,6 +225,43 @@ export async function createBill(
       })),
       intraState,
     );
+
+    /*
+     * Split the tax by what is actually claimable (G-9).
+     *
+     * Taken from the computed line tax rather than from the vendor's stated
+     * figures, for the same reason PB-4 recomputes the totals: the claim is
+     * ours to justify, and a vendor's arithmetic is not evidence.
+     *
+     * Conditional counts as NOT claimable. An undecided line must not put
+     * credit into a return on the assumption that a CA will later agree — the
+     * conservative direction is the only safe default, and the warning below
+     * makes the decision visible rather than silent.
+     */
+    const lineTax = (i: number): bigint =>
+      totals.lines[i]!.cgst + totals.lines[i]!.sgst + totals.lines[i]!.igst;
+
+    let itcClaimableValue = 0n;
+    let itcBlockedValue = 0n;
+    for (const [i, l] of resolved.entries()) {
+      if (l.itc === 'eligible') itcClaimableValue += lineTax(i);
+      else itcBlockedValue += lineTax(i);
+    }
+
+    const itcLines = resolved.map((l, i) => ({
+      lineNo: i + 1,
+      account: l.accountName,
+      eligibility: l.itc,
+      gst: money(lineTax(i)),
+      reason: l.itcReason,
+    }));
+
+    if (billItc === 'mixed') {
+      warnings.push(
+        `PB-7: mixed bill — ${money(itcClaimableValue)} of GST is claimable and ` +
+        `${money(itcBlockedValue)} is not. The blocked portion has been added to ` +
+        'the cost of those lines rather than claimed.');
+    }
 
     // PB-4. Vendor invoices contain arithmetic errors more often than expected.
     // Recompute independently; a mismatch is a finding for the CA, never
@@ -236,8 +307,10 @@ export async function createBill(
           bill_number, bill_date, place_of_supply, is_reverse_charge,
           taxable_value, total_cgst, total_sgst, total_igst, total_cess,
           round_off, grand_total, itc_eligibility, payment_due_date,
-          approval_status, source_document_id, registration_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+          approval_status, source_document_id, registration_id,
+          itc_claimable_value, itc_blocked_value)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+               $23,$24)`,
       [
         voucherId, firmId, input.clientId, input.partyId, sup.gstin,
         sup.legal_name ?? sup.name, input.billNumber, input.billDate,
@@ -247,6 +320,7 @@ export async function createBill(
         money(totals.grandTotal), billItc, input.paymentDueDate ?? null,
         'pending_review', input.sourceDocumentId ?? null,
         registration?.id ?? null,                          // $22
+        money(itcClaimableValue), money(itcBlockedValue),  // $23, $24
       ]);
 
     for (const [i, l] of resolved.entries()) {
@@ -307,7 +381,10 @@ export async function createBill(
       grandTotal: money(totals.grandTotal),
       intraState,
       itcEligibility: billItc,
-      itcClaimable: billItc === 'eligible',
+      itcClaimableValue: money(itcClaimableValue),
+      itcBlockedValue: money(itcBlockedValue),
+      itcClaimable: itcClaimableValue > 0n,
+      itcLines,
       warnings,
     };
   });

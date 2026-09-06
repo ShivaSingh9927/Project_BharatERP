@@ -180,6 +180,10 @@ export const INDIA_COA: CoaRoot[] = [
           // Lesson 4: a customer who will never pay is a real business loss —
           // an Expense, distinct from Drawings.
           { name: 'Bad Debts', accountType: 'general', expenseClass: 'opex', code: '5195' },
+          // CSR is blocked for input credit outright — s.17(5)(fa), inserted by
+          // the Finance Act 2023 and confirmed by the CA review (A5.1). It needs
+          // its own account so the block can attach to something.
+          { name: 'CSR Expenses', accountType: 'general', expenseClass: 'opex', code: '5196' },
           { name: 'Round Off', accountType: 'round_off', expenseClass: 'opex', code: '5199' },
         ],
       },
