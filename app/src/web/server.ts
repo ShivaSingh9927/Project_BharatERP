@@ -21,7 +21,9 @@ import { parseStatementFile } from '../parse/statementFile.ts';
 import { settleInvoiceFromBankLine, postBankCharge, postInterestCredit } from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
-import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts } from './views.ts';
+import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
+         renderCashRegister } from './views.ts';
+import { cashRegisterCheck } from '../reports/cashRegister.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
 
@@ -156,6 +158,21 @@ async function handle(
     return html(res, 200, renderShell({
       session, accounts, active: 'brs', accountId,
       body: renderBrs(brs, accountId),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/cash') {
+    // Defaults to the current financial year to date. Review answer B3 says
+    // firms work monthly at close, but a cash error found in July was usually
+    // made in April, so the wider window is the more useful default.
+    const today = new Date().toISOString().slice(0, 10);
+    const from = url.searchParams.get('from')
+      ?? `${Number(today.slice(0, 4)) - (today.slice(5, 7) < '04' ? 1 : 0)}-04-01`;
+    const to = url.searchParams.get('to') ?? today;
+    const check = await cashRegisterCheck(session.firmId, session.clientId, { from, to });
+    return html(res, 200, renderShell({
+      session, accounts, active: 'cash',
+      body: renderCashRegister(check, from, to),
     }));
   }
 

@@ -144,6 +144,7 @@ export function renderShell(a: {
     ${link('/import', 'import', 'Import')}
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
     ${link(`/brs${q}`, 'brs', 'BRS')}
+    ${link('/cash', 'cash', 'Cash')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -514,4 +515,64 @@ ${brs.ties
 
 <p class="keys">An unreconciled account blocks period close (BR-23).</p>
 <p><a href="/reconcile?account=${esc(accountId)}"><button>Back to reconciliation</button></a></p>`;
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The cash register (G-21, review answer B4).
+ *
+ * Deliberately blunt. A negative cash balance is not a nuance to be weighed —
+ * it is money paid out that was never held, so one of three specific things is
+ * wrong, and the screen says which three so the reviewer starts in the right
+ * place rather than staring at a number.
+ */
+export function renderCashRegister(r: {
+  ok: boolean;
+  accountsChecked: number;
+  negativeDays: Array<{
+    accountName: string; date: string; balance: string; shortfall: string;
+    vouchers: Array<{ voucherNumber: string; voucherType: string; amount: string }>;
+  }>;
+}, from: string, to: string): string {
+  const form = `
+    <form method="get" action="/cash" class="row">
+      <label>From <input type="date" name="from" value="${esc(from)}"></label>
+      <label>To <input type="date" name="to" value="${esc(to)}"></label>
+      <button type="submit">Check</button>
+    </form>`;
+
+  if (r.ok) {
+    return `<h1>Cash register</h1>${form}
+      <p class="ok">✔ ${r.accountsChecked} cash account(s) stayed at or above
+      zero on every day in this period.</p>
+      <p class="muted">Overdraft and cash-credit accounts are excluded: going
+      negative is what those are for.</p>`;
+  }
+
+  const rows = r.negativeDays.map((d) => `
+    <tr>
+      <td>${esc(d.accountName)}</td>
+      <td>${esc(d.date)}</td>
+      <td class="num bad">${esc(d.balance)}</td>
+      <td class="num">${esc(d.shortfall)}</td>
+      <td>${d.vouchers.map((v) =>
+        `${esc(v.voucherNumber)} <span class="muted">(${esc(v.voucherType)} ${esc(v.amount)})</span>`,
+      ).join('<br>')}</td>
+    </tr>`).join('');
+
+  return `<h1>Cash register</h1>${form}
+    <p class="bad"><b>${r.negativeDays.length} impossible balance(s).</b>
+    Cash cannot go below zero — you cannot pay out money you do not hold. For
+    each one, either a receipt was never recorded, a payment was recorded twice,
+    or a payment is dated wrong.</p>
+    <table>
+      <thead><tr>
+        <th>Account</th><th>First day negative</th><th>Balance</th>
+        <th>At least this much is missing</th><th>That day&rsquo;s vouchers</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="muted">A run of consecutive negative days is shown once — it is
+    one missing entry, not one per day.</p>`;
 }
