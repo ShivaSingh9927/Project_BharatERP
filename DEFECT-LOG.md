@@ -743,6 +743,16 @@ encodes a domain convention, check the convention rather than the test.
 produced errors far from their cause. *Countermeasure:* coerce where the format
 is known, and let the type carry the guarantee onwards.
 
+**12. A grep is not a call graph.** G-23. `gst_rates` was recorded as "written by
+the seed and read by nothing" on the strength of grepping for the table name in
+TypeScript. The reader called a SQL function by name instead, so the grep was
+silent and the gap entry, the commit message and the plan built on it were all
+wrong. *Countermeasure:* before declaring code unreachable, look for the thing
+that would USE it — the function, the view, the route — not only for the
+identifier you have in mind. And when the fix turns out to be unnecessary, say
+so rather than quietly building it anyway; the two real defects here were only
+found by opening the code that supposedly did not exist.
+
 **11. The last line of defence was never tested against the thing it defends.**
 I-4. BR-6 is described throughout this log as the control that makes a wrong
 parse a refusal rather than a corrupt import, and eleven stages relied on it —
@@ -782,7 +792,7 @@ misleading. No unit test can hold that opinion.
 | G-22 | ~~`clients` is GSTIN-level; it must be PAN-level~~ — **CLOSED** | Migration `011_registrations.sql`. `client_registrations` holds one row per GSTIN; `clients.gstin` and `clients.state_code` were **dropped**, not deprecated, so no query can read a stale one. Invoices carry `registration_id` NOT NULL; bills carry it nullable, because a client below the GST threshold keeps books without a GSTIN. Two invariants are enforced by the database rather than by convention: `state_code` must equal the GSTIN's first two characters, and a client may have at most one primary registration |
 | G-3 | ~~`business_type` is hardcoded `NULL` in `bills.ts`~~ — **CLOSED** | Migration `013_business_type.sql`. Two facts were missing, not one: the business type was a literal `SELECT NULL::text`, **and `blockedCategory` was never passed to `decideItc` at all** — so the exception lookup returned undefined every time and no client's trade could unblock anything. `blockedCategory` was exercised only by unit tests calling `decideItc` directly: covered, passing, unreachable from the path that posts. Also split *settled* from *undecided* — a known trade that does not qualify is `blocked` with nothing to ask, while an unrecorded trade is `conditional` and answerable by one question at the client level (A5.4). Reporting both as `blocked` had made the `conditional` branch of `canClaimItc` dead too |
 | G-4 | Period close does not call `assertReconciledForClose()` | BR-23 is implemented but not wired into the close path |
-| G-23 | **No HSN → rate lookup exists at all** | `gst_rates` is written by the seed and **read by nothing**. Review answer A3.1 says an unmatched HSN must refuse to post rather than default to 18% — so this is a requirement for when the lookup is built, not a change that could be made now. The catch-all 18% seed row was removed so it cannot be reintroduced by accident |
+| G-23 | ~~No HSN → rate lookup exists at all~~ — **CLOSED, and the original diagnosis was wrong** | I recorded "read by nothing" from a grep for `gst_rates` across the TypeScript, which missed it because sales invoicing calls the SQL function `resolve_gst_rate()` by name. The lookup existed and already refused an unmatched HSN. Two real defects were found in its place: `resolve_gst_rate` ordered only by prefix length, so **two rows sharing a prefix tied and a rate change resolved at random** — silently defeating the date-ranging the review endorsed; and purchase bills had no lookup at all, defaulting to `?? '0'`, which is worse than the 18% fallback because 0% looks deliberate. Both fixed in `014_gst_rate_resolution.sql`; the function now returns its `source_notification` so an unverified rate says so where it is used |
 
 ### Built partially
 

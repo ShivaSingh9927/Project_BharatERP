@@ -233,12 +233,69 @@ export async function createBill(
       : allAre('conditional') ? 'conditional'
       : 'mixed';
 
+    /*
+     * Resolve each line's GST rate, and never default it (G-23).
+     *
+     * This used to be `l.gstRate ?? '0'`. A bill line with no stated rate was
+     * silently treated as zero-rated — which is worse than the 18% fallback the
+     * review told us to remove (A3.1), because 0% looks deliberate. A vendor
+     * bill posted that way claims no input credit, understates the liability
+     * and produces a grand total that quietly disagrees with the paper.
+     *
+     * So a line must either state its rate or carry an HSN we can resolve one
+     * from. Neither is not an answer.
+     */
+    const rateWarnings: string[] = [];
+    const lineRates: string[] = [];
+
+    for (const [i, l] of resolved.entries()) {
+      if (l.gstRate !== undefined) {
+        lineRates.push(l.gstRate);
+        continue;
+      }
+      if (!l.hsnSac || l.hsnSac.trim() === '') {
+        throw new ValidationError(
+          `line ${i + 1} states no GST rate and no HSN/SAC to resolve one from. ` +
+          'Supply the rate the vendor charged, or 0 if the supply is genuinely ' +
+          'untaxed — a bill line is not assumed to be zero-rated.', 'PB-6');
+      }
+
+      const rr = await c.query<{
+        gst_rate: string; source_notification: string | null; effective_from: string;
+      }>('SELECT gst_rate, source_notification, effective_from FROM resolve_gst_rate($1, $2)',
+        [l.hsnSac, postingDate]);
+
+      if (rr.rowCount === 0) {
+        // Review answer A3.1: an unmatched HSN refuses and asks a human. It
+        // must not fall back to a default, in either direction.
+        throw new ValidationError(
+          `no GST rate is configured for HSN "${l.hsnSac}" as of ${postingDate} ` +
+          `(line ${i + 1}). Add it to the rate master with its notification, or ` +
+          'state the rate on the line.', 'PB-6');
+      }
+
+      const hit = rr.rows[0]!;
+      lineRates.push(hit.gst_rate);
+
+      // Provenance PR-7, and honesty about G-19b: every seeded HSN rate
+      // predates the 2025-09-22 rationalisation. A number taken from an
+      // unverified row must say so where it is used, not only where it is
+      // stored.
+      if (hit.source_notification && /UNVERIFIED/i.test(hit.source_notification)) {
+        rateWarnings.push(
+          `line ${i + 1}: ${hit.gst_rate}% was taken from the rate master, whose ` +
+          `entry for HSN "${l.hsnSac}" is marked "${hit.source_notification}". ` +
+          'Confirm the rate before filing.');
+      }
+    }
+    warnings.push(...rateWarnings);
+
     // --- compute ------------------------------------------------------------
     const totals = computeInvoice(
-      resolved.map((l) => ({
+      resolved.map((l, i) => ({
         quantity: l.quantity ?? '1',
         unitPrice: l.unitPrice,
-        gstRate: l.gstRate ?? '0',
+        gstRate: lineRates[i]!,
       })),
       intraState,
     );
@@ -286,7 +343,7 @@ export async function createBill(
     if (input.claimedTotals) {
       const v = verifyTaxFigures(
         money(totals.taxableValue),
-        resolved[0]?.gstRate ?? '0',
+        lineRates[0] ?? '0',
         intraState,
         input.claimedTotals,
       );
@@ -350,7 +407,7 @@ export async function createBill(
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [
           voucherId, i + 1, l.description, l.hsnSac ?? null, l.quantity ?? '1',
-          l.unitPrice, money(t.taxableValue), l.gstRate ?? '0',
+          l.unitPrice, money(t.taxableValue), lineRates[i]!,
           money(t.cgst), money(t.sgst), money(t.igst), money(t.cess),
           l.expenseAccountId, l.itc,
         ]);
