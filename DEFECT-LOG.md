@@ -874,6 +874,7 @@ misleading. No unit test can hold that opinion.
 | Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
 | PDF / fixed-width | 31 | Forward-marker coverage |
+| Document splitting | 18 | Vendors outside the seven-invoice corpus; scanned (OCR) invoices, where page structure survives but heading position may not |
 | OCR / markdown | 14 | Live provider calls (mocked by design); multi-page scans; 300 DPI accuracy |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **341** | |
+| **Total** | **359** | |
