@@ -33,9 +33,16 @@ non-localhost `DATABASE_URL`).
 | Audit log + tamper-evident hash chain | ✅ |
 | Row-level security per firm | ✅ |
 | Trial Balance, P&L, Balance Sheet, Ledger | ✅ |
+| Parties (customers/suppliers) | ✅ |
+| GSTIN checksum + layout validation | ✅ |
+| Date-ranged GST rate master | ✅ |
+| Tax computation (intra/inter-state, cess, round-off) | ✅ |
+| Sales invoices → GL posting | ✅ |
+| Rule 46(b) invoice numbering | ✅ |
+| Outstanding derived from settlements | ✅ |
 
-Not yet: HTTP API, invoicing, bills, bank reconciliation, GST engine, period
-close, multi-currency, cost centers.
+Not yet: HTTP API, e-Invoice IRP calls, e-Way Bill, bills/purchases, bank
+reconciliation, GST returns, period close, multi-currency, cost centers.
 
 ## Two decisions worth knowing before you change anything
 
@@ -93,7 +100,24 @@ accounting lessons**, so expected figures are ones derived by hand:
   ₹30,000 = ₹2,70,000)
 - Lesson 9 — Working Capital from `liquidity_class`
 
+`test/invoicing.test.ts` covers `invoicing.md` §13 — GSTIN validation, the
+intra/inter-state split, Rule 46(b) numbering under concurrency, rate
+resolution from the date-ranged master, and address snapshotting.
+
 Two bugs were caught by writing these rather than by reading the code: an RLS
 policy that could not see its own parent row during a `BEFORE INSERT` trigger,
 and a Balance Sheet sign error that summed income *plus* expenses and reported
 retained profit as ₹8,60,000 instead of ₹1,40,000.
+
+## Identifier validation is two-layered, and both layers earn their place
+
+`src/domain/gstin.ts` checks **layout** and then **check digit**. The DeepSeek
+OCR probe misread a vendor GSTIN as `27AAFP54321L1ZK` — a digit landed where
+the PAN requires a letter, so the layout check rejects it before the checksum
+runs. A transposition that preserves the shape (`AAPFS` → `AAPSF`) slips past
+layout and is caught only by the check digit. Both cases are tested.
+
+This matters because on that misread invoice **every arithmetic check passed** —
+lines summed to the taxable total, tax equalled taxable × 18%, the grand total
+was consistent. Arithmetic cannot catch a corrupted identifier. These two
+checks cost microseconds and are the only thing that can.
