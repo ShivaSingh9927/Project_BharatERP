@@ -482,6 +482,35 @@ function buildFromColumns(
   let openingBalance = mineLabel(preamble, OPENING) ?? mineLabel(trailer, OPENING);
   let closingBalance = mineLabel(trailer, CLOSING) ?? mineLabel(preamble, CLOSING);
 
+  /*
+   * The opening balance is often the FIRST ROW OF THE TABLE, not a preamble or
+   * summary line — IndusInd labels it `Brought Forward`, Bank of Baroda labels
+   * it `Opening Balance`, and in both cases it is a dated row carrying a
+   * balance and no amounts.
+   *
+   * Searching only above and below the transactions missed it on both, and
+   * missing it means BR-6 cannot run at all. Two of five sample layouts do
+   * this, so it is a normal case rather than an oddity.
+   *
+   * Such a row is skipped as a transaction — correctly, since no money moved —
+   * so it is recovered here from the skipped rows.
+   */
+  if (openingBalance === null && columns.balance !== null) {
+    const carried = skippedRows.find((sk) =>
+      OPENING.some((label) => sk.text.toLowerCase().includes(label)));
+
+    if (carried) {
+      const row = rows[carried.index - 1];
+      const cell = row?.[columns.balance];
+      if (cell !== undefined && looksNumeric(cell)) {
+        openingBalance = clean(cell);
+        warnings.push(
+          `the opening balance was taken from the "${carried.text.trim().slice(0, 40)}" ` +
+          'row inside the table, which is where some banks put it');
+      }
+    }
+  }
+
   // Where the file states no balances, the running-balance column can supply
   // them: the opening is the first row's balance backed out by its own
   // movement. This is what makes BR-6 possible on a bare export.

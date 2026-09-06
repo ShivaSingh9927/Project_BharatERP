@@ -2,8 +2,15 @@
  * Per-bank statement templates.
  * Spec: bank-and-reconciliation.md §5.2
  *
- * ⚠️ COLUMN HEADINGS ARE UNVERIFIED. They are drawn from commonly documented
- * export layouts, not from real files. Question B1 in CA-REVIEW-REQUEST.md asks
+ * ⚠️ HEADINGS ARE VERIFIED FOR SOME BANKS ONLY.
+ *
+ *   verified against a real file  — HDFC, State Bank of India
+ *   transcribed from a published sample — Federal Bank, IndusInd, Karur Vysya,
+ *                                         Bank of Baroda
+ *   unverified guesses            — ICICI, Axis, Kotak
+ *
+ * The guesses are drawn from commonly documented export layouts, not real
+ * files. Question B1 in CA-REVIEW-REQUEST.md asks
  * which banks the pilot clients actually use — validate each template against a
  * genuine export before relying on it. The *shape* is what is being committed
  * here, exactly as with the GST and TDS masters.
@@ -146,6 +153,82 @@ export const TEMPLATES: BankTemplate[] = [
       reference: ['chq / ref no', 'ref no', 'cheque'],
       amount: ['amount'],
       drCrFlag: ['dr / cr', 'dr/cr', 'type'],
+      balance: ['balance'],
+    },
+  },
+  /*
+   * The four below were transcribed from sample statements found online, not
+   * from a client's file — so no personal data was involved, and the layouts
+   * are as published. Each brought something new:
+   */
+  {
+    // Integer amounts with NO decimals or separators (`456072`), plus a
+    // Tran Type C/D flag alongside separate withdrawal and deposit columns.
+    bank: 'Federal Bank',
+    priority: 85,
+    dateFormat: 'dd-MMM-yyyy',
+    amountConvention: 'separate_dr_cr',
+    detect: ['federal bank', 'fdrl'],
+    columns: {
+      txnDate: ['date'],
+      valueDate: ['value date'],
+      narration: ['particulars'],
+      reference: ['cheque details', 'cheque'],
+      debit: ['withdrawals', 'withdrawal'],
+      credit: ['deposits', 'deposit'],
+      drCrFlag: ['tran type', 'type'],
+      balance: ['balance'],
+    },
+  },
+  {
+    // Puts the opening balance in the table as a `Brought Forward` row.
+    bank: 'IndusInd Bank',
+    priority: 85,
+    dateFormat: 'dd-MMM-yyyy',
+    amountConvention: 'separate_dr_cr',
+    detect: ['indusind'],
+    columns: {
+      txnDate: ['date'],
+      narration: ['particulars'],
+      reference: ['chq./ref. no', 'chq/ref', 'ref. no'],
+      debit: ['withdrawal'],
+      credit: ['deposit'],
+      balance: ['balance'],
+    },
+  },
+  {
+    // Carries a constant `Brn Code` column — a number that is not money — and
+    // an account-summary box that prints the BR-6 equation with Cr/Dr counts.
+    bank: 'Karur Vysya Bank',
+    priority: 85,
+    dateFormat: 'dd/MM/yyyy',
+    amountConvention: 'separate_dr_cr',
+    detect: ['karur vysya', 'kvb'],
+    columns: {
+      txnDate: ['txn date', 'date'],
+      valueDate: ['value date'],
+      narration: ['particulars'],
+      reference: ['ref no', 'ref. no'],
+      debit: ['debit'],
+      credit: ['credit'],
+      balance: ['balance'],
+    },
+  },
+  {
+    // Has a `Serial No` column, writes `-` for empty amounts, and puts the
+    // opening balance in the table as an `Opening Balance` row.
+    bank: 'Bank of Baroda',
+    priority: 85,
+    dateFormat: 'dd-MM-yyyy',
+    amountConvention: 'separate_dr_cr',
+    detect: ['bank of baroda', 'bob world', 'barb0'],
+    columns: {
+      txnDate: ['transaction date', 'txn date'],
+      valueDate: ['value date'],
+      narration: ['description'],
+      reference: ['cheque number', 'cheque no'],
+      debit: ['debit'],
+      credit: ['credit'],
       balance: ['balance'],
     },
   },

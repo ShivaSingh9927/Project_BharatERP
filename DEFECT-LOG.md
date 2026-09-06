@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the PDF parser:** 240 tests
+**Status as of the sample-statement review:** 246 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -371,6 +371,72 @@ affect the arithmetic, since narration carries no money.
 
 ---
 
+## Stage 10 — seven sample statements from the web
+
+Seven images of published sample statements (not client data, so no privacy
+question). They are **736 px wide — roughly 90 DPI**, where table text is about
+six pixels tall, so OCR on these specific files is not viable and none was
+attempted. Their value was different and larger: four bank layouts we had never
+seen, two of which broke the parser.
+
+| Bank | Date format | What it brought |
+|---|---|---|
+| Federal Bank | `dd-MMM-yyyy` | **Integer amounts** — `456072`, no decimals or separators — plus a `Tran Type` C/D flag *alongside* separate withdrawal and deposit columns |
+| IndusInd | `dd-MMM-yyyy` | Opening balance as a **`Brought Forward` row inside the table** |
+| Karur Vysya | `dd/MM/yyyy` | A constant `Brn Code` numeric column; a summary box printing the BR-6 equation **and** `CR:67/DR:67` counts |
+| Bank of Baroda | `dd-MM-yyyy` | A `Serial No` column; `-` placeholders; opening balance as an **`Opening Balance` row inside the table** |
+
+| # | Defect | What happened | Resolution |
+|---|---|---|---|
+| S-1 | 🔴 **Money columns were identified by formatting** | Detection required amounts to be written with paise. Federal Bank writes `456072`, so on it **no money column was found at all** — the parse produced no balance, no debit and no credit. The rule had been added two stages earlier to stop a 16-digit reference number being mistaken for money, and it traded one failure for a worse one. | Money columns are now found by **arithmetic**: for each candidate trio, does `balance[i] − balance[i−1]` equal `credit[i] − debit[i]`? The trio satisfying that on the most rows wins. See below. |
+| S-2 | 🔴 **The opening balance can be a table row** | Two of five layouts label the first table row `Brought Forward` / `Opening Balance` — a dated row with a balance and no amounts. Searching only the preamble and trailer missed it, and **without an opening balance BR-6 cannot run at all**. | Recovered from the skipped rows, matching the same opening-balance labels. |
+| S-3 | 🟡 No templates for these four banks | — | Added, and the header comment now states which templates are verified against real files, which are transcribed from published samples, and which remain guesses. |
+
+### Identifying money by arithmetic instead of by appearance
+
+This replaced two separate heuristics — a formatting test for "is this money"
+and a balance-direction test for "which one is the debit" — with one question
+asked of every candidate trio of columns:
+
+```
+balance[i] − balance[i−1]  ==  credit[i] − debit[i]  ?
+```
+
+It is BR-6 applied row by row, and it is better than judging columns by how
+they look on four counts:
+
+- it works whether or not amounts carry decimals, separators or a currency mark
+- it excludes numeric columns that are not money — a serial number, a branch
+  code, a sixteen-digit UPI reference — without needing a rule for each
+- it settles debit versus credit as a side effect, including on a
+  credit-then-debit column order
+- it reports how many rows agreed and how many disagreed, so a weak inference
+  is visible instead of silent
+
+Where nothing reproduces a balance it falls back to shape and says outright that
+the parse is unverified.
+
+### BR-6 caught an error in the test fixture
+
+While transcribing the Bank of Baroda sample I put ₹76,000 in the debit column
+on a row whose balance *rose* by ₹76,000. The parser was correct and the fixture
+was wrong, and the balance check said so: `a difference of 152000.00 … the
+running balance first disagrees at row 2`.
+
+Twice now the arithmetic has corrected the person writing the tests rather than
+the code. That is worth more than it sounds: it means the check is independent
+of the assumptions that produced the parser.
+
+### OCR remains unbuilt, deliberately
+
+At 90 DPI these images would give digit errors, and digit errors in amounts are
+the one category BR-6 cannot repair — it would detect them and refuse every
+import, which is correct but useless. OCR is worth building against 300 DPI
+scans, where BR-6 becomes a genuine accuracy gate rather than a blanket
+rejection.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -379,6 +445,13 @@ Four failure modes account for nearly every 🔴 and 🟠 above.
 correctly, and never fires. *Countermeasure:* for every guarantee, write the
 test that attempts the violation. A test that only proves the happy path proves
 nothing about the guard.
+
+**9. A fix that trades one failure for a worse one.** S-1. Requiring decimals to
+identify money stopped a reference number being read as an amount, and in doing
+so made an entire bank unparseable. *Countermeasure:* when narrowing a rule to
+exclude a false positive, check what the narrowing now excludes that it should
+not — and prefer a test grounded in the domain's own arithmetic over one
+grounded in formatting.
 
 **8. Fixing a bug in one place and not looking for it in the sibling.** X-1 and
 X-2 are the same greedy-regex defect in the row tag and the cell tag. The row
@@ -443,7 +516,7 @@ misleading. No unit test can hold that opinion.
 |---|---|---|
 | G-5 | ~~No `.xlsx` reader~~ — **done** | Dependency-free zip + sheet reader; the real encrypted SBI export now parses end to end. Decryption is an **optional** import, so an encrypted file without the package gives a clear instruction rather than a crash. HDFC and SBI templates are validated against real files; ICICI, Axis and Kotak remain guesses |
 | G-14 | ~~PDF statements~~ — **done** | Local `pdftotext` + gutter detection + column inference. Both real PDFs pass BR-6 with row counts matching the statements' own Dr/Cr totals. **Scanned PDFs still fail** (no text layer — needs OCR) and are reported as such |
-| G-17 | **Scanned PDFs are unsupported** | No text layer means OCR, which is not built. Detected and reported with the fix ("download from net banking rather than scanning") rather than failing obscurely |
+| G-17 | **Scanned PDFs and images are unsupported** | No text layer means OCR, which is not built. Detected and reported with the fix ("download from net banking rather than scanning"). Worth building against 300 DPI sources, not the ~90 DPI web images tested here |
 | G-18 | The PDF password is passed on the command line | `pdftotext` has no stdin channel for it, so it is briefly visible in the process list to the same user. Never written to disk or stored. Worth revisiting if PDF import becomes a shared-service path |
 | G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-16 | Credit cards remain Phase 2, now specified | A real ICICI card statement is documented in `specs/bank-and-reconciliation.md` §18 — layout, the liability postings, the BR-13-shaped double-counting hazard, why a card statement can never support an ITC claim, and EMI conversion as borrowing. **No code implements any of it.** ICICI's *bank account* template is still an unvalidated guess; a card statement does not test it |
@@ -496,6 +569,6 @@ misleading. No unit test can hold that opinion.
 | Bank | 52 | Decentro webhook path, 1:N allocation, learned rules |
 | Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
-| PDF / fixed-width | 27 | Scanned PDFs (OCR); banks other than HDFC and SBI; forward-marker coverage |
+| PDF / fixed-width | 31 | Scanned PDFs (OCR); forward-marker coverage |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **240** | |
+| **Total** | **246** | |

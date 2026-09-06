@@ -497,6 +497,59 @@ describe('a real SBI spreadsheet layout', () => {
 });
 
 // ---------------------------------------------------------------------------
+/**
+ * Bank of Baroda layout, transcribed from a published sample. Two features
+ * nothing else here had: a `Serial No` column, and the opening balance as the
+ * FIRST ROW OF THE TABLE rather than in a preamble or summary.
+ */
+const BOB_FILE = `Account Statement from 01-06-2022 to 12-12-2022
+Account Number,01560100026841
+IFSC Code,BARB0EXAMPLE
+
+Serial No,Transaction Date,Value Date,Description,Cheque Number,Debit,Credit,Balance
+1,06-06-2022,06-06-2022,Opening Balance,,-,-,"876,602.00"
+2,06-06-2022,06-06-2022,UPI/135090386568/EXAMPLE,,-,49.00,"876,651.00"
+3,06-06-2022,06-06-2022,UPI/135687277403/EXAMPLE,,-,130.00,"876,781.00"
+4,07-06-2022,07-06-2022,IMPS/P2A/200718269947/EXAMPLE,,10.18,-,"876,770.82"
+5,07-06-2022,07-06-2022,MBK/200740880173/EXAMPLE,,"20,000.00",-,"856,770.82"
+6,07-06-2022,07-06-2022,IMPS/200718070142/EXAMPLE,,"14,001.77",-,"842,769.05"
+
+This is a computer-generated statement hence does not require signature.
+`;
+
+describe('an opening balance inside the table (Bank of Baroda)', () => {
+  it('identifies the bank and reads the transactions', () => {
+    const p = parseStatementFile(BOB_FILE);
+    expect(p.bank).toBe('Bank of Baroda');
+    // The `Opening Balance` row is not a transaction — no money moved on it.
+    expect(p.rows).toHaveLength(5);
+  });
+
+  it('recovers the opening balance from the in-table row', () => {
+    // Searching only the preamble and trailer missed this entirely, and
+    // without an opening balance BR-6 cannot run at all. Two of five sample
+    // layouts put it here, so it is a normal case.
+    const p = parseStatementFile(BOB_FILE);
+    expect(p.openingBalance).toBe('876602.00');
+    expect(p.warnings.join(' ')).toMatch(/row inside the table/);
+  });
+
+  it('so BR-6 runs, and passes', () => {
+    const p = parseStatementFile(BOB_FILE);
+    const check = verifyStatementArithmetic(p.openingBalance!, p.closingBalance!, p.rows);
+    expect(check.ok).toBe(true);
+    expect(check.totalCredits).toBe('179.00');
+    expect(check.totalDebits).toBe('34011.95');
+  });
+
+  it('treats `-` as an empty amount, not a value', () => {
+    const p = parseStatementFile(BOB_FILE);
+    expect(p.rows[0]).toMatchObject({ debit: '0.00', credit: '49.00' });
+    expect(p.rows[3]).toMatchObject({ debit: '20000.00', credit: '0.00' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('refusals', () => {
   it('refuses a file with no header row', () => {
     expect(() => parseStatementFile('Some summary text\nNothing tabular here\n'))

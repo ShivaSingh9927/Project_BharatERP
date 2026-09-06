@@ -225,31 +225,67 @@ describe('column inference', () => {
     expect(r.columns.balance).toBe(6);
   });
 
-  it('decides debit vs credit from the running balance', () => {
+  it('handles a CREDIT-then-debit column order, proved by the balance', () => {
     const rows = [
-      ['01/09/2026', 'x', '', '100.00', '10,000.00'],
+      ['01/09/2026', 'x', '', '', '10,000.00'],
       ['02/09/2026', 'x', '500.00', '', '10,500.00'],   // balance ROSE
       ['03/09/2026', 'x', '', '200.00', '10,300.00'],   // balance FELL
+      ['04/09/2026', 'x', '100.00', '', '10,400.00'],   // ROSE again
     ];
     const r = inferColumnRoles(rows);
-    expect(r.directionEvidence.method).toBe('running_balance');
+    expect(r.directionEvidence.method).toBe('balance_arithmetic');
     // Column 3 coincides with falling balances, so it is the debit column;
-    // column 2 with rising, so it is the credit column — the reverse of the
-    // usual left-to-right order, and the balance proves it.
+    // column 2 with rising, so it is the credit — the reverse of the usual
+    // left-to-right order, and the arithmetic settles it with no special case.
     expect(r.columns.debit).toBe(3);
     expect(r.columns.credit).toBe(2);
-    expect(r.directionEvidence.swapped).toBe(true);
     expect(r.directionEvidence.disagreed).toBe(0);
   });
 
-  it('falls back to position and says so when the balance gives no evidence', () => {
+  it('reads money columns that carry NO decimals', () => {
+    // Federal Bank writes `456072`, not `4,56,072.00`. A formatting test that
+    // required paise found no money columns at all on it: no balance, no
+    // debit, no credit. Arithmetic does not care how the number is written.
+    const rows = [
+      ['02-APR-2026', 'RTG/EXAMPLE', 'C', '', '457698', '1844596'],
+      ['03-APR-2026', 'CHRG/CARD AMC', 'D', '885', '', '1843711'],
+      ['03-APR-2026', 'RTG/EXAMPLE', 'D', '1700000', '', '143711'],
+      ['03-APR-2026', 'Charges for RTGS', 'D', '53', '', '143658'],
+      ['03-APR-2026', 'RTG/EXAMPLE', 'C', '', '684719', '828377'],
+    ];
+    const r = inferColumnRoles(rows);
+    expect(r.directionEvidence.method).toBe('balance_arithmetic');
+    expect(r.columns.debit).toBe(3);
+    expect(r.columns.credit).toBe(4);
+    expect(r.columns.balance).toBe(5);
+    expect(r.directionEvidence.disagreed).toBe(0);
+  });
+
+  it('ignores numeric columns that are not money', () => {
+    // A serial number and a constant branch code are both perfectly good
+    // numbers. Neither reproduces the movement of a balance, so neither needs
+    // a rule of its own to be excluded.
+    const rows = [
+      ['1', '04/07/2023', '1763', 'UPI-EXAMPLE', '906132', '195.00', '', '200.49'],
+      ['2', '04/07/2023', '1763', 'UPI-EXAMPLE', '292357', '', '60.00', '260.49'],
+      ['3', '04/07/2023', '1763', 'UPI-EXAMPLE', '565210', '', '213.00', '473.49'],
+      ['4', '05/07/2023', '1763', 'UPI-EXAMPLE', '311791', '', '82.00', '555.49'],
+    ];
+    const r = inferColumnRoles(rows);
+    expect(r.columns.debit).toBe(5);
+    expect(r.columns.credit).toBe(6);
+    expect(r.columns.balance).toBe(7);
+    expect(r.directionEvidence.disagreed).toBe(0);
+  });
+
+  it('says plainly when nothing reproduced the balance', () => {
     const rows = [
       ['01/09/2026', 'x', '100.00', '', ''],
       ['02/09/2026', 'x', '', '200.00', ''],
     ];
     const r = inferColumnRoles(rows);
-    expect(r.directionEvidence.method).toBe('position');
-    expect(r.notes.join(' ')).toMatch(/assigned by position/);
+    expect(r.notes.join(' ')).toMatch(/no column reproduced the running balance/);
+    expect(r.notes.join(' ')).toMatch(/unverified/);
   });
 });
 
@@ -336,7 +372,7 @@ describe('a real SBI PDF layout, with no header row at all', () => {
   it('warns that the columns were inferred, not read from a header', () => {
     const p = parsePdfText(SBI_TEXT);
     expect(p.warnings.join(' ')).toMatch(/columns in this PDF were inferred/);
-    expect(p.warnings.join(' ')).toMatch(/debit\/credit decided from the running balance/);
+    expect(p.warnings.join(' ')).toMatch(/reproducing the running balance/);
   });
 });
 
