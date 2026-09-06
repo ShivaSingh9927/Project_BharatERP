@@ -28,6 +28,8 @@ import { TEMPLATES, candidateTemplates, templateByName, type BankTemplate } from
 import type { StatementRow } from '../domain/statement.ts';
 import { ValidationError } from '../domain/types.ts';
 import { paise, money } from '../domain/tax.ts';
+import { looksLikeZip, looksLikeEncryptedOffice } from './zip.ts';
+import { readXlsxSheet, decryptOfficeFile } from './xlsx.ts';
 
 export interface ColumnMap {
   txnDate: number;
@@ -253,6 +255,21 @@ export function parseStatementFile(
   opts: { bank?: string; dateFormat?: DateFormat } = {},
 ): ParsedStatementFile {
   const { rows } = parseDelimited(text);
+  return parseStatementTable(rows, opts);
+}
+
+/**
+ * Parse an already-tabulated statement.
+ *
+ * This is where all the layout intelligence lives, and it is deliberately
+ * independent of how the rows were obtained — delimited text, a spreadsheet, or
+ * eventually a PDF. Everything downstream of "I have a grid of strings" is
+ * identical across formats, so it must not be written twice.
+ */
+export function parseStatementTable(
+  rows: string[][],
+  opts: { bank?: string; dateFormat?: DateFormat } = {},
+): ParsedStatementFile {
   if (rows.length === 0) throw new ValidationError('the file contains no rows', 'BR-3');
 
   const warnings: string[] = [];
@@ -446,4 +463,44 @@ export function parseStatementFile(
     skippedRows,
     warnings,
   };
+}
+
+/**
+ * Parse a statement from raw file BYTES, whatever format it arrived in.
+ *
+ * The single entry point a CA's upload should reach. Format is detected from
+ * content, never from the file extension — SBI's export is named `.xlsx` while
+ * actually being an encrypted OLE container, so trusting the extension gets the
+ * answer wrong on the first real file we tried.
+ *
+ * Order of attempts:
+ *   1. encrypted Office container → decrypt with the supplied password, then
+ *      read as a spreadsheet
+ *   2. zip → spreadsheet
+ *   3. anything else → treat as delimited text
+ */
+export async function parseStatementBytes(
+  buffer: Buffer,
+  opts: { bank?: string; dateFormat?: DateFormat; password?: string } = {},
+): Promise<ParsedStatementFile & { format: 'xlsx' | 'xlsx_encrypted' | 'delimited' }> {
+  if (looksLikeEncryptedOffice(buffer)) {
+    if (!opts.password) {
+      // BR-4: password-protected statements are the norm, not an edge case.
+      // Prompt for it; never store it.
+      throw new ValidationError(
+        'this spreadsheet is password-protected — supply the password to open ' +
+        'it. Indian banks encrypt emailed statements by default, usually with ' +
+        'a PAN-and-date-of-birth pattern.', 'BR-4');
+    }
+    const plain = await decryptOfficeFile(buffer, opts.password);
+    const parsed = parseStatementTable(readXlsxSheet(plain), opts);
+    return { ...parsed, format: 'xlsx_encrypted' };
+  }
+
+  if (looksLikeZip(buffer)) {
+    const parsed = parseStatementTable(readXlsxSheet(buffer), opts);
+    return { ...parsed, format: 'xlsx' };
+  }
+
+  return { ...parseStatementFile(buffer.toString('utf8'), opts), format: 'delimited' };
 }

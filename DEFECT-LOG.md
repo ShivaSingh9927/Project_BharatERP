@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the statement-parser and reconciliation-screen build:** 195 tests
+**Status as of the `.xlsx` reader:** 213 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -275,6 +275,46 @@ defect that only appears when someone looks at the thing.
 
 ---
 
+## Stage 8 — the `.xlsx` reader
+
+Built dependency-free: a minimal zip reader over Node's `zlib`, plus a sheet
+reader. Deliberate, because this code opens **files uploaded by users**, so
+every dependency is attack surface. Decryption is the exception and is kept an
+**optional** import — ECMA-376 agile encryption is AES over a SHA-512
+key-derivation chain, and the available package is version 0.1.0, which is a
+supply-chain call for whoever deploys rather than one to make silently.
+
+| # | Defect | What happened | Caught by | Resolution |
+|---|---|---|---|---|
+| X-1 | 🔴 **A styled blank cell swallowed its neighbour** | Real Excel writes an empty-but-formatted cell as `<c r="D23" s="122"/>`. The greedy `[^>]*` attribute group consumed the trailing slash, so the cell was treated as an OPENING tag and consumed the next cell as its body — then read that cell's shared-string *index* as a value. On the real SBI statement a **₹50,000 credit became a ₹50 debit, in the wrong column**. | **BR-6, on the real file** — `dr/cr` read as 10/0 against the statement's own 9/1, and the balance was out by ₹50,050 | Non-greedy attribute group, so the `/>` branch can match. |
+| X-2 | 🟠 The identical bug in the `<row>` tag | `<row r="5"/>` was likewise treated as an opening tag and swallowed the following row, shifting the summary block up and losing a transaction. | Synthetic fixture | Same fix. **Found and fixed BEFORE X-1 — and I did not think to check the cell regex for the same defect.** |
+
+### Why the tests could not catch X-1
+
+The fixture builder wrote blanks as **omitted** cells, which is what Excel does
+for an *unstyled* blank. Real statements are formatted, so their blanks are
+`<c r="D23" s="122"/>` — present, styled, self-closing. The fixtures encoded
+half of reality, so sixteen passing tests said nothing about the case that
+mattered.
+
+The fixture builder now distinguishes the two (`null` = absent,
+`undefined` = styled blank) and both are tested.
+
+**This is the clearest illustration in the log of why BR-6 exists.** Every
+component reported success: the file decrypted, the zip opened, the template
+matched, ten rows parsed, dates and amounts all looked like dates and amounts.
+Only the *arithmetic over the whole document* knew that ₹50,000 had moved to the
+wrong side. A confidence score could not have found this; a checksum did.
+
+### The full path now works on the real file
+
+```
+encrypted .xlsx → decrypt → zip → sheet → template match → BR-6
+10 rows · 9 debits / 1 credit (matching the statement's own counts) · PASS
+```
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -283,6 +323,12 @@ Four failure modes account for nearly every 🔴 and 🟠 above.
 correctly, and never fires. *Countermeasure:* for every guarantee, write the
 test that attempts the violation. A test that only proves the happy path proves
 nothing about the guard.
+
+**8. Fixing a bug in one place and not looking for it in the sibling.** X-1 and
+X-2 are the same greedy-regex defect in the row tag and the cell tag. The row
+one was fixed first, and the cell one shipped anyway. *Countermeasure:* when a
+defect is found in a parser, grep for the same construct across the file before
+closing it.
 
 **2. A clamp or default that hides the bug producing it.** B-1. `max(0)` turned
 a negative into a plausible zero. *Countermeasure:* if a value should never be
@@ -339,7 +385,7 @@ misleading. No unit test can hold that opinion.
 
 | # | Gap | Detail |
 |---|---|---|
-| G-5 | **No `.xlsx` reader and no decryption** | CSV/TSV/delimited works, and a real SBI spreadsheet export parses correctly once converted. But SBI ships **encrypted OOXML**, so the path needs a decrypt step plus an `.xlsx` reader before it works unaided. HDFC and SBI templates are now validated against real files; ICICI, Axis and Kotak remain guesses |
+| G-5 | ~~No `.xlsx` reader~~ — **done** | Dependency-free zip + sheet reader; the real encrypted SBI export now parses end to end. Decryption is an **optional** import, so an encrypted file without the package gives a clear instruction rather than a crash. HDFC and SBI templates are validated against real files; ICICI, Axis and Kotak remain guesses |
 | G-14 | **PDF statements need a different parser entirely** | Fixed-width columns, no surviving header row, per-page column shifts, narrations spanning 4–5 lines **and wrapping mid-token, so continuation lines must be joined with no separator**. Not a variation on the CSV reader. Only worth building if pilot CAs cannot get spreadsheet exports |
 | G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-16 | Credit cards remain Phase 2, now specified | A real ICICI card statement is documented in `specs/bank-and-reconciliation.md` §18 — layout, the liability postings, the BR-13-shaped double-counting hazard, why a card statement can never support an ITC claim, and EMI conversion as borrowing. **No code implements any of it.** ICICI's *bank account* template is still an unvalidated guess; a card statement does not test it |
@@ -390,6 +436,7 @@ misleading. No unit test can hold that opinion.
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
 | Bank | 52 | Decentro webhook path, 1:N allocation, learned rules |
-| Statement files | 49 | Encrypted `.xlsx` decryption; PDF/fixed-width; banks other than HDFC and SBI |
+| Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
+| `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **195** | |
+| **Total** | **213** | |
