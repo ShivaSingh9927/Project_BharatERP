@@ -106,9 +106,19 @@ describe('amount coercion', () => {
     expect(parseAmount('500.00')).toMatchObject({ value: '500.00', negative: false });
   });
 
-  it('treats a Cr suffix as a direction marker, not part of the number', () => {
-    expect(parseAmount('1,29,882.00 Cr')).toMatchObject({ value: '129882.00', negative: true });
-    expect(parseAmount('500.00 Dr')).toMatchObject({ value: '500.00', negative: false });
+  it('reads a Dr/Cr marker with the Indian meaning, not the reverse', () => {
+    // From a real SBI statement: no space before the suffix, and CR means the
+    // customer HAS the money. Flagging Cr as negative — which this originally
+    // did, with a test asserting it — turned a ₹2,41,933.51 opening balance
+    // into −₹2,41,933.51 and made BR-6 report a nonsense discrepancy.
+    expect(parseAmount('2,41,933.51CR'))
+      .toMatchObject({ value: '241933.51', negative: false, suffix: 'cr' });
+    // A Dr balance is an overdrawn account.
+    expect(parseAmount('500.00 Dr'))
+      .toMatchObject({ value: '500.00', negative: true, suffix: 'dr' });
+    // No marker at all — an ordinary amount column.
+    expect(parseAmount('5,000.00'))
+      .toMatchObject({ value: '5000.00', negative: false, suffix: null });
   });
 
   it('recognises every way a bank writes "nothing here"', () => {

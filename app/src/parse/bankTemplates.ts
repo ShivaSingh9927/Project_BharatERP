@@ -96,13 +96,17 @@ export const TEMPLATES: BankTemplate[] = [
   {
     bank: 'State Bank of India',
     priority: 90,
-    dateFormat: 'dd MMM yyyy',
+    // Corrected from 'dd MMM yyyy' against a real net-banking statement, which
+    // writes transaction dates as 01/09/2026 — day-first with slashes. Its
+    // header and summary lines use dd-MM-yyyy, so one document carries two
+    // formats; only the transaction rows matter here.
+    dateFormat: 'dd/MM/yyyy',
     amountConvention: 'separate_dr_cr',
     detect: ['state bank of india', 'sbi'],
     columns: {
-      txnDate: ['txn date', 'transaction date'],
+      txnDate: ['txn date', 'transaction date', 'date'],
       valueDate: ['value date'],
-      narration: ['description', 'particulars'],
+      narration: ['description', 'particulars', 'narration'],
       reference: ['ref no./cheque no', 'ref no', 'cheque no'],
       debit: ['debit'],
       credit: ['credit'],

@@ -154,6 +154,42 @@ and narrations wrap across two physical lines inside one table cell.
 who wrote the parser, so they encoded the same assumptions.** One real file
 found in ten minutes what thirty-six invented tests had not.
 
+### A second real file — SBI, and a money-sign bug
+
+A real SBI net-banking PDF (password-protected) exposed a defect worse than any
+of the above, plus a scoping fact that changes the roadmap.
+
+| # | Defect | What happened | Resolution |
+|---|---|---|---|
+| P-14 | 🔴 **`CR` was read as negative — backwards** | SBI writes balances as `2,41,933.51CR`, no space. On an Indian statement a **CR balance means the customer HAS the money**; DR means overdrawn. The parser flagged `Cr` as negative, so a real brought-forward balance of ₹2,41,933.51 parsed as **−₹2,41,933.51** — a sign flip on the very figure BR-6 checks against, which would have reported a nonsense discrepancy of nearly ₹5 lakh and blamed the parse. **A test asserted the wrong behaviour, so it looked correct.** | `Dr` → negative, `Cr` → positive; the marker is also exposed as `suffix` for callers that need it. Test corrected. |
+| P-15 | 🟠 The SBI template's date format was wrong | Declared `dd MMM yyyy`; the real file uses `01/09/2026`. It survived only because `parseDate` is permissive about separators and uses the format solely to choose day-first vs month-first — a lucky accident, not a design. One document carries **two** formats: `dd/MM/yyyy` in rows, `dd-MM-yyyy` in headers and the summary. | Corrected to `dd/MM/yyyy`. |
+
+**P-14 is the worst defect in this log.** It is a money error, on real data, in the
+direction that breaks the product's central validation — and it was protected by
+a passing test that encoded the same misunderstanding.
+
+### The PDF path is much bigger than BR-3 implies
+
+The SBI file is a PDF, and even after text extraction it is **not delimited** —
+it is whitespace-aligned fixed-width columns. Four properties make it a
+different component, not a variation on the CSV reader:
+
+- **No column header row survives extraction at all.** Only the word `Balance`
+  appears. `findHeaderRow()` has nothing to find, so the entire template-matching
+  approach is inapplicable.
+- **Column positions shift between pages** — page 1 rows start at column 0, page 2
+  at column 1 with wider columns.
+- **Narrations span four to five physical lines**, with continuation text both
+  *above* and *below* the line carrying the amounts (`WDL TFR` sits above).
+- Repeated per-page headers and footers (`Page no. 1`, form feeds) interleave
+  with the data.
+
+BR-3 ("ship CSV/Excel first, PDF is a later concern") is right, but §5.1's
+estimate of PDF as merely "good, extractable with pdfplumber" understates it: it
+needs column-position inference, row grouping, and per-page recalibration. If
+pilot CAs receive statements like this one, **CSV-first does not cover them** —
+which makes question B1 more urgent than it looked.
+
 ### Deliberate divergence from the spec
 
 §5.2 models per-bank templates as a versioned `bank_statement_templates`
@@ -200,10 +236,12 @@ can actually win.
 then reintroduced fifteen lines from it. *Countermeasure:* if a helper exists
 for a concern, no code path may open that concern directly.
 
-**7. Fixtures that share the author's assumptions.** P-11, P-12, P-13. Thirty-six
-tests written alongside the parser missed three layout facts that one real file
-exposed immediately. *Countermeasure:* validate every template against a genuine
-export, redacted, before trusting it.
+**7. Fixtures that share the author's assumptions.** P-11 to P-15. Thirty-six
+tests written alongside the parser missed five layout facts that two real files
+exposed in minutes — and in P-14's case a test actively *asserted* the wrong
+behaviour, so the bug was protected by green CI. *Countermeasure:* validate every
+template against a genuine export, redacted, before trusting it; and when a test
+encodes a domain convention, check the convention rather than the test.
 
 **6. Coercing at the wrong boundary.** P-2, P-3. Money through `Number()`; a raw
 `1,00,000.00` returned from a parser and failing three modules later. Both
@@ -282,6 +320,6 @@ misleading. No unit test can hold that opinion.
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
 | Bank | 48 | Decentro webhook path, 1:N allocation, learned rules |
-| Statement files | 42 | `.xlsx`; password-protected PDFs; banks other than HDFC |
+| Statement files | 42 | `.xlsx`; PDF/fixed-width entirely; banks other than HDFC and SBI |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
 | **Total** | **184** | |

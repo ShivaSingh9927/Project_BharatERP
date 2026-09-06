@@ -84,8 +84,10 @@ export function parseDate(raw: string, format: DateFormat): string | null {
 export interface ParsedAmount {
   /** Decimal string, always positive. Direction is the caller's business. */
   value: string;
-  /** True when the cell itself indicated a negative or a credit suffix. */
+  /** True when the cell indicated a negative: parentheses, a minus, or `Dr`. */
   negative: boolean;
+  /** The Dr/Cr marker as written, for callers that need the distinction. */
+  suffix: 'dr' | 'cr' | null;
   blank: boolean;
 }
 
@@ -101,7 +103,7 @@ export function parseAmount(raw: string): ParsedAmount {
   const s = raw.trim();
 
   if (s.length === 0 || s === '-' || s === '–' || /^nil$/i.test(s)) {
-    return { value: '0.00', negative: false, blank: true };
+    return { value: '0.00', negative: false, suffix: null, blank: true };
   }
 
   let negative = false;
@@ -111,13 +113,25 @@ export function parseAmount(raw: string): ParsedAmount {
   const paren = /^\((.*)\)$/.exec(body);
   if (paren) { negative = true; body = paren[1]!; }
 
-  // A Dr/Cr suffix is a direction marker, not part of the number. Which one
-  // means "negative" depends on the column, so only Cr is flagged here and the
-  // template decides what to do with it.
-  const suffix = /\s*(dr|cr)\.?$/i.exec(body);
-  if (suffix) {
-    if (suffix[1]!.toLowerCase() === 'cr') negative = true;
-    body = body.slice(0, suffix.index);
+  /*
+   * A Dr/Cr suffix, as on a real SBI balance: `2,41,933.51CR` — no space.
+   *
+   * This was backwards, and it was backwards in the direction that loses money.
+   * On an Indian statement a **CR balance means the customer HAS the money** and
+   * a DR balance means the account is overdrawn. The original code flagged `Cr`
+   * as negative, so a real SBI brought-forward balance of ₹2,41,933.51CR parsed
+   * as **−₹2,41,933.51** — a sign flip on the opening figure that BR-6 checks
+   * against, which would have reported a nonsense discrepancy of nearly ₹5 lakh
+   * and blamed the parse.
+   *
+   * Worse, a test asserted the wrong behaviour, so it looked correct.
+   */
+  const marker = /\s*(dr|cr)\.?$/i.exec(body);
+  let suffix: 'dr' | 'cr' | null = null;
+  if (marker) {
+    suffix = marker[1]!.toLowerCase() as 'dr' | 'cr';
+    if (suffix === 'dr') negative = true;
+    body = body.slice(0, marker.index);
   }
 
   body = body.replace(/[₹$\s]/g, '').replace(/,/g, '');
@@ -125,7 +139,7 @@ export function parseAmount(raw: string): ParsedAmount {
   if (body.startsWith('-')) { negative = !negative; body = body.slice(1); }
   else if (body.startsWith('+')) body = body.slice(1);
 
-  if (body.length === 0) return { value: '0.00', negative: false, blank: true };
+  if (body.length === 0) return { value: '0.00', negative: false, suffix, blank: true };
 
   if (!/^\d+(\.\d+)?$/.test(body)) {
     throw new ValidationError(`"${raw}" is not a recognisable amount`, 'BR-6');
@@ -137,7 +151,7 @@ export function parseAmount(raw: string): ParsedAmount {
   const cents = (BigInt(whole!) * 1000n + BigInt(f3) + 5n) / 10n;
   const value = `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`;
 
-  return { value, negative, blank: false };
+  return { value, negative, suffix, blank: false };
 }
 
 /** True when the text looks like a number rather than a label. */
