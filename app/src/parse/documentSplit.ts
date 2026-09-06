@@ -50,7 +50,8 @@ export type DocumentKind =
   | 'tax_invoice'      // charges GST; the only kind input credit can rest on
   | 'bill_of_supply'   // no GST charged — exempt, composition, or zero-rated
   | 'invoice'          // says "invoice" without qualifying itself; often foreign
-  | 'unknown';
+  | 'unspecified'      // names several types at once and commits to none
+  | 'unknown';         // carries no heading we recognise
 
 export interface DocumentSegment {
   /** 0-based position within the file, in page order. */
@@ -68,8 +69,25 @@ export interface DocumentSegment {
 /**
  * Headings, most specific first — "Tax Invoice" must beat the bare "Invoice"
  * it contains, or every tax invoice would be typed as a plain one.
+ *
+ * The first entry is the important one, and real Amazon invoices are why it
+ * exists. Amazon heads EVERY document "Tax Invoice/Bill of Supply/Cash Memo"
+ * and lets the body decide which it actually is. Matching "Tax Invoice" out of
+ * that string types the document by taking the first alternative off a list the
+ * vendor deliberately left open.
+ *
+ * On the four Amazon files in the corpus that guess happens to be right: all
+ * eight documents do charge GST. It would be wrong on a Bill of Supply from a
+ * composition dealer — identical heading, no GST charged — and the mistake runs
+ * in the expensive direction, because input credit then looks claimable on a
+ * document that charged none. So a combined heading reports `unspecified`, and
+ * the decision moves to whoever can read the tax table.
  */
+const COMBINED_HEADING =
+  /\b(?:tax\s+invoice|bill\s+of\s+supply|cash\s+memo)(?:\s*\/\s*(?:tax\s+invoice|bill\s+of\s+supply|cash\s+memo))+/i;
+
 const HEADINGS: Array<{ kind: DocumentKind; re: RegExp }> = [
+  { kind: 'unspecified',    re: COMBINED_HEADING },
   { kind: 'tax_invoice',    re: /\btax\s+invoice\b/i },
   { kind: 'bill_of_supply', re: /\bbill\s+of\s+supply\b/i },
   { kind: 'invoice',        re: /\binvoice\b/i },
@@ -203,6 +221,9 @@ export function splitDocuments(text: string): DocumentSegment[] {
     // never overwrite: the first statement wins.
     open.number ??= num;
     open.gstin ??= gst;
+    // A continuation page can name the kind an opening page left blank, but it
+    // must never overwrite `unspecified` — that value is a deliberate refusal
+    // to guess, not a gap waiting to be filled.
     if (open.kind === 'unknown' && heading !== null) open.kind = heading;
   });
 

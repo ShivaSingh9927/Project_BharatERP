@@ -259,3 +259,93 @@ describe('degenerate input', () => {
     expect(segs).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+/*
+ * The Amazon shape: two suppliers, one page each, and a heading that refuses
+ * to commit. Every Amazon document is headed "Tax Invoice/Bill of Supply/Cash
+ * Memo" and lets the tax table decide which it actually is.
+ */
+const SELLER_HR = gstin('06', 'AAACH4444H');   // Haryana
+const AMAZON    = gstin('29', 'AAACZ5555Z');   // Karnataka
+
+const AMAZON_ORDER = P(
+`                                    Tax Invoice/Bill of Supply/Cash Memo
+                                              (Original for Recipient)
+
+Sold By :                                                        Billing Address :
+EXAMPLE RETAIL LIMITED                                                  A N Other
+Gurgaon, Haryana, 122503                             KANPUR, UTTAR PRADESH, 208016
+IN                                                             State/UT Code: 09
+
+PAN No: AAACH4444H
+GST Registration No: ${SELLER_HR}                  Place of supply: UTTAR PRADESH
+
+Order Number: 000-0000000-0000000                    Invoice Number : HHH4-0000008
+Order Date: 03.09.2026                                   Invoice Date : 04.09.2026
+
+Sl.                                    Unit        Net    Tax  Tax   Tax    Total
+    Description                                Qty
+No                                     Price       Amount Rate Type  Amount Amount
+ 1 Example Earbuds | HSN:85183011  2,626.27  1  2,626.27  18%  IGST  472.73 3,099.00
+TOTAL:                                                               472.73 3,099.00
+Whether tax is payable under reverse charge - No`,
+
+`                                    Tax Invoice/Bill of Supply/Cash Memo
+                                              (Original for Recipient)
+
+Sold By :                                                        Billing Address :
+Example Marketplace Services Private Limited                            A N Other
+Bangalore, Karnataka - 560064                        KANPUR, UTTAR PRADESH, 208016
+India                                                          State/UT Code: 09
+
+PAN No: AAACZ5555Z
+GST Registration No: ${AMAZON}                                Invoice Number : JJJ-000000009
+
+Sl. No Description             Unit Price  Qty  Net Amount  Tax Rate Tax Type Tax Amount Total
+     1 Offer Processing Fees         7.63         7.63        18%     IGST       1.37     9.00
+TOTAL:                                                                           1.37     9.00`,
+);
+
+describe('a heading that names three document types at once', () => {
+  const segs = splitDocuments(AMAZON_ORDER);
+
+  it('still finds the boundary between the two suppliers', () => {
+    expect(segs).toHaveLength(2);
+    expect(segs.map((x) => x.supplierGstin)).toEqual([SELLER_HR, AMAZON]);
+    expect(segs.map((x) => x.documentNumber))
+      .toEqual(['HHH4-0000008', 'JJJ-000000009']);
+  });
+
+  it('refuses to type the document from the heading', () => {
+    /*
+     * The defect this fixes. "Tax Invoice" matched out of
+     * "Tax Invoice/Bill of Supply/Cash Memo" and every Amazon document was
+     * typed `tax_invoice` — right on all eight in the corpus, because they all
+     * charge GST, and wrong on a Bill of Supply from a composition dealer,
+     * which carries the identical heading and charges none.
+     *
+     * That error runs in the expensive direction: input credit looks claimable
+     * on a document that never charged any.
+     */
+    expect(segs.map((x) => x.kind)).toEqual(['unspecified', 'unspecified']);
+  });
+
+  it('does not let a continuation page overwrite the refusal', () => {
+    // `unspecified` is a decision, not a gap. A later page mentioning "Tax
+    // Invoice" must not resolve it — only the tax table can.
+    const withFooter = splitDocuments(P(
+      `Tax Invoice/Bill of Supply/Cash Memo\nGST Registration No: ${SELLER_HR}\nInvoice Number : KKK-0000010`,
+      `Line 1\nLine 2\nLine 3\nThis is a computer-generated tax invoice.`,
+    ));
+    expect(withFooter).toHaveLength(1);
+    expect(withFooter[0]!.kind).toBe('unspecified');
+  });
+
+  it('leaves an unambiguous heading typed exactly as before', () => {
+    // The combined pattern needs a separator and a second alternative, so a
+    // plain "Tax Invoice" must not be caught by it.
+    expect(splitDocuments('Tax Invoice\nInvoice Number # LLL0000000000011')[0]!.kind)
+      .toBe('tax_invoice');
+  });
+});
