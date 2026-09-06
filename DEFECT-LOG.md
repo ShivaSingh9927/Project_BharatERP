@@ -5,8 +5,8 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the bank-reconciliation build:** 132 tests passing, typecheck
-clean, 10 migrations applied.
+**Status as of the statement-parser and reconciliation-screen build:** 178 tests
+passing, typecheck clean, 10 migrations applied.
 
 ---
 
@@ -116,6 +116,42 @@ every invoice carrying tax — which is most of them. Implemented against
 
 ---
 
+## Stage 7 — Statement parsing & the reconciliation screen
+
+Ten defects, and notably **three of them were found only by using the screen**,
+not by any test. That is the argument for building the UI when we did.
+
+| # | Defect | What happened | Caught by | Resolution |
+|---|---|---|---|---|
+| P-1 | 🔴 **Tenant context leaked onto a pooled connection** | The web server set `app.firm_id` with `is_local = false` on a connection borrowed from the pool. That setting outlives the request and stays on the connection for whoever borrows it next — one firm's RLS context applied to another firm's query. | Code review while fixing P-8 | Replaced with `withFirm()`, which scopes the setting to the transaction. **The safe helper already existed; the bug was hand-rolling the unsafe version next to it.** Harmless in a single-firm local tool and fatal in production, which is the worst combination — it would not have shown up until multi-tenancy. |
+| P-2 | 🔴 **Money coerced through `Number()`** | The derived-opening-balance path used `BigInt(Math.round(Number(v) * 100))` — the exact float round-trip banned everywhere else in the codebase — and its BigInt division also produced the wrong SIGN for balances under ₹1 (`-0.50` printed as `0.50`). | Code review before running | Rewritten with `paise()`/`money()`. Feeding a rounding artefact into the figure BR-6 checks against would have made the arithmetic check itself unreliable. |
+| P-3 | 🟠 **`cr` matched inside "description"** | Column aliases were matched as plain substrings. `cr` is a substring of "des**cr**iption", so the narration column was claimed as the credit column, and every amount read from it threw. | `statementFile.test.ts` | Aliases now match on token boundaries. The failure surfaced as `"OPENING" is not a recognisable amount` — an error about amounts, thrown from a column-mapping bug. |
+| P-4 | 🟠 **Every file parsed as "Generic"** | Templates were ranked by how many columns they resolved. A generic template declares looser aliases and therefore always resolves *more* columns than the specific one that actually fits, so the named bank templates could never win. | `statementFile.test.ts` | Priority now dominates the column count; a bank name found in the file outranks both. **A scoring function can be monotonic in the wrong direction — check that the intended winner can actually win.** (Same shape as K-2.) |
+| P-5 | 🟠 **Kotak's template hijacked plain signed-amount files** | `mapColumns` never required the Dr/Cr flag column that the `amount_plus_type` convention depends on. Kotak (priority 90) matched a `Date/Description/Amount/Balance` file on its other columns, then skipped every row for "no Dr/Cr marker" — producing zero transactions while confidently reporting the bank name. | `statementFile.test.ts` | A convention's required columns are now part of whether the template matched at all. |
+| P-6 | 🟠 **Bank detection ignored column signatures** | Only the bank *name* was used to detect a layout. Real exports frequently omit it while still having a distinctive column layout. | Own test fixture failing | All templates are now candidates; the name is a large bonus rather than a filter. Added a warning for the case where a file names a bank whose template does *not* fit — which is what a format change looks like from here. |
+| P-7 | 🟠 **The queue proposed matches against unrelated invoices** | A ₹15,000 cash deposit and a ₹9,000 interest credit were each offered a "proposed match" scoring 5 and 2 — the score coming purely from two invoices happening to fall in the same month. | **Using the screen** | Added `MIN_PROPOSAL_SCORE`. A near-zero score is not a weak match, it is *no* match, and rendering it as a proposal invites a wrong click. |
+| P-8 | 🟠 **…and then the floor hid real matches** | Set at 20, it discarded a ₹10,000 part payment from a known customer against their ₹25,000 invoice — scoring 17 on party plus date, because on a partial payment the amount legitimately cannot match. | **Using the screen** | Lowered to 15: "at least one signal stronger than date proximity". Both boundaries are now covered by the end-to-end test. |
+| P-9 | 🟠 **`Promise.all` on one pg client** | Three queries issued concurrently on a single connection. `pg` warns today and throws in v9. | A deprecation warning in the server log | Serialised. The parallelism that matters is scoring in memory, not overlapping round trips. |
+| P-10 | 🟡 Demo seed posted to a group account | Used `Capital Account` (a group) instead of the `Owner's Capital` leaf. | The `V-4` database trigger | **The GL's own validation caught a seeding bug** — the constraint working exactly as designed. |
+
+### Deliberate divergence from the spec
+
+§5.2 models per-bank templates as a versioned `bank_statement_templates`
+table. They live in **code** instead: git already versions, reviews and tests
+them, and a database table buys the ability to add a bank without a deploy —
+which is not worth having before there is anyone to deploy for. Recorded so the
+decision is visible when support engineers exist.
+
+### On the value of the screen
+
+P-7 and P-8 are the same defect approached from two sides, and **neither was
+reachable by a unit test**, because both are judgements about what a human
+should be shown rather than about whether a number is right. The engine was
+correct in both cases; the presentation was misleading. That is a category of
+defect that only appears when someone looks at the thing.
+
+---
+
 ## Recurring patterns
 
 Four failure modes account for nearly every 🔴 and 🟠 above.
@@ -133,12 +169,29 @@ negative, assert it — do not clamp it.
 asset↔liability. The mirror is usually *not* a sign flip on the same formula.
 *Countermeasure:* derive each side independently, then compare.
 
-**4. Parameters chosen by intent rather than against the data.** K-2. A number
-that sounds strict but is unreachable. *Countermeasure:* compute the achievable
-range before setting a cutoff inside it.
+**4. Parameters chosen by intent rather than against the data.** K-2, P-4, P-7,
+P-8. A number that sounds strict but is unreachable; a ranking monotonic in the
+wrong direction; a floor set without checking what falls below it.
+*Countermeasure:* compute the achievable range, and confirm the intended winner
+can actually win.
 
-And a fifth, from Stage 1: **asserting an integration works before probing it.**
+**5. Hand-rolling the unsafe version of an existing safe helper.** P-1. The
+`withFirm()` wrapper existed specifically to prevent the tenant leak that was
+then reintroduced fifteen lines from it. *Countermeasure:* if a helper exists
+for a concern, no code path may open that concern directly.
+
+**6. Coercing at the wrong boundary.** P-2, P-3. Money through `Number()`; a raw
+`1,00,000.00` returned from a parser and failing three modules later. Both
+produced errors far from their cause. *Countermeasure:* coerce where the format
+is known, and let the type carry the guarantee onwards.
+
+And one from Stage 1: **asserting an integration works before probing it.**
 Four of five vendor entries are corrected beliefs.
+
+Finally, from Stage 7: **three defects were reachable only by using the
+software.** P-7 and P-8 were both about what a human should be shown rather than
+whether a number was right — the engine was correct and the presentation
+misleading. No unit test can hold that opinion.
 
 ---
 
@@ -156,13 +209,15 @@ Four of five vendor entries are corrected beliefs.
 
 | # | Gap | Detail |
 |---|---|---|
-| G-5 | **No statement file parsers** | `importStatement()` takes already-parsed rows. No CSV/Excel reader, no `bank_statement_templates` table, no per-bank column maps. BR-3 says ship CSV/Excel first — not started |
+| G-5 | **No `.xlsx` or PDF reader** | CSV/TSV/delimited is done, with templates for HDFC, ICICI, SBI, Axis, Kotak and two generics. True `.xlsx` needs a dependency decision; PDF (BR-4, often password-protected) is untouched. **Every template's column headings are unverified against real files** — see B1 |
 | G-6 | **Learned rules do not apply** | `bank_transaction_rules` table exists; nothing reads it. Layer 3 of the matching engine is absent, so T-11 is untested |
 | G-7 | **1:N matching not implemented** | One payment against five invoices (T-9) — very common in B2B. The schema supports it; no code allocates it |
 | G-8 | **Decentro webhook path untested** | Layer 0 in `proposeMatch()` is written but has no test. **BR-13 (VA settlement double-counting) is not implemented at all** — flagged in the spec as the most likely source of a double-count bug |
 | G-9 | Mixed-ITC bills treated as wholly blocked | If any line is blocked, the whole bill is. Splitting is left to the caller |
 | G-10 | `verifyTaxFigures` uses only line 1's GST rate | PB-4 cross-check is weaker than it looks on a multi-rate bill |
 | G-11 | AI layer 4 is not wired | Match proposal, counterparty resolution, and anomaly flags (§14.2) are specified, not built |
+| G-12 | **The review server has no authentication** | Binds to 127.0.0.1 only and is explicitly not production. It exists to get answers to §16.2 and §16.3 from a real CA. Do not expose it |
+| G-13 | The screen covers reconciliation only | No invoice entry, no bill review, no reports in the UI. Everything else is still function calls |
 
 ### Not started
 
@@ -202,4 +257,6 @@ Four of five vendor entries are corrected beliefs.
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
 | Bank | 48 | Decentro webhook path, 1:N allocation, learned rules |
-| **Total** | **132** | |
+| Statement files | 36 | Real bank exports; `.xlsx`; password-protected PDFs |
+| End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
+| **Total** | **178** | |

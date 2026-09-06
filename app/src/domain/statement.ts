@@ -11,6 +11,7 @@ import { withFirm } from '../db/pool.ts';
 import { ValidationError } from './types.ts';
 import { paise, money } from './tax.ts';
 import { parseNarration } from './narration.ts';
+import { parseStatementFile, type ParsedStatementFile } from '../parse/statementFile.ts';
 
 export const PARSER_VERSION = 'statement-parser/1.0.0';
 
@@ -243,4 +244,61 @@ export async function importStatement(
 
     return { statementId, imported, duplicates, arithmetic, warnings };
   });
+}
+
+/**
+ * Import an uploaded statement file end to end: parse, then verify, then write.
+ *
+ * The parse is returned even when the import throws, because a rejected file is
+ * exactly when the user most needs to see what we read — which bank layout was
+ * assumed, which rows were skipped, and where the balance went wrong. Throwing
+ * without that leaves them with a refusal and no way to act on it.
+ */
+export async function importStatementFile(
+  firmId: string,
+  input: {
+    clientId: string;
+    bankAccountId: string;
+    fileText: string;
+    uploadedBy: string;
+    /** Overrides auto-detection (BR-5). */
+    bank?: string;
+    /** Overrides the stated balances, e.g. from a password-protected cover page. */
+    openingBalance?: string;
+    closingBalance?: string;
+    sourceDocumentId?: string;
+  },
+): Promise<{ parse: ParsedStatementFile; result: ImportResult | null; error: string | null }> {
+  const parse = parseStatementFile(input.fileText, { bank: input.bank });
+
+  const opening = input.openingBalance ?? parse.openingBalance;
+  const closing = input.closingBalance ?? parse.closingBalance;
+
+  if (opening === null || closing === null) {
+    return {
+      parse, result: null,
+      error:
+        'BR-6 cannot be checked: this file states no opening or closing balance ' +
+        'and has no running-balance column. Supply both figures from the ' +
+        'statement to import it.',
+    };
+  }
+
+  try {
+    const result = await importStatement(firmId, {
+      clientId: input.clientId,
+      bankAccountId: input.bankAccountId,
+      periodFrom: parse.periodFrom!,
+      periodTo: parse.periodTo!,
+      openingBalance: opening,
+      closingBalance: closing,
+      rows: parse.rows,
+      uploadedBy: input.uploadedBy,
+      sourceDocumentId: input.sourceDocumentId,
+      parserVersion: `${PARSER_VERSION} (${parse.bank})`,
+    });
+    return { parse, result, error: null };
+  } catch (e) {
+    return { parse, result: null, error: e instanceof Error ? e.message : String(e) };
+  }
 }

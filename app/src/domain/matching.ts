@@ -73,6 +73,27 @@ export const WEIGHTS = {
 export const AUTO_MATCH_THRESHOLD = 45;
 export const AUTO_MATCH_MARGIN = 15;
 
+/**
+ * Below this, there is no candidate worth showing.
+ *
+ * Found by using the screen rather than by testing it: a ₹15,000 cash deposit
+ * and a ₹9,000 interest credit were both offered a "proposed match" against
+ * unrelated invoices, scoring 5 and 2 — the score came only from the two
+ * invoices happening to be dated the same month.
+ *
+ * A near-zero score is not a weak match, it is *no* match, and presenting it as
+ * a proposal invites a wrong click. Reporting nothing is the honest answer and
+ * pushes the line towards classification, where it belongs.
+ *
+ * The line is drawn at 15 — "at least one signal stronger than date
+ * proximity", date being worth 5 at most. First set to 20, which then hid a
+ * ₹10,000 part payment from a known customer against their ₹25,000 invoice: it
+ * scored 17 on party plus date, since the amount legitimately does not match.
+ * That is a real match a CA must see, and partial payments are routine, so a
+ * resolved party alone has to be enough to earn a proposal.
+ */
+export const MIN_PROPOSAL_SCORE = 15;
+
 const dayGap = (a: string, b: string): number =>
   Math.abs(Math.round((+new Date(a) - +new Date(b)) / 86_400_000));
 
@@ -147,7 +168,15 @@ export function rank(
   }
 
   const scored = candidates.map((c) => scoreCandidate(txn, c))
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score)
+    .filter((c) => c.score >= MIN_PROPOSAL_SCORE);
+
+  if (scored.length === 0) {
+    return {
+      layer: 'scored', best: null, runnersUp: [], ambiguous: false, autoMatchable: false,
+      reason: 'no open voucher shares an amount, reference or party with this line',
+    };
+  }
 
   const best = scored[0]!;
   const runnersUp = scored.slice(1, 4);
@@ -340,6 +369,141 @@ export async function openBillCandidates(
      ORDER BY pb.bill_date`,
     [clientId, opts.partyId ?? null]);
   return r.rows;
+}
+
+export interface QueueItem {
+  bankTransactionId: string;
+  txnDate: string;
+  narration: string;
+  debit: string;
+  credit: string;
+  amount: string;
+  direction: 'inbound' | 'outbound';
+  paymentMode: string | null;
+  reference: string | null;
+  counterpartyName: string | null;
+  status: string;
+  unmatchedAmount: string;
+  proposal: MatchProposal;
+  /**
+   * What this line probably IS, when no voucher can settle it (§9).
+   *
+   * The narration parser already knows a line is a charge or an interest
+   * credit; not using that was leaving the operator to work it out from a
+   * failed match. Classification is the right action for these lines, not
+   * matching, so the queue says so.
+   */
+  suggestedClassification: 'bank_charge' | 'interest' | 'cheque' | null;
+}
+
+/** §9 — statement-only lines, where no invoice or bill exists to match. */
+function classifyFromMode(
+  mode: string | null, direction: 'inbound' | 'outbound',
+): QueueItem['suggestedClassification'] {
+  if (mode === 'charge') return 'bank_charge';
+  if (mode === 'interest') return direction === 'inbound' ? 'interest' : 'bank_charge';
+  if (mode === 'cheque') return 'cheque';
+  return null;
+}
+
+/**
+ * The CA's work queue for one bank account.
+ *
+ * Sorted by confidence descending (§14.1) so the easy lines are cleared in
+ * bulk at the top and attention is spent at the bottom, where it belongs.
+ * Sorting by date instead — the obvious choice — mixes trivial and hard work
+ * together and makes bulk-accept useless.
+ *
+ * Candidates are loaded ONCE and scored in memory rather than re-queried per
+ * line. A month of statement lines against a month of open invoices is a
+ * few hundred by a few hundred; doing that as N round trips would make the
+ * screen feel slow for no reason.
+ */
+export async function reconciliationQueue(
+  firmId: string,
+  bankAccountId: string,
+  opts: { limit?: number; includeMatched?: boolean } = {},
+): Promise<{ items: QueueItem[]; totals: { unmatched: number; matched: number;
+             autoMatchable: number; ambiguous: number } }> {
+  return withFirm(firmId, async (c) => {
+    const acct = await c.query<{ client_id: string }>(
+      'SELECT client_id FROM bank_accounts WHERE id = $1', [bankAccountId]);
+    if (acct.rowCount === 0) throw new ValidationError('bank account not found', 'BR-2');
+    const clientId = acct.rows[0]!.client_id;
+
+    // Sequential, not Promise.all. A single pg client cannot run concurrent
+    // queries — doing so warns today and throws in pg 9. The parallelism that
+    // matters here is scoring in memory rather than one query per line.
+    const invoices = await openInvoiceCandidates(c, clientId);
+    const bills = await openBillCandidates(c, clientId);
+    const parties = await c.query<{ id: string; name: string; legal_name: string | null }>(
+      'SELECT id, name, legal_name FROM parties WHERE client_id = $1', [clientId]);
+
+    /** Resolve a parsed counterparty name to a party, loosely. */
+    const resolveParty = (name: string | null): string | null => {
+      if (!name) return null;
+      const needle = name.toLowerCase();
+      const hit = parties.rows.find((p) =>
+        needle.includes(p.name.toLowerCase())
+        || p.name.toLowerCase().includes(needle)
+        || (p.legal_name && needle.includes(p.legal_name.toLowerCase())));
+      return hit?.id ?? null;
+    };
+
+    const txns = await c.query(
+      `SELECT id, txn_date::text AS txn_date, narration, debit::text, credit::text,
+              amount::text, unmatched_amount::text, status, payment_mode::text,
+              reference_number, counterparty_name, source::text
+       FROM bank_transactions_reconciled
+       WHERE bank_account_id = $1 AND NOT is_ignored
+         AND ($2 OR status <> 'matched')
+       ORDER BY txn_date DESC
+       LIMIT $3`,
+      [bankAccountId, opts.includeMatched ?? false, opts.limit ?? 500]);
+
+    const items: QueueItem[] = txns.rows.map((t) => {
+      const direction: 'inbound' | 'outbound' = paise(t.credit) > 0n ? 'inbound' : 'outbound';
+      const candidates = direction === 'inbound' ? invoices : bills;
+
+      // Score against the amount still unallocated, not the whole line — a
+      // partially matched line should be judged on what remains.
+      const proposal = rank({
+        amount: t.unmatched_amount,
+        txnDate: t.txn_date,
+        reference: t.reference_number,
+        partyId: resolveParty(t.counterparty_name),
+      }, candidates);
+
+      return {
+        bankTransactionId: t.id,
+        txnDate: t.txn_date,
+        narration: t.narration,
+        debit: t.debit, credit: t.credit, amount: t.amount,
+        direction,
+        paymentMode: t.payment_mode,
+        reference: t.reference_number,
+        counterpartyName: t.counterparty_name,
+        status: t.status,
+        unmatchedAmount: t.unmatched_amount,
+        proposal,
+        suggestedClassification: proposal.best
+          ? null                                    // a real match outranks a guess
+          : classifyFromMode(t.payment_mode, direction),
+      };
+    });
+
+    items.sort((a, b) => (b.proposal.best?.score ?? -1) - (a.proposal.best?.score ?? -1));
+
+    return {
+      items,
+      totals: {
+        unmatched: items.filter((i) => i.status === 'unmatched').length,
+        matched: items.filter((i) => i.status === 'matched').length,
+        autoMatchable: items.filter((i) => i.proposal.autoMatchable).length,
+        ambiguous: items.filter((i) => i.proposal.ambiguous).length,
+      },
+    };
+  });
 }
 
 /**

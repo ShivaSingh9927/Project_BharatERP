@@ -11,7 +11,9 @@
     "seed": "tsx src/seed/run.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "web": "tsx src/web/server.ts",
+    "seed:demo": "tsx src/seed/demo.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"
@@ -19,8 +21,8 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "tsx": "^4.19.2"
+    "vitest": "^2.1.8"
   }
 }
