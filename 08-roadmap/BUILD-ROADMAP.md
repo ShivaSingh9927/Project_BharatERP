@@ -1,7 +1,217 @@
 # Build Roadmap — India ERP
 
-> **Last Updated:** July 3, 2026
+> **Last Updated:** 2026-09-04 (revised — see UPDATE section below)
 > **Purpose:** Phase-by-phase build plan with milestones, features, and timelines
+
+---
+
+## UPDATE (2026-09-04) — CA-first blueprint supersedes original plan
+
+This roadmap was originally written as an owner-facing AI-native ERP with AA/Setu
+as a Phase-1 dependency. After investigation (see memory files), both premises
+were revised:
+
+1. **AA is not achievable for a non-regulated SaaS** — Setu/Finvu/OneMoney/CAMS
+   all require RBI/SEBI/PFRDA/IRDAI status; TSPs (Perfios/Finbox/Digio) only
+   serve regulated FIUs. AA moves to Phase 3 via FIU partnership.
+2. **Persona flipped to CA-first** — CAs are the paying buyer in India (~4L
+   practicing CAs, most SMBs outsource books). One CA firm = 20–200 clients.
+3. **Bank data is ~15% of an ERP** — the other 85% (invoicing, bills, GST, TDS,
+   payroll, reports) doesn't need AA. Statement upload + Decentro virtual
+   accounts covers Phase-1 bank data cleanly.
+
+### Locked product philosophy
+
+- **CA-first, owner-second.** CA console is the primary surface.
+- **Don't scare the CA.** Ship a Tally-familiar mode (F-key nav, voucher entry,
+  Tally-style reports) alongside the modern UI from v1.
+- **AI is CA-productivity, never CA-replacement.** Copy and defaults reflect
+  this. AI proposes; CA approves.
+- **Migration is one-click and reversible.** Import from `.tly` backup; export
+  back to Tally anytime. Reversibility kills switching fear.
+- **WhatsApp is a first-class interface**, not a feature.
+- **India-first.** Global is not on the roadmap.
+
+### Two-surface product
+
+```
+   ┌─────────────────────────────────────────────────┐
+   │              CA CONSOLE (primary)                │
+   │  Multi-client dashboard · Tally mode · Batch    │
+   │  filing · Bulk ops · White-label · Per-client   │
+   │  billing · Approvals queue                       │
+   ├─────────────────────────────────────────────────┤
+   │              OWNER APP (secondary)               │
+   │  WhatsApp bot · Cash dashboard · Receipt photo  │
+   │  · Invoicing · Payment links · Hindi AI Q&A     │
+   ├─────────────────────────────────────────────────┤
+   │              SHARED CORE ENGINE                  │
+   │  GL · GST · TDS · e-invoice · e-way bill ·      │
+   │  Reports · AI · Audit trail · Multi-tenant       │
+   └─────────────────────────────────────────────────┘
+```
+
+### 12 modules (revised)
+
+1. **CA Console** — multi-client dashboard, approvals queue, health scores,
+   white-label, per-client billing, notes/tasks
+2. **Tally Mode** — F-key nav, voucher entry, Tally-style reports, one-click
+   toggle Tally ↔ Modern, `.tly` import
+3. **Invoicing (Sales)** — GST-compliant, auto-IRN, auto e-way bill, WhatsApp
+   send with payment link, recurring, credit/debit notes
+4. **Bills & Expenses (Purchase/AP)** — OCR from vendor emails, WhatsApp
+   receipt capture, approval workflow, TDS auto-calc per section
+5. **Bank & Cash** — statement upload (CSV/Excel/PDF for top 10 Indian banks),
+   auto-reconciliation, Decentro virtual accounts, UPI collection links,
+   petty cash
+6. **GST Engine** — auto-compute, GSTR-1/3B/9 prep, 2A/2B reconciliation, ITC
+   flagging, file via ClearTax (P1) → GSTN direct (P3 as GSP)
+7. **TDS Engine** — auto-deduct per section, 206AB/206CCA flagging, 24Q/26Q/27Q
+   returns, Form 16/16A, TRACES (P2)
+8. **Payroll** — P1: salary + TDS + payslip. P2: full PF/ESIC/PT/leaves.
+   Integrations with Keka/Greytip/Razorpay Payroll.
+9. **Inventory (P2)** — SKU master, stock, valuation, POs, GRNs, multi-location
+10. **Reports** — Tally-familiar (day book, ledger, TB, BS, P&L, CF) +
+    modern dashboards + custom builder
+11. **AI Copilot** — chat with books, auto-categorize, anomaly detection,
+    cash-flow forecast, Hindi/English, always via CA approval queue
+12. **WhatsApp Business Layer** — owner queries, receipt capture, invoice
+    send, CA approval pings, customer payment links, employee expense submit
+
+### The 3 killer wedges
+
+1. **One-click Tally migration** — CA uploads `.tly` → all clients in
+   BharatERP in 5 minutes; can go back anytime.
+2. **AI takes data entry, not the CA's job** — CA reviews AI drafts;
+   *"double your clients without hiring."*
+3. **WhatsApp-native** — owner + client + CA already live there; first
+   accounting tool that lives there too.
+
+### Pricing (draft)
+
+| Tier | Who | Price | Included |
+|---|---|---|---|
+| Free | Micro business | ₹0 | 1 user, 50 invoices/mo, basic GST |
+| Business | SMB | ₹499/mo | 5 users, unlimited invoices, GST filing, WhatsApp |
+| Business + | Growing SMB | ₹1,499/mo | 15 users, TDS, e-invoice, e-way bill, AI copilot |
+| **CA Firm** | CA managing clients | **₹99/client/mo** | Multi-client console, batch filing, white-label |
+| Enterprise | ₹50Cr+ business | ₹15K+/mo | Multi-entity, custom AI, bank-direct APIs |
+
+**CA-firm unit economics:** CA with 80 clients pays ₹7,920/mo. They charge
+those clients ₹2,000–5,000/mo each. BharatERP is ~2% of their revenue and
+doubles their capacity. Easy sell if the product works.
+
+### Revised phase plan
+
+**Phase 1 — MVP (Month 1–4) · Goal: first 10 paying CA firms**
+- Auth + multi-tenancy (firm → clients → users)
+- Chart of accounts + GL engine
+- CA console (basic)
+- **Tally mode + `.tly` import** ← the wedge
+- Invoicing + e-invoice IRP + WhatsApp send
+- Bill capture (Google Document AI + LLM)
+- Bank statement upload + parser + auto-reconcile
+- GST engine + GSTR-1/3B prep + ClearTax filing
+- Reports (Tally-style: day book, ledger, TB, BS, P&L)
+- AI copilot (categorization + Q&A)
+- WhatsApp bot (owner side)
+- Decentro (virtual accounts + KYC)
+
+**Phase 2 — Growth (Month 5–8) · Goal: 200 CA firms, ~5,000 SMBs**
+- Full TDS engine + return filing (TRACES/ClearTax)
+- Full payroll (PF/ESIC/PT)
+- Bank-direct APIs (HDFC, ICICI corporate developer programs)
+- 2A/2B reconciliation
+- Hindi + regional AI
+- Mobile app (RN)
+- Cashfree Payouts integration
+- Advanced anomaly detection
+- CA marketplace (owners who don't yet have a CA)
+
+**Phase 3 — Scale (Month 9–12) · Goal: 1,000 CA firms, 30,000+ SMBs**
+- Inventory (POs, GRN, valuation)
+- Multi-entity / multi-branch consolidation
+- Ind AS reporting
+- Custom AI training per firm
+- Direct GSTN (become GSP)
+- **AA via FIU partnership** — chase only now, after revenue
+- Public API + ecosystem
+- Enterprise (SSO, audit logs, custom roles)
+
+### Vendor stack (locked for P1)
+
+| Function | Vendor |
+|---|---|
+| Virtual accounts, UPI collections, KYC | Decentro (keys in hand) |
+| Payouts | Cashfree (sign up) |
+| GST filing | ClearTax |
+| e-Invoice / e-Way Bill | GSTN direct (free) |
+| Bill/receipt OCR | Google Document AI |
+| Statement OCR | Perfios/Finbox (or DIY pdfplumber) |
+| LLM bulk | DeepSeek |
+| LLM reasoning | Claude / GPT-4o |
+| WhatsApp | Meta Cloud API |
+| Hosting | AWS Mumbai (ap-south-1) |
+| DB | Postgres + pgvector |
+| Queues | Redis + BullMQ |
+
+### Explicitly NOT in scope
+
+- AA/FIU integration (Phase 3+, partnership only — no self-license)
+- Global multi-currency
+- Manufacturing MRP
+- CRM (integrate with third parties)
+- Investment advisory / lending (regulatory rabbit hole)
+- Crypto
+
+### Compliance milestone with long lead time — SOC 1 Type II
+
+Confirmed with a practising auditor: a self-evidencing audit export can replace
+manual vouching **only if the auditor has first tested the IT controls of the
+system that produced it.** For a SaaS this means a **SOC 1 Type II** report
+(SSAE 18 / ISAE 3402 — the financial-reporting standard; SOC 2 does not answer
+this question).
+
+Why this belongs on the roadmap and not just in a spec:
+
+- **Type II requires an operating period** (typically 6–12 months of evidence).
+  It cannot be arranged when a customer's auditor asks for it.
+- **Without it**, the auditor falls back to substantive testing — i.e. manual
+  vouching — and the audit-speed value proposition collapses entirely.
+- **The controls are tested retrospectively**, so access management, change
+  management, and operations evidence must be produced correctly from the first
+  day of the observation window. Retrofitting is impossible.
+
+Planning items: when to start the observation window, which assurance firm,
+budget. Engineering obligations are specified in `specs/provenance.md` §9.2 and
+must be in place before the window opens — several (append-only ledger
+permissions, support-access logging) are already required by
+`specs/audit-trail.md` anyway.
+
+*Target: start the observation window no later than Phase 2, so a Type II
+report exists before the first customer's statutory audit season.*
+
+---
+
+### Next three concrete moves (before writing code)
+
+1. **Interview 10 CAs** with this blueprint. Ask: *"Would you pay ₹99/client
+   for this? What's missing? What would make you say no?"* Their answers
+   should reshape ~30% of this doc.
+2. **Buy a Tally licence, use it for a week, screenshot every screen.** Tally
+   mode must feel identical under the fingers.
+3. **Prototype the `.tly` importer first.** If you can parse a Tally backup
+   and rebuild a client's books, you have a demo that closes CAs in one
+   meeting. If you can't, the whole wedge is theoretical.
+
+---
+
+## ORIGINAL ROADMAP (July 2026) — preserved below for reference
+
+The plan below reflects the pre-revision, owner-first, Setu-AA-dependent
+thinking. Kept for context but superseded by the UPDATE section above.
+
+---
 
 ---
 
