@@ -164,28 +164,62 @@ function findHeaderRow(
  * arithmetic check, pointing nowhere near the parser that produced it. Coerce
  * at the boundary where the format is known.
  */
-function mineLabel(rows: string[][], labels: string[]): string | null {
-  for (const row of rows) {
-    const joined = norm(row.join(' '));
-    for (const label of labels) {
-      if (!joined.includes(label)) continue;
+function clean(raw: string): string {
+  const a = parseAmount(raw);
+  return a.negative ? `-${a.value}` : a.value;
+}
 
-      // The value is the last numeric-looking cell on the line, or the tail of
-      // the text after the label when the row is a single cell.
-      const cells = row.filter((c) => c.trim().length > 0);
-      for (let i = cells.length - 1; i >= 0; i--) {
-        if (looksNumeric(cells[i]!)) {
-          const a = parseAmount(cells[i]!);
-          return a.negative ? `-${a.value}` : a.value;
-        }
+/**
+ * Pull a labelled amount out of the text surrounding the transactions.
+ *
+ * Three layouts, all real, and the third only became apparent from an actual
+ * HDFC statement:
+ *
+ *   1. label and value in one cell     `Opening Balance: 1,00,000.00`
+ *   2. label and value on one row      `Opening Balance: | 1,00,000.00`
+ *   3. label and value in a SUMMARY GRID, on different rows:
+ *
+ *        Opening Balance | Dr Count | Cr Count | Debits | Credits | Closing Bal
+ *                   0.00 |        0 |        1 |   0.00 | 25,000.00 | 25,000.00
+ *
+ * Case 3 broke the original implementation completely — it looked for a number
+ * on the label's own row, found none, and returned null. On a real HDFC
+ * statement that meant `openingBalance` came back null and BR-6, the check the
+ * whole import rests on, silently could not run.
+ *
+ * The fix is to carry the label's COLUMN INDEX down to the following rows, so
+ * the value is read from beneath its own heading rather than from wherever a
+ * number happens to appear.
+ */
+function mineLabel(rows: string[][], labels: string[]): string | null {
+  const lower = labels.map((l) => l.toLowerCase());
+
+  for (const [r, row] of rows.entries()) {
+    for (const label of lower) {
+      const col = row.findIndex((c) => norm(c).includes(label));
+      if (col < 0) continue;
+
+      // Case 1 — the value shares the label's cell.
+      const inCell = /[\d,]+\.\d{2}|\b\d+\b/.exec(
+        norm(row[col]!).slice(norm(row[col]!).indexOf(label) + label.length));
+      if (inCell) {
+        try { return clean(inCell[0]); } catch { /* keep looking */ }
       }
 
-      const tail = joined.slice(joined.indexOf(label) + label.length)
-        .replace(/^[\s:.-]+/, '');
-      const m = /^[₹\s]*[\d,]+(\.\d{1,2})?/.exec(tail);
-      if (m) {
-        const a = parseAmount(m[0]!);
-        return a.negative ? `-${a.value}` : a.value;
+      // Case 2 — a numeric cell elsewhere on the same row. Nearest to the
+      // right of the label first; a summary grid puts other labels' values
+      // further away.
+      for (let i = col + 1; i < row.length; i++) {
+        if (looksNumeric(row[i]!)) return clean(row[i]!);
+      }
+      for (let i = col - 1; i >= 0; i--) {
+        if (looksNumeric(row[i]!)) return clean(row[i]!);
+      }
+
+      // Case 3 — a value row beneath the heading row, read at the same index.
+      for (let below = r + 1; below <= Math.min(r + 2, rows.length - 1); below++) {
+        const cell = rows[below]![col];
+        if (cell !== undefined && looksNumeric(cell)) return clean(cell);
       }
     }
   }
@@ -197,7 +231,9 @@ function mineDateRange(
 ): { from: string | null; to: string | null } {
   for (const row of rows) {
     const joined = row.join(' ');
-    if (!/period|statement\s+(from|for)|from\s+\d/i.test(joined)) continue;
+    // `From : 01/07/2026   To : 22/07/2026` is how HDFC writes it — the colon
+    // is optional and so is the space, which the original pattern did not allow.
+    if (!/period|statement\s+(from|for)|\bfrom\s*:?\s*\d/i.test(joined)) continue;
     const dates = joined.match(/\d{1,4}[\/\-. ][\w]{2,4}[\/\-. ]\d{2,4}/g) ?? [];
     const parsed = dates.map((d) => parseDate(d, format)).filter((d): d is string => d !== null);
     if (parsed.length >= 2) return { from: parsed[0]!, to: parsed[parsed.length - 1]! };
@@ -347,8 +383,15 @@ export function parseStatementFile(
   const trailer = rows.slice(headerRowIndex + 1).filter((r) =>
     parseDate(r[columns.txnDate] ?? '', dateFormat) === null);
 
-  let openingBalance = mineLabel(preamble, ['opening balance', 'balance b/f', 'brought forward']);
-  let closingBalance = mineLabel([...trailer, ...preamble], ['closing balance', 'balance c/f', 'carried forward']);
+  // Both are searched in the preamble AND the trailer. HDFC puts the opening
+  // balance in a STATEMENT SUMMARY block at the FOOT of the statement, so
+  // looking only above the transactions — as this originally did — finds
+  // nothing on a real file.
+  const OPENING = ['opening balance', 'opening bal', 'balance b/f', 'brought forward'];
+  const CLOSING = ['closing balance', 'closing bal', 'balance c/f', 'carried forward'];
+
+  let openingBalance = mineLabel(preamble, OPENING) ?? mineLabel(trailer, OPENING);
+  let closingBalance = mineLabel(trailer, CLOSING) ?? mineLabel(preamble, CLOSING);
 
   // Where the file states no balances, the running-balance column can supply
   // them: the opening is the first row's balance backed out by its own

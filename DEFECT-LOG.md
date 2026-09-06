@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the statement-parser and reconciliation-screen build:** 178 tests
+**Status as of the statement-parser and reconciliation-screen build:** 184 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -134,6 +134,26 @@ not by any test. That is the argument for building the UI when we did.
 | P-9 | 🟠 **`Promise.all` on one pg client** | Three queries issued concurrently on a single connection. `pg` warns today and throws in v9. | A deprecation warning in the server log | Serialised. The parallelism that matters is scoring in memory, not overlapping round trips. |
 | P-10 | 🟡 Demo seed posted to a group account | Used `Capital Account` (a group) instead of the `Owner's Capital` leaf. | The `V-4` database trigger | **The GL's own validation caught a seeding bug** — the constraint working exactly as designed. |
 
+### Validated against a real file
+
+A real HDFC savings-account PDF export (from the user, page 1 only) confirmed the
+HDFC template's columns and `dd/MM/yy` date format exactly — one of seven
+placeholder templates now verified. It also broke the parser in three ways that
+no invented fixture had reached:
+
+| # | Defect | What happened | Resolution |
+|---|---|---|---|
+| P-11 | 🔴 **The opening balance was unfindable on a real statement** | HDFC puts it in a `STATEMENT SUMMARY` block at the **foot** of the file. `mineLabel` searched only the preamble, so it returned null — and BR-6, the check the entire import rests on, silently could not run. It fell back to deriving the balance from the running-balance column, which happens to work on this file and would not on one without that column. | Both balances are now searched above *and* below the transactions. |
+| P-12 | 🟠 **Summary labels and values sit on different rows** | The block is `Opening Balance │ Dr Count │ Cr Count │ …` with the values on the *next* row. `mineLabel` only ever looked for a number on the label's own row. | The label's **column index** is now carried down to the following rows, so a value is read from beneath its own heading rather than from wherever a number happens to appear. |
+| P-13 | 🟠 The period line was not recognised | HDFC writes `From : 01/07/2026`. The pattern required `from` followed directly by a digit and did not allow the colon, so the statement period fell back to the first and last transaction dates. | Colon and spacing made optional. |
+
+Also confirmed: the summary block writes `Closing Bal`, not `Closing Balance`,
+and narrations wrap across two physical lines inside one table cell.
+
+**All three are the same lesson: the fixtures were written by the same person
+who wrote the parser, so they encoded the same assumptions.** One real file
+found in ten minutes what thirty-six invented tests had not.
+
 ### Deliberate divergence from the spec
 
 §5.2 models per-bank templates as a versioned `bank_statement_templates`
@@ -179,6 +199,11 @@ can actually win.
 `withFirm()` wrapper existed specifically to prevent the tenant leak that was
 then reintroduced fifteen lines from it. *Countermeasure:* if a helper exists
 for a concern, no code path may open that concern directly.
+
+**7. Fixtures that share the author's assumptions.** P-11, P-12, P-13. Thirty-six
+tests written alongside the parser missed three layout facts that one real file
+exposed immediately. *Countermeasure:* validate every template against a genuine
+export, redacted, before trusting it.
 
 **6. Coercing at the wrong boundary.** P-2, P-3. Money through `Number()`; a raw
 `1,00,000.00` returned from a parser and failing three modules later. Both
@@ -257,6 +282,6 @@ misleading. No unit test can hold that opinion.
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
 | Bank | 48 | Decentro webhook path, 1:N allocation, learned rules |
-| Statement files | 36 | Real bank exports; `.xlsx`; password-protected PDFs |
+| Statement files | 42 | `.xlsx`; password-protected PDFs; banks other than HDFC |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **178** | |
+| **Total** | **184** | |

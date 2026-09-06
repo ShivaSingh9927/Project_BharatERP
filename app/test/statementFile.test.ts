@@ -296,6 +296,92 @@ Txn Date,Particulars,Debit,Credit,Balance
 });
 
 // ---------------------------------------------------------------------------
+/**
+ * Modelled on a REAL HDFC savings-account statement (net-banking PDF export),
+ * with every personal detail replaced by a dummy. Only the layout is real.
+ *
+ * Two things here that no invented fixture had:
+ *
+ *   - the opening balance lives in a STATEMENT SUMMARY block at the FOOT of the
+ *     statement, not in the preamble
+ *   - in that block, the labels are on one row and the values on the next, so
+ *     the value must be read from beneath its own heading
+ *
+ * Both broke the parser. On the real file `openingBalance` came back null and
+ * BR-6 could not run at all.
+ */
+const HDFC_REAL_SHAPE = `Page No .: 1
+Account Branch,:,EXAMPLE BRANCH
+Address,:,HDFC BANK LTD.
+City,:,EXAMPLE CITY 000000
+Phone no.,:,18002600/18001600
+OD Limit,:,0.00
+Currency,:,INR
+Cust ID,:,000000000
+Account No,:,00000000000000,OTHER
+A/C Open Date,:,20/07/2026
+RTGS/NEFT IFSC:,HDFC0000000,MICR : 000000000
+Account Type,:,SAVINGS A/C - SB MAX(193)
+From : 01/07/2026,To : 22/07/2026,Statement of account
+
+Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance
+21/07/26,"CHQ DEP - CTS CLG1 - EXAMPLE: A N OTHER
+NAME :STATE BANK OF INDIA",0000000000204314,21/07/26,,"25,000.00","25,000.00"
+
+STATEMENT SUMMARY :-
+Opening Balance,Dr Count,Cr Count,Debits,Credits,Closing Bal
+0.00,0,1,0.00,"25,000.00","25,000.00"
+
+Generated On:,22-Jul-2026 19:50
+This is a computer generated statement and does not require signature.
+`;
+
+describe('a real HDFC statement layout', () => {
+  it('identifies the bank and its columns', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    expect(p.bank).toBe('HDFC Bank');
+    expect(p.template.dateFormat).toBe('dd/MM/yy');
+    expect(p.rows).toHaveLength(1);
+  });
+
+  it('reads the transaction, including a narration wrapped over two lines', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    expect(p.rows[0]).toMatchObject({
+      txnDate: '2026-07-21', credit: '25000.00', debit: '0.00',
+      runningBalance: '25000.00',
+    });
+    expect(p.rows[0]!.narration).toContain('CHQ DEP - CTS CLG1');
+    expect(p.rows[0]!.narration).toContain('STATE BANK OF INDIA');
+  });
+
+  it('finds the opening balance in the summary block at the FOOT of the file', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    expect(p.openingBalance).toBe('0.00');
+    expect(p.closingBalance).toBe('25000.00');
+    // Not derived from the running balance — genuinely mined from the summary.
+    expect(p.warnings.join(' ')).not.toMatch(/derived from the first row/);
+  });
+
+  it('reads the period from the From/To line, not from the transaction dates', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    expect(p.periodFrom).toBe('2026-07-01');
+    expect(p.periodTo).toBe('2026-07-22');
+  });
+
+  it('so BR-6 can actually run, which is the whole point', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    const check = verifyStatementArithmetic(p.openingBalance!, p.closingBalance!, p.rows);
+    expect(check.ok).toBe(true);
+  });
+
+  it('does not mistake the summary or the page header for transactions', () => {
+    const p = parseStatementFile(HDFC_REAL_SHAPE);
+    expect(p.rows).toHaveLength(1);
+    expect(p.skippedRows.some((s) => s.text.includes('STATEMENT SUMMARY'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('refusals', () => {
   it('refuses a file with no header row', () => {
     expect(() => parseStatementFile('Some summary text\nNothing tabular here\n'))
