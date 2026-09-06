@@ -266,6 +266,48 @@ describe('BR-9 / BR-10 — narration parsing by rule (T-4)', () => {
     expect(residue).toEqual(['MISC ADJUSTMENT ENTRY REF 9981']);
   });
 
+  // Shapes taken from two REAL HDFC statements, with names, handles and
+  // account numbers replaced by dummies. Continuation lines are joined with NO
+  // separator, because HDFC wraps mid-token: `...PTYBL-Y` + `ESB0PTMUPI-...`
+  // is the single token `YESB0PTMUPI`, and joining with a space would corrupt
+  // the reference the matcher depends on.
+  describe('real HDFC narrations', () => {
+    it('does NOT mistake an IFSC for the UTR', () => {
+      // The reference is 624861888406; SBIN0000641 is the counterparty bank's
+      // IFSC and matches the UTR shape. Because a UTR is preferred over a
+      // positional match, the IFSC used to overwrite the real reference —
+      // corrupting the strongest matching signal in the product, and doing it
+      // identically for every transaction from that bank.
+      const p = parseNarration('UPI-XXXXXXX7140-SBIN0000641-624861888406-EXAMPLE NAME');
+      expect(p.mode).toBe('upi');
+      expect(p.reference).toBe('624861888406');
+      expect(p.reference).not.toBe('SBIN0000641');
+    });
+
+    it('reads the UPI reference through a mid-token line wrap', () => {
+      const p = parseNarration(
+        'UPI-EXAMPLE NAME-PAYTM-70000000@PTYBL-YESB0PTMUPI-624531110990-TRANSACTIONNOTE');
+      expect(p.reference).toBe('624531110990');
+    });
+
+    it('recognises a credit-card bill paid from the bank account', () => {
+      // §18.5: this line must settle Credit Card Payable, never an expense —
+      // the card spend is already on the card statement. Previously no rule
+      // fired at all, so it would have gone to the model for classification.
+      const p = parseNarration('IB BILLPAY DR-HDFC93-361135XXXX4700');
+      expect(p.matchedByRule).toBe(true);
+      expect(p.mode).toBe('card');
+      expect(p.reference).toBe('361135XXXX4700');
+    });
+
+    it('separates the mandate reference from the party on a direct debit', () => {
+      const p = parseNarration('ACH C- EXAMPLE COMPANY-32256648');
+      expect(p.mode).toBe('nach');
+      expect(p.counterparty).toBe('EXAMPLE COMPANY');
+      expect(p.reference).toBe('32256648');
+    });
+  });
+
   it('still recovers a bare UTR when no rule fires', () => {
     const p = parseNarration('SETTLEMENT HDFCR52026090412345 BATCH');
     expect(p.matchedByRule).toBe(false);

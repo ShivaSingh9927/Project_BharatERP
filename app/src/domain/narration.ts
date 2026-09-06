@@ -33,6 +33,27 @@ export interface ParsedNarration {
  */
 const UTR_RE = /\b(?:UTR[:\s-]*)?([A-Z]{4}[A-Za-z]?\d{6,18})\b/;
 
+/**
+ * An IFSC is NOT a UTR, and telling them apart matters more than it looks.
+ *
+ * Real HDFC narration: `UPI-XXXXXXX7140-SBIN0000641-624861888406`. The UPI
+ * reference is `624861888406`; `SBIN0000641` is the counterparty bank's IFSC.
+ * The UTR pattern matches the IFSC too (four letters plus digits), and because
+ * a UTR is preferred over any positional match, the IFSC *overwrote* the
+ * correct reference.
+ *
+ * That corrupts the single strongest matching signal in the product (BR-10),
+ * and does so in a specifically nasty way: an IFSC is identical for every
+ * transaction from that bank, so instead of one wrong reference you get dozens
+ * of transactions all claiming the same one.
+ *
+ * An IFSC is exactly eleven characters with `0` in the fifth position — that
+ * fifth-character rule is what distinguishes it reliably.
+ */
+const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+const isIfsc = (token: string): boolean => IFSC_RE.test(token.toUpperCase());
+
 interface Rule {
   name: string;
   mode: PaymentMode;
@@ -68,9 +89,21 @@ const RULES: Rule[] = [
   { name: 'cheque_clearing', mode: 'cheque',
     re: /\bCLG\b.*?\b(\d{6})\b/i, reference: 1 },
 
+  // `ACH C- EXAMPLE COMPANY-32256648` — the trailing digits are the mandate or
+  // reference, and gluing them onto the party name (as this first did) makes
+  // party resolution fail on every direct debit.
   { name: 'nach', mode: 'nach',
-    re: /^(?:NACH|ACH)\s*(?:DR|CR|C-|D-)?[\s-]*([A-Z]+)?[\s-]*(.+?)(?:[\s-]+MANDATE\s*(\S+))?$/i,
-    counterparty: 2 },
+    re: /^(?:NACH|ACH)\s*(?:DR|CR|C|D)?[\s-]+(.+?)(?:[\s-]+MANDATE\s*(\S+)|-(\d{6,}))?$/i,
+    counterparty: 1, reference: 3 },
+
+  // `IB BILLPAY DR-HDFC93-361135XXXX4700` — a CREDIT CARD bill paid from the
+  // bank account, seen in a real statement. Recognising it matters because of
+  // the double-counting hazard in §18.5: this line must settle the Credit Card
+  // Payable liability, never an expense account. The card number is already
+  // masked by the bank.
+  { name: 'card_bill_payment', mode: 'card',
+    re: /\b(?:IB\s+)?BILLPAY\s*(?:DR|CR)?\b[\s-]*([A-Z0-9]+)?[\s-]*([0-9X]{8,20})?/i,
+    reference: 2 },
 
   { name: 'atm', mode: 'atm', re: /\bATM\s*(?:WDL|WITHDRAWAL|CASH)\b.*?(\d{4,8})?/i, reference: 1 },
   { name: 'cash', mode: 'cash', re: /^(?:BY|TO)\s+CASH\b/i },
@@ -85,6 +118,15 @@ const RULES: Rule[] = [
   { name: 'card', mode: 'card', re: /\b(?:POS|DEBIT\s*CARD|CREDIT\s*CARD)\b/i },
   { name: 'transfer', mode: 'transfer', re: /^(?:TRF|TRANSFER|FT)\b[\s/-]*(.*)$/i, counterparty: 1 },
 ];
+
+/** The first UTR-shaped token that is not actually an IFSC. */
+function findUtr(text: string): string | null {
+  const re = new RegExp(UTR_RE.source, 'g');
+  for (const m of text.matchAll(re)) {
+    if (!isIfsc(m[1]!)) return m[1]!;
+  }
+  return null;
+}
 
 /** Strip the bank's padding without touching the stored raw text (BR-11). */
 function tidy(v: string | undefined): string | null {
@@ -103,12 +145,19 @@ export function parseNarration(raw: string): ParsedNarration {
     // BR-10: the UTR is the strongest matching signal available, so it is
     // preferred over whatever positional reference the rule found. An exact
     // UTR turns a probabilistic match into a certain one.
-    const utr = UTR_RE.exec(text)?.[1] ?? null;
+    const utr = findUtr(text);
     const positional = rule.reference ? tidy(m[rule.reference]) : null;
+
+    // On a UPI line the 12-digit numeric id IS the transaction reference, so a
+    // positional match beats a UTR-shaped token there. Everywhere else the UTR
+    // is the stronger signal.
+    const reference = rule.mode === 'upi'
+      ? (positional ?? utr)
+      : (utr ?? positional);
 
     return {
       mode: rule.mode,
-      reference: utr ?? positional,
+      reference,
       counterparty: rule.counterparty ? tidy(m[rule.counterparty]) : null,
       matchedByRule: true,
       rule: rule.name,
@@ -117,7 +166,7 @@ export function parseNarration(raw: string): ParsedNarration {
 
   // Nothing fired. A bare UTR is still worth extracting before giving up —
   // it may be all the matcher needs.
-  const utr = UTR_RE.exec(text)?.[1] ?? null;
+  const utr = findUtr(text);
   return {
     mode: null, reference: utr, counterparty: null,
     matchedByRule: false, rule: null,

@@ -5,7 +5,7 @@ everything knowingly left unbuilt. Kept because the *patterns* repeat: the same
 three or four kinds of mistake keep reappearing in new modules, and a list of
 them is cheaper to re-read than to rediscover.
 
-**Status as of the statement-parser and reconciliation-screen build:** 191 tests
+**Status as of the statement-parser and reconciliation-screen build:** 195 tests
 passing, typecheck clean, 10 migrations applied.
 
 ---
@@ -228,6 +228,35 @@ path, and they largely work today. But note SBI's `.xlsx` is **encrypted OOXML**
 (`CDFV2 Encrypted`), so the spreadsheet path needs a decryption step *and* an
 `.xlsx` reader before it works without manual conversion. Neither is built.
 
+### A second HDFC account — narration defects
+
+A second real HDFC statement (different account) confirmed the template is
+**stable across accounts**: identical column headings, identical `From : … To :`
+line, identical foot summary grid, and BR-6 passing on its own figures
+(`162,636.17 + 133.00 − 37,476.60 = 125,292.57`). Its `Dr Count` / `Cr Count`
+of 5 / 2 again offers the free completeness check (G-15).
+
+Testing the narration rules against its real UPI formats found three defects:
+
+| # | Defect | What happened | Resolution |
+|---|---|---|---|
+| P-17 | 🔴 **An IFSC was read as the UTR** | Real narration: `UPI-XXXXXXX7140-SBIN0000641-624861888406`. The reference is `624861888406`; `SBIN0000641` is the counterparty bank's IFSC, which also matches the UTR shape (four letters plus digits). Because a UTR is *preferred* over a positional match (BR-10), the IFSC **overwrote the correct reference**. | An IFSC is excluded by its defining property — eleven characters with `0` in the fifth position — and on a UPI line the numeric id now beats a UTR-shaped token. |
+| P-18 | 🟠 A credit-card bill payment matched no rule | `IB BILLPAY DR-HDFC93-361135XXXX4700` is a card bill paid from the bank account, and no rule fired, so it would have been sent to the model to classify. | New `card_bill_payment` rule. It must settle Credit Card Payable and never an expense (§18.5) — the spend is already on the card statement. |
+| P-19 | 🟠 The mandate reference was glued to the party name | `ACH C- EXAMPLE COMPANY-32256648` yielded a counterparty of `COMPANY-32256648`, so party resolution would fail on every direct debit. | Trailing digits captured as the reference; counterparty is now `EXAMPLE COMPANY`. |
+
+**P-17 is the second-worst defect in this log**, after the CR sign inversion, and
+for the same structural reason: it silently corrupts the signal the matching
+engine trusts most. Its failure mode is also worse than a single wrong value —
+an IFSC is identical for every transaction from that bank, so dozens of
+transactions would have claimed the same reference.
+
+**One further hazard, recorded but not yet handled:** HDFC wraps narrations
+*mid-token*. `...PTYBL-Y` on one line and `ESB0PTMUPI-...` on the next is the
+single token `YESB0PTMUPI`. Continuation lines must therefore be joined with
+**no separator**; joining with a space or newline — the obvious choice —
+corrupts the reference. This only bites once a fixed-width PDF reader exists
+(G-14), so it is a note for that work rather than a defect today.
+
 ### Deliberate divergence from the spec
 
 §5.2 models per-bank templates as a versioned `bank_statement_templates`
@@ -311,7 +340,7 @@ misleading. No unit test can hold that opinion.
 | # | Gap | Detail |
 |---|---|---|
 | G-5 | **No `.xlsx` reader and no decryption** | CSV/TSV/delimited works, and a real SBI spreadsheet export parses correctly once converted. But SBI ships **encrypted OOXML**, so the path needs a decrypt step plus an `.xlsx` reader before it works unaided. HDFC and SBI templates are now validated against real files; ICICI, Axis and Kotak remain guesses |
-| G-14 | **PDF statements need a different parser entirely** | Fixed-width columns, no surviving header row, per-page column shifts, narrations spanning 4–5 lines. Not a variation on the CSV reader. Only worth building if pilot CAs cannot get spreadsheet exports |
+| G-14 | **PDF statements need a different parser entirely** | Fixed-width columns, no surviving header row, per-page column shifts, narrations spanning 4–5 lines **and wrapping mid-token, so continuation lines must be joined with no separator**. Not a variation on the CSV reader. Only worth building if pilot CAs cannot get spreadsheet exports |
 | G-15 | Dr/Cr counts not used as a completeness check | Statements that state them give a free second verification alongside BR-6: balances prove the amounts, counts prove no row was dropped |
 | G-16 | Credit cards remain Phase 2, now specified | A real ICICI card statement is documented in `specs/bank-and-reconciliation.md` §18 — layout, the liability postings, the BR-13-shaped double-counting hazard, why a card statement can never support an ITC claim, and EMI conversion as borrowing. **No code implements any of it.** ICICI's *bank account* template is still an unvalidated guess; a card statement does not test it |
 | G-6 | **Learned rules do not apply** | `bank_transaction_rules` table exists; nothing reads it. Layer 3 of the matching engine is absent, so T-11 is untested |
@@ -360,7 +389,7 @@ misleading. No unit test can hold that opinion.
 | Reports | 10 | Cash flow statement |
 | Invoicing | 29 | e-Invoice failure cases (§8.5) |
 | Bills | 26 | GSTR-2B matching against real 2B data |
-| Bank | 48 | Decentro webhook path, 1:N allocation, learned rules |
+| Bank | 52 | Decentro webhook path, 1:N allocation, learned rules |
 | Statement files | 49 | Encrypted `.xlsx` decryption; PDF/fixed-width; banks other than HDFC and SBI |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **191** | |
+| **Total** | **195** | |
