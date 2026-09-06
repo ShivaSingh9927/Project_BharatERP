@@ -134,9 +134,23 @@ describe('ITC eligibility (BE-6, §6.2)', () => {
   });
 
   it('conditional categories need a CA decision, not a guess', () => {
+    // No business type recorded, so the question is OPEN rather than settled.
+    // This asserted 'blocked' until G-3: reporting a settled answer to an
+    // unasked question is what stopped the exception ever being reachable.
     const d = decideItc({ accountEligibility: 'conditional', blockedCategory: 'motor_vehicles' });
-    expect(d.eligibility).toBe('blocked');
+    expect(d.eligibility).toBe('conditional');
     expect(d.needsHumanDecision).toBe(true);
+  });
+
+  it('settles a conditional category when the trade plainly does not qualify', () => {
+    // A general trader cannot claim vehicle credit. That is an answer, not a
+    // question, and it must not sit in a review queue forever.
+    const d = decideItc({
+      accountEligibility: 'conditional', blockedCategory: 'motor_vehicles',
+      clientBusinessType: 'general',
+    });
+    expect(d.eligibility).toBe('blocked');
+    expect(d.needsHumanDecision).toBe(false);
   });
 
   it('unblocks a conditional category when the business qualifies', () => {
@@ -175,6 +189,117 @@ describe('ITC claimability vs eligibility (§6.3)', () => {
 });
 
 // ---------------------------------------------------------------------------
+/*
+ * G-3 — the business-type exception, reached through the code path that posts.
+ *
+ * `decideItc` always knew how to unblock a conditional category for a client
+ * whose trade qualifies. It needed two facts and `createBill` supplied neither:
+ * the business type was a hardcoded `SELECT NULL`, and `blockedCategory` was
+ * never passed at all. The exception logic was covered by unit tests calling
+ * `decideItc` directly — passing, and unreachable from `createBill`.
+ *
+ * These tests go through `createBill`, which is the difference that matters.
+ */
+describe('G-3 conditional ITC and the client business type', () => {
+  const foodLine = {
+    description: 'Meals', unitPrice: '10000', gstRate: '18',
+  };
+
+  /** A tenant with its own chart, ITC rules and supplier. */
+  async function tenantWith(businessType?: string) {
+    const tt = await seedTenant({
+      firmName: `ITC Firm ${randomUUID().slice(0, 8)}`,
+      clientName: businessType ?? 'Unasked Trader',
+      userEmail: `itc-${randomUUID()}@test.local`,
+      startYear: 2026,
+      businessType,
+    });
+    await registerGstin(tt.firmId, tt.clientId, BUYER_GSTIN);
+    await seedItcEligibility(tt.clientId);
+
+    const sup = await withFirm(tt.firmId, async (c) => {
+      const r = await c.query<{ id: string }>(
+        `INSERT INTO parties (firm_id, client_id, party_type, name, legal_name,
+                              gstin, gst_category, state_code, ledger_account_id, created_by)
+         VALUES ($1,$2,'supplier','Caterer','Caterer',$3,'registered_regular','27',$4,$5)
+         RETURNING id`,
+        [tt.firmId, tt.clientId, makeGstin('27', 'AAECC2222M'), tt.accounts['Creditors']!, tt.userId]);
+      return r.rows[0]!.id;
+    });
+    return { tt, sup };
+  }
+
+  const bill = (tt: SeededTenant, sup: string, account: string, n: string) =>
+    createBill(tt.firmId, {
+      clientId: tt.clientId, partyId: sup,
+      billNumber: n, billDate: '2026-05-20',
+      lines: [{ ...foodLine, expenseAccountId: tt.accounts[account]! }],
+      createdBy: tt.userId,
+    });
+
+  it('a restaurant CAN claim credit on food', async () => {
+    // The whole point of 'conditional'. Before this fix the answer was always
+    // "ask a human", however clearly the client qualified.
+    const { tt, sup } = await tenantWith('restaurant');
+    const b = await bill(tt, sup, 'Staff Welfare', 'FOOD/001');
+
+    expect(b.itcEligibility).toBe('eligible');
+    expect(b.itcClaimableValue).toBe('1800.00');
+    expect(b.itcLines[0]!.reason).toMatch(/qualifies for the exception/);
+  });
+
+  it('an ordinary business CANNOT, and that is settled, not queued', async () => {
+    const { tt, sup } = await tenantWith('general');
+    const b = await bill(tt, sup, 'Staff Welfare', 'FOOD/002');
+
+    expect(b.itcEligibility).toBe('blocked');
+    expect(b.itcClaimableValue).toBe('0.00');
+    // Nothing to ask: a general trader cannot claim food credit.
+    expect(b.warnings.some((w) => /needs a CA decision/.test(w))).toBe(false);
+    expect(b.itcLines[0]!.reason).toMatch(/no Section 17\(5\) exception applies/);
+  });
+
+  it('an unasked client also parks — not asked is not the same as general', async () => {
+    // NULL stays a legitimate answer. Defaulting it to 'general' would quietly
+    // decide a question the CA was never asked.
+    const { tt, sup } = await tenantWith(undefined);
+    const b = await bill(tt, sup, 'Staff Welfare', 'FOOD/003');
+    expect(b.itcEligibility).toBe('conditional');
+    expect(b.itcClaimableValue).toBe('0.00');
+  });
+
+  it('names the actual clause, which a CA can check', async () => {
+    // Previously every reason read "Section 17(5) blocks input credit on
+    // blocked category", because the category was never passed.
+    const { tt, sup } = await tenantWith('general');
+    const b = await bill(tt, sup, 'Travel Expenses', 'TRAVEL/001');
+    expect(b.itcEligibility).toBe('blocked');
+    expect(b.itcLines[0]!.reason).toMatch(/Travel benefits to employees/);
+  });
+
+  it('CSR is blocked whatever the client does', async () => {
+    // Finance Act 2023, s.17(5)(fa) — no exception exists, so even a trade
+    // that unblocks other categories cannot claim this.
+    const { tt, sup } = await tenantWith('restaurant');
+    const b = await bill(tt, sup, 'CSR Expenses', 'CSR/001');
+    expect(b.itcEligibility).toBe('blocked');
+    expect(b.itcClaimableValue).toBe('0.00');
+    expect(b.itcLines[0]!.reason).toMatch(/Corporate Social Responsibility/);
+  });
+
+  it('the database refuses a business type the code cannot act on', async () => {
+    // A typo would fail safe — no exception applies, so the line parks — but it
+    // would fail SILENTLY, and the CA would never learn their answer was unused.
+    await expect(seedTenant({
+      firmName: `Bad Firm ${randomUUID().slice(0, 8)}`,
+      clientName: 'Typo Ltd',
+      userEmail: `typo-${randomUUID()}@test.local`,
+      startYear: 2026,
+      businessType: 'restaraunt',
+    })).rejects.toThrow(/business_type_known/);
+  });
+});
+
 describe('bill creation and GL posting (§9)', () => {
   it('posts an ITC-eligible bill with Input GST as an asset', async () => {
     const bill = await createBill(t.firmId, {

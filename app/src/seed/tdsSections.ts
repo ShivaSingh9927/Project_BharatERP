@@ -132,31 +132,46 @@ export async function seedTdsSections(): Promise<number> {
 }
 
 /**
- * Tag expense accounts with ITC eligibility.
- * Spec: bills-and-expenses.md §6.2 (Section 17(5))
+ * Tag expense accounts with their Section 17(5) position.
+ * Spec: bills-and-expenses.md §6.2
  *
- * ⚠️ This is ACCOUNT-level, and the review (A5.3) says that is not good enough.
- * A hotel bill with allowable lodging and blocked food is routine, and marking
- * the whole bill blocked is described as a harsh UX that will frustrate users.
- * Per-LINE eligibility is wanted from day one. Recorded as gap G-9; this
- * function is the interim behaviour, not the intended one.
+ * Eligibility and CATEGORY are set together, because setting one without the
+ * other was gap G-3: an account could say "blocked" while nothing recorded
+ * WHICH clause blocked it, so every warning read "Section 17(5) blocks input
+ * credit on blocked category" — a sentence a CA cannot check — and the
+ * business-type exception had no key to look itself up by, so it never fired.
+ *
+ * `conditional` means blocked for most clients and genuinely claimable for
+ * some: a transport company may claim credit on motor vehicles, a restaurant on
+ * food. Which applies depends on the client's trade, recorded once on the
+ * client (review answer A5.4), and never guessed.
  */
-export async function seedItcEligibility(clientId: string): Promise<void> {
-  // CSR was added to the blocked list by the Finance Act 2023 — s.17(5)(fa).
-  // Confirmed by the review (A5.1) as missing from our list.
-  const blocked = ['Travel Expenses', 'CSR Expenses'];
-  const conditional: string[] = [];           // populated once vehicle/insurance accounts exist
+const ITC_RULES: Array<{
+  account: string; eligibility: 'blocked' | 'conditional'; category: string;
+}> = [
+  // Blocked outright, whatever the client does.
+  { account: 'Travel Expenses', eligibility: 'blocked', category: 'employee_travel' },
+  { account: 'CSR Expenses', eligibility: 'blocked', category: 'csr' },
 
+  // Conditional — the exception depends on the client's business type.
+  { account: 'Motor Vehicle Expenses', eligibility: 'conditional', category: 'motor_vehicles' },
+  { account: 'Staff Welfare', eligibility: 'conditional', category: 'food_beverages' },
+  { account: 'Insurance', eligibility: 'conditional', category: 'rent_a_cab_insurance' },
+];
+
+export async function seedItcEligibility(clientId: string): Promise<void> {
+  // Everything is claimable until a rule says otherwise. Starting from
+  // "eligible" and narrowing is the right default for an expense ledger: the
+  // blocked list is short and closed, the eligible list is not.
   await ownerPool.query(
-    `UPDATE accounts SET itc_eligibility = 'eligible'
+    `UPDATE accounts SET itc_eligibility = 'eligible', itc_blocked_category = NULL
      WHERE client_id = $1 AND root_type = 'expense' AND NOT is_group`,
     [clientId]);
-  await ownerPool.query(
-    `UPDATE accounts SET itc_eligibility = 'blocked'
-     WHERE client_id = $1 AND name = ANY($2)`, [clientId, blocked]);
-  if (conditional.length) {
+
+  for (const r of ITC_RULES) {
     await ownerPool.query(
-      `UPDATE accounts SET itc_eligibility = 'conditional'
-       WHERE client_id = $1 AND name = ANY($2)`, [clientId, conditional]);
+      `UPDATE accounts SET itc_eligibility = $2, itc_blocked_category = $3
+       WHERE client_id = $1 AND name = $4`,
+      [clientId, r.eligibility, r.category, r.account]);
   }
 }

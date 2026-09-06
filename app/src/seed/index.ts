@@ -24,6 +24,8 @@ export interface SeededTenant {
 export async function createTenant(opts: {
   firmName: string; clientName: string; userEmail: string;
   gstin?: string; pan?: string;
+  /** Section 17(5) exceptions depend on this (G-3). */
+  businessType?: string;
 }): Promise<{ firmId: string; clientId: string; userId: string }> {
   const c = await ownerPool.connect();
   try {
@@ -33,8 +35,9 @@ export async function createTenant(opts: {
     const firmId = firm.rows[0]!.id;
 
     const client = await c.query<{ id: string }>(
-      `INSERT INTO clients (firm_id, name, pan) VALUES ($1,$2,$3) RETURNING id`,
-      [firmId, opts.clientName, opts.pan ?? null]);
+      `INSERT INTO clients (firm_id, name, pan, business_type)
+       VALUES ($1,$2,$3,$4) RETURNING id`,
+      [firmId, opts.clientName, opts.pan ?? null, opts.businessType ?? null]);
     const clientId = client.rows[0]!.id;
 
     // A GSTIN is now a registration under the client, not a field on it (G-22).
@@ -142,6 +145,8 @@ export async function seedTenant(opts: {
   firmName: string; clientName: string; userEmail: string; startYear: number;
   /** The client's identity (G-22). GSTINs attach via `registerGstin`. */
   pan?: string;
+  /** What the client does — unblocks conditional ITC categories (G-3). */
+  businessType?: string;
 }): Promise<SeededTenant> {
   const { firmId, clientId, userId } = await createTenant(opts);
   const fiscalYearId = await createFiscalYear(firmId, clientId, opts.startYear);

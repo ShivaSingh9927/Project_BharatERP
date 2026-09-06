@@ -161,24 +161,41 @@ export async function createBill(
       : true;   // unregistered supplier — treat as local
 
     // --- ITC eligibility, per line (§6.2) -----------------------------------
+    /*
+     * The client's trade, which is what unblocks a conditional category (G-3).
+     *
+     * This used to be `SELECT NULL::text AS business_type` — a literal
+     * placeholder — so the answer was always "unknown" and every conditional
+     * line parked for a human forever. NULL is still a legitimate answer, and
+     * still parks the line: not asked is different from asked and general, and
+     * guessing here would claim credit the client may not be entitled to.
+     */
     const clientRow = await c.query<{ business_type: string | null }>(
-      `SELECT NULL::text AS business_type`);   // business_type lands with the client profile
+      'SELECT business_type FROM clients WHERE id = $1', [input.clientId]);
     const businessType = clientRow.rows[0]?.business_type ?? null;
 
     const resolved: Array<BillLineInput & {
       itc: ItcEligibility; accountName: string; itcReason: string;
     }> = [];
     for (const [i, line] of input.lines.entries()) {
-      const acc = await c.query<{ itc_eligibility: ItcEligibility | null; name: string }>(
-        `SELECT itc_eligibility, name FROM accounts
+      const acc = await c.query<{
+        itc_eligibility: ItcEligibility | null; name: string;
+        itc_blocked_category: string | null;
+      }>(
+        `SELECT itc_eligibility, name, itc_blocked_category FROM accounts
          WHERE id = $1 AND client_id = $2 AND NOT is_group`,
         [line.expenseAccountId, input.clientId]);
       if (acc.rowCount === 0) {
         throw new ValidationError(`expense account for line ${i + 1} not found or is a group`, 'PB-1');
       }
 
+      // `blockedCategory` was never passed here (G-3), so the exception lookup
+      // returned undefined every time and no client's trade could ever unblock
+      // anything. It was exercised only by unit tests calling `decideItc`
+      // directly — covered, passing, and unreachable from the path that posts.
       const decision = decideItc({
         accountEligibility: acc.rows[0]!.itc_eligibility,
+        blockedCategory: acc.rows[0]!.itc_blocked_category,
         clientBusinessType: businessType,
       });
 

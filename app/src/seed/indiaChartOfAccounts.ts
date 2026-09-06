@@ -184,6 +184,12 @@ export const INDIA_COA: CoaRoot[] = [
           // the Finance Act 2023 and confirmed by the CA review (A5.1). It needs
           // its own account so the block can attach to something.
           { name: 'CSR Expenses', accountType: 'general', expenseClass: 'opex', code: '5196' },
+          // Accounts whose ITC is CONDITIONAL — blocked for most clients, and
+          // genuinely claimable for some. Without them the exception logic has
+          // nothing to attach to and can never fire.
+          { name: 'Motor Vehicle Expenses', accountType: 'general', expenseClass: 'opex', code: '5191' },
+          { name: 'Staff Welfare', accountType: 'general', expenseClass: 'opex', code: '5192' },
+          { name: 'Insurance', accountType: 'general', expenseClass: 'opex', code: '5193' },
           { name: 'Round Off', accountType: 'round_off', expenseClass: 'opex', code: '5199' },
         ],
       },

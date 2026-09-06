@@ -43,6 +43,9 @@ export const BLOCKED_CATEGORIES: Record<string, { label: string; unblockedFor?: 
   personal_consumption:{ label: 'Goods or services for personal consumption' },
   lost_or_gifted:      { label: 'Goods lost, stolen, destroyed, written off, gifted, free samples' },
   composition_supplier:{ label: 'Anything purchased from a composition-scheme supplier' },
+  // Added outright to the blocked list by the Finance Act 2023 — s.17(5)(fa).
+  // No exception: CSR is blocked whatever the client's trade.
+  csr:                 { label: 'Corporate Social Responsibility expenditure' },
 };
 
 export interface ItcDecision {
@@ -95,10 +98,38 @@ export function decideItc(args: {
     };
   }
 
+  /*
+   * The exception did not apply — but WHY it did not apply is two different
+   * situations, and collapsing them into 'blocked' threw away the one piece of
+   * information a reviewer can act on (G-3).
+   *
+   *   business type known, does not qualify  → BLOCKED. Settled. A general
+   *       trader cannot claim credit on food, and nobody needs to be asked.
+   *   business type not recorded             → CONDITIONAL. Undecided, and
+   *       answerable by one question at the client level (review answer A5.4).
+   *
+   * The money is treated identically either way — a non-eligible line
+   * capitalises its tax into the expense, so nothing is over-claimed while the
+   * question is open. What changes is that a review queue can now separate
+   * "go and ask what business this client is in" from "nothing to do here".
+   *
+   * Returning 'blocked' for both also made the 'conditional' branch of
+   * `canClaimItc` unreachable from the posting path.
+   */
+  if (args.clientBusinessType) {
+    return {
+      eligibility: 'blocked',
+      reason: `${label} is blocked for a ${args.clientBusinessType} business — ` +
+              'no Section 17(5) exception applies to this trade',
+      needsHumanDecision: false,
+    };
+  }
+
   return {
-    eligibility: 'blocked',
+    eligibility: 'conditional',
     reason: `${label} is blocked unless the client's business qualifies for the ` +
-            `exception — confirm the business type`,
+            "exception, and the client's business type has not been recorded — " +
+            'ask once, on the client, and this resolves for every future bill',
     needsHumanDecision: true,
   };
 }
