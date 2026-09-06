@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { seedTenant, type SeededTenant } from '../src/seed/index.ts';
+import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { seedTdsSections, seedItcEligibility } from '../src/seed/tdsSections.ts';
 import { createBill, paySupplier, contentHash } from '../src/domain/bills.ts';
 import { computeTds } from '../src/domain/tds.ts';
@@ -44,9 +44,7 @@ beforeAll(async () => {
     startYear: 2026,
   });
 
-  await ownerPool.query(
-    'UPDATE clients SET gstin = $2, state_code = $3 WHERE id = $1',
-    [t.clientId, BUYER_GSTIN, '27']);
+  await registerGstin(t.firmId, t.clientId, BUYER_GSTIN);
   await seedItcEligibility(t.clientId);
 
   const mkParty = (name: string, gstin: string | null) =>

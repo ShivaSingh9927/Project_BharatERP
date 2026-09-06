@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { seedTenant, type SeededTenant } from '../src/seed/index.ts';
+import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { seedGstRates } from '../src/seed/gstRates.ts';
 import { createInvoice, assertValidInvoiceNumber, invoiceOutstanding } from '../src/domain/invoicing.ts';
 import { validateGstin, gstinCheckDigit, isIntraState } from '../src/domain/gstin.ts';
@@ -44,9 +44,7 @@ beforeAll(async () => {
   });
 
   // Give the client its own GSTIN (Maharashtra).
-  await ownerPool.query(
-    'UPDATE clients SET gstin = $2, state_code = $3 WHERE id = $1',
-    [t.clientId, SUPPLIER_GSTIN, '27']);
+  await registerGstin(t.firmId, t.clientId, SUPPLIER_GSTIN);
 
   const party = async (
     name: string, gstin: string | null, category: string, state: string | null,

@@ -21,7 +21,7 @@
 import { writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { seedTenant } from './index.ts';
+import { seedTenant, registerGstin } from './index.ts';
 import { seedGstRates } from './gstRates.ts';
 import { seedTdsSections, seedItcEligibility } from './tdsSections.ts';
 import { createInvoice } from '../domain/invoicing.ts';

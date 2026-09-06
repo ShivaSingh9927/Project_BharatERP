@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { seedTenant, type SeededTenant } from '../src/seed/index.ts';
+import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { createInvoice } from '../src/domain/invoicing.ts';
 import { parseNarration, residueForModel } from '../src/domain/narration.ts';
 import {
@@ -74,9 +74,7 @@ beforeAll(async () => {
     startYear: 2026,
   });
 
-  await ownerPool.query(
-    'UPDATE clients SET gstin = $2, state_code = $3 WHERE id = $1',
-    [t.clientId, makeGstin('27', 'AAPFB1111L'), '27']);
+  await registerGstin(t.firmId, t.clientId, makeGstin('27', 'AAPFB1111L'));
 
   customer = await withFirm(t.firmId, async (c) => {
     const r = await c.query<{ id: string }>(

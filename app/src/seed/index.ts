@@ -23,7 +23,7 @@ export interface SeededTenant {
  */
 export async function createTenant(opts: {
   firmName: string; clientName: string; userEmail: string;
-  gstin?: string; pan?: string; stateCode?: string;
+  gstin?: string; pan?: string;
 }): Promise<{ firmId: string; clientId: string; userId: string }> {
   const c = await ownerPool.connect();
   try {
@@ -33,10 +33,22 @@ export async function createTenant(opts: {
     const firmId = firm.rows[0]!.id;
 
     const client = await c.query<{ id: string }>(
-      `INSERT INTO clients (firm_id, name, gstin, pan, state_code)
-       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [firmId, opts.clientName, opts.gstin ?? null, opts.pan ?? null, opts.stateCode ?? null]);
+      `INSERT INTO clients (firm_id, name, pan) VALUES ($1,$2,$3) RETURNING id`,
+      [firmId, opts.clientName, opts.pan ?? null]);
     const clientId = client.rows[0]!.id;
+
+    // A GSTIN is now a registration under the client, not a field on it (G-22).
+    // The state code is derived from the GSTIN rather than accepted separately:
+    // the first two characters of a GSTIN ARE the state code, and the database
+    // enforces that they agree, so taking a caller's word for it would only
+    // create a way for the two to disagree.
+    if (opts.gstin) {
+      await c.query(
+        `INSERT INTO client_registrations
+           (firm_id, client_id, gstin, state_code, is_primary)
+         VALUES ($1,$2,$3,$4,true)`,
+        [firmId, clientId, opts.gstin, opts.gstin.slice(0, 2)]);
+    }
 
     const user = await c.query<{ id: string }>(
       `INSERT INTO users (firm_id, email, display_name, role)
@@ -128,9 +140,45 @@ export async function seedChartOfAccounts(
 /** Full tenant setup, used by tests and by `npm run seed`. */
 export async function seedTenant(opts: {
   firmName: string; clientName: string; userEmail: string; startYear: number;
+  /** The client's identity (G-22). GSTINs attach via `registerGstin`. */
+  pan?: string;
 }): Promise<SeededTenant> {
   const { firmId, clientId, userId } = await createTenant(opts);
   const fiscalYearId = await createFiscalYear(firmId, clientId, opts.startYear);
   const accounts = await seedChartOfAccounts(firmId, clientId, userId);
   return { firmId, clientId, userId, fiscalYearId, accounts };
+}
+
+/**
+ * Give a client a GST registration (G-22).
+ *
+ * A client is a PAN and may hold a GSTIN in several states, so this is the only
+ * way to attach one. The state code is derived from the GSTIN rather than
+ * passed in: its first two characters ARE the state code, and the database
+ * enforces the two agree, so accepting it separately would only create a way
+ * for them to disagree.
+ *
+ * The first registration added becomes the primary unless told otherwise —
+ * `one_primary_per_client` makes a second primary a database error rather than
+ * a silently ambiguous default.
+ */
+export async function registerGstin(
+  firmId: string, clientId: string, gstin: string,
+  opts: { primary?: boolean } = {},
+): Promise<string> {
+  const existing = await ownerPool.query<{ n: string }>(
+    'SELECT count(*)::text AS n FROM client_registrations WHERE client_id = $1',
+    [clientId]);
+  const primary = opts.primary ?? existing.rows[0]!.n === '0';
+
+  const r = await ownerPool.query<{ id: string }>(
+    `INSERT INTO client_registrations
+       (firm_id, client_id, gstin, state_code, is_primary)
+     VALUES ($1,$2,$3,$4,$5)
+     RETURNING id`,
+    // The state code is derived here rather than in SQL, and the
+    // `state_code_matches_gstin` CHECK is what actually guarantees the two
+    // agree — the derivation is a convenience, the constraint is the promise.
+    [firmId, clientId, gstin, gstin.slice(0, 2), primary]);
+  return r.rows[0]!.id;
 }

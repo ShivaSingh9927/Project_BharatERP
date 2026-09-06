@@ -29,6 +29,12 @@ export interface BillLineInput {
 
 export interface CreateBillInput {
   clientId: string;
+  /**
+   * Which of the client's GST registrations received this supply (G-22).
+   * Defaults to the primary; may legitimately resolve to none, for a client
+   * below the GST registration threshold.
+   */
+  registrationId?: string;
   partyId: string;
   billNumber: string;                 // the vendor's number, not ours
   billDate: string;
@@ -76,13 +82,39 @@ export async function createBill(
     // --- supplier -----------------------------------------------------------
     const p = await c.query(
       `SELECT p.id, p.name, p.legal_name, p.gstin, p.gst_category, p.state_code,
-              p.ledger_account_id, p.is_active,
-              cl.gstin AS buyer_gstin, cl.state_code AS buyer_state
-       FROM parties p JOIN clients cl ON cl.id = p.client_id
-       WHERE p.id = $1 AND p.client_id = $2`,
+              p.ledger_account_id, p.is_active
+       FROM parties p WHERE p.id = $1 AND p.client_id = $2`,
       [input.partyId, input.clientId]);
     if (p.rowCount === 0) throw new ValidationError('supplier not found for this client', 'PB-1');
     const sup = p.rows[0]!;
+
+    /*
+     * Which of OUR registrations received this supply (G-22).
+     *
+     * Unlike a sales invoice this is allowed to be absent: a client below the
+     * GST registration threshold has no GSTIN, still keeps books, and still
+     * records purchase bills — they simply cannot claim input credit. Refusing
+     * the bill would refuse a legitimate small business.
+     *
+     * Where a registration does exist it matters twice over: it supplies the
+     * default place of supply, and the resulting intra/inter-state call decides
+     * CGST+SGST against IGST.
+     */
+    const reg = await c.query<{ id: string; gstin: string; state_code: string }>(
+      input.registrationId
+        ? `SELECT id, gstin, state_code FROM client_registrations
+           WHERE id = $2 AND client_id = $1`
+        : `SELECT id, gstin, state_code FROM client_registrations
+           WHERE client_id = $1 AND is_primary`,
+      input.registrationId ? [input.clientId, input.registrationId] : [input.clientId]);
+
+    if (input.registrationId && reg.rowCount === 0) {
+      throw new ValidationError(
+        'that GST registration does not belong to this client', 'PB-1');
+    }
+    const registration = reg.rows[0] ?? null;
+    sup.buyer_gstin = registration?.gstin ?? null;
+    sup.buyer_state = registration?.state_code ?? null;
 
     if (sup.gstin) {
       // PB-1. Runs whichever engine parsed the document — LlamaParse read the
@@ -204,8 +236,8 @@ export async function createBill(
           bill_number, bill_date, place_of_supply, is_reverse_charge,
           taxable_value, total_cgst, total_sgst, total_igst, total_cess,
           round_off, grand_total, itc_eligibility, payment_due_date,
-          approval_status, source_document_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          approval_status, source_document_id, registration_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [
         voucherId, firmId, input.clientId, input.partyId, sup.gstin,
         sup.legal_name ?? sup.name, input.billNumber, input.billDate,
@@ -214,6 +246,7 @@ export async function createBill(
         money(totals.totalIgst), money(totals.totalCess), money(totals.roundOff),
         money(totals.grandTotal), billItc, input.paymentDueDate ?? null,
         'pending_review', input.sourceDocumentId ?? null,
+        registration?.id ?? null,                          // $22
       ]);
 
     for (const [i, l] of resolved.entries()) {

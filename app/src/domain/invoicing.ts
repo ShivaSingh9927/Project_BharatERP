@@ -34,6 +34,12 @@ export interface InvoiceLineInput {
 
 export interface CreateInvoiceInput {
   clientId: string;
+  /**
+   * Which of the client's GST registrations issues this invoice (G-22).
+   * Defaults to the client's primary. Decides the supplier GSTIN on the
+   * document and half of the CGST+SGST vs IGST test.
+   */
+  registrationId?: string;
   partyId: string;
   postingDate: string;
   documentType?: 'tax_invoice' | 'bill_of_supply' | 'credit_note' | 'debit_note' | 'export_invoice';
@@ -130,10 +136,8 @@ export async function createInvoice(
     // --- party and supplier context ---------------------------------------
     const p = await c.query(
       `SELECT p.id, p.name, p.legal_name, p.gstin, p.gst_category, p.state_code,
-              p.billing_address, p.ledger_account_id, p.is_active,
-              cl.gstin AS supplier_gstin, cl.state_code AS supplier_state
-       FROM parties p JOIN clients cl ON cl.id = p.client_id
-       WHERE p.id = $1 AND p.client_id = $2`,
+              p.billing_address, p.ledger_account_id, p.is_active
+       FROM parties p WHERE p.id = $1 AND p.client_id = $2`,
       [input.partyId, input.clientId],
     );
     if (p.rowCount === 0) throw new ValidationError('party not found for this client', 'SI-1');
@@ -142,9 +146,35 @@ export async function createInvoice(
     if (!party.is_active) {
       throw new ValidationError(`party "${party.name}" is inactive`, 'SI-1');
     }
-    if (!party.supplier_gstin) {
-      throw new ValidationError('client has no GSTIN configured', 'SI-2');
+
+    /*
+     * Which of OUR registrations is issuing this invoice (G-22).
+     *
+     * A client can hold a GSTIN in several states, and the choice is not
+     * cosmetic: it decides the supplier GSTIN printed on a legal document, and
+     * it is one half of the intra-state test that picks CGST+SGST or IGST. The
+     * same sale billed from Delhi and from Haryana carries different tax.
+     *
+     * A caller may name one; otherwise the client's primary is used. A
+     * cancelled registration cannot issue an invoice.
+     */
+    const reg = await c.query<{ id: string; gstin: string; state_code: string }>(
+      input.registrationId
+        ? `SELECT id, gstin, state_code FROM client_registrations
+           WHERE id = $2 AND client_id = $1`
+        : `SELECT id, gstin, state_code FROM client_registrations
+           WHERE client_id = $1 AND is_primary`,
+      input.registrationId ? [input.clientId, input.registrationId] : [input.clientId]);
+
+    if (reg.rowCount === 0) {
+      throw new ValidationError(
+        input.registrationId
+          ? 'that GST registration does not belong to this client'
+          : 'this client has no primary GST registration configured', 'SI-2');
     }
+    const registration = reg.rows[0]!;
+    party.supplier_gstin = registration.gstin;
+    party.supplier_state = registration.state_code;
 
     // SI-2: our own GSTIN must be structurally sound before we put it on a
     // legal document.
@@ -273,10 +303,12 @@ export async function createInvoice(
       `INSERT INTO sales_invoices
          (voucher_id, firm_id, client_id, document_type, party_id,
           customer_gstin, customer_legal_name, billing_address, supplier_gstin,
+          registration_id,
           gst_category, place_of_supply, is_reverse_charge, is_export, export_type,
           due_date, taxable_value, total_cgst, total_sgst, total_igst, total_cess,
           round_off, grand_total, reference_invoice_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$24,
+               $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
       [
         voucherId, firmId, input.clientId, documentType, input.partyId,
         party.gstin, party.legal_name ?? party.name, party.billing_address,
@@ -287,6 +319,7 @@ export async function createInvoice(
         money(totals.totalIgst), money(totals.totalCess),
         money(totals.roundOff), money(totals.grandTotal),
         input.referenceInvoiceId ?? null,
+        registration.id,                                   // $24
       ],
     );
 
