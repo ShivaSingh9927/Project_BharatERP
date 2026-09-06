@@ -1,0 +1,227 @@
+/**
+ * Reading the line-item table — bills-and-expenses.md §4.3.
+ *
+ * The fixtures reproduce the COLUMN GEOMETRY of real invoices, because that is
+ * the whole difficulty. Everything here turns on which character position a
+ * value sits at, so a fixture that tidied the spacing would prove nothing —
+ * the same reason the statement fixtures are kept character-exact.
+ *
+ * Identifiers and amounts replaced throughout.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { splitDocuments } from '../src/parse/documentSplit.ts';
+import { readInvoiceTable } from '../src/parse/invoiceTable.ts';
+
+const read = (text: string) => readInvoiceTable(splitDocuments(text)[0]!);
+
+/*
+ * The Blinkit geometry: fourteen columns, a rate column and an amount column
+ * for each tax, an item description wrapping over six lines, and a totals row
+ * that omits every blank column — which is exactly why counting numbers from
+ * the left does not work and column positions are needed.
+ */
+const BLINKIT = `Tax Invoice
+
+GSTIN                :     09AAACB1111B1Z0                    Invoice Number : T1
+
+Sr. no   UPC    Item Description       MRP        Discount    Qty.   Taxable Value   CGST (%)    CGST (INR)   SGST (%)   SGST (INR)    Total
+
+1        6196   Example Storage        8200.00    1651.00     1      5550.00         9.00        499.50       9.00       499.50        6549.00
+         5918   Card
+         8511   (256GB, C10, U1,
+                V30)(Box)
+                [EX-256G-
+                I35GD] (HSN-
+                85235100)
+
+Total                                                         1                                  499.50                  499.50        6549.00
+
+Amount in              Six Thousand Five Hundred And Forty-Nine Rupees Only
+Words:`;
+
+describe('reading a real column geometry', () => {
+  const t = read(BLINKIT);
+
+  it('reads every money column to the value on the paper', () => {
+    expect(t.readable).toBe(true);
+    expect(t.sums.taxable).toBe('5550.00');
+    expect(t.sums.cgst).toBe('499.50');
+    expect(t.sums.sgst).toBe('499.50');
+    expect(t.sums.total).toBe('6549.00');
+  });
+
+  it('keeps a tax RATE column out of the tax amount', () => {
+    // "CGST (%)" and "CGST (INR)" sit side by side. Adding the 9.00 into the
+    // tax total would be nonsense that still very nearly ties.
+    expect(t.sums.cgst).toBe('499.50');
+    expect(t.roles.filter((r) => r === 'cgst')).toHaveLength(1);
+    expect(t.roles).toContain('rate');
+  });
+
+  it('finds the totals row even though it omits most columns', () => {
+    expect(t.totals).not.toBeNull();
+    expect(t.totals!.by.total).toBe('6549.00');
+  });
+
+  it('excludes the words-and-signature block below the table', () => {
+    // Decided by geometry: those lines run straight through the column edges
+    // the rows above observe. No stop-list.
+    expect(t.rows.some((r) => r.cells.join(' ').includes('Rupees Only'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('gate 1 — one amount per money cell', () => {
+  it('refuses when a money cell holds several numbers at once', () => {
+    // A column that IS identified as money and holds two values is proof the
+    // boundaries are wrong. Nothing from such a table can be trusted.
+    const t = read(`Tax Invoice
+Invoice Number : T2
+
+Description          Taxable Value        Total
+
+Example Item         1000.00 180.00     1180.00`);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/should hold one amount per row/);
+  });
+
+  it('refuses the Amazon geometry, though not via this gate', () => {
+    /*
+     * Amazon's numeric columns are separated by ONE space, below the minimum a
+     * gutter needs, so they collapse into a single cell reading
+     * "2626.27 1 2626.27 18% IGST 472.73 3099.00".
+     *
+     * Gate 1 does NOT catch it, and the reason is worth recording: that cell's
+     * heading is a bare "Amount", which maps to `other` precisely because it is
+     * ambiguous, so it is never checked as money. What refuses the table is the
+     * verification requirement — no taxable value could be recovered.
+     *
+     * Two gates catching different things is the point. Either alone would let
+     * this through.
+     */
+    const t = read(`Tax Invoice
+Invoice Number : T2b
+
+Sl.                                     Unit    Net Tax Tax Tax Total
+    Description                     Qty
+No                                      Price   Amount Rate Type Amount Amount
+ 1 Example Item                          2626.27 1 2626.27 18% IGST 472.73 3099.00`);
+    expect(t.readable).toBe(false);
+  });
+
+  it('does not treat the totals-row caption as a broken column', () => {
+    // "Total" landing in a money column is the row labelling itself, not a
+    // misread. Only a second NUMBER is evidence of bad boundaries.
+    expect(read(BLINKIT).readable).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('gate 2 — the arithmetic has to tie', () => {
+  const BROKEN = `Tax Invoice
+Invoice Number : T3
+
+Description          Taxable Value   IGST      Total
+
+Example Item         1000.00         180.00    1999.00`;
+
+  it('refuses a table whose parts do not add up to its whole', () => {
+    const t = read(BROKEN);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/does not add up/);
+  });
+
+  it('accepts the same table once it does', () => {
+    const t = read(BROKEN.replace('1999.00', '1180.00'));
+    expect(t.readable).toBe(true);
+    expect(t.sums.igst).toBe('180.00');
+  });
+
+  it('refuses when a stated totals row disagrees with the rows above it', () => {
+    const t = read(`Tax Invoice
+Invoice Number : T4
+
+Description          Taxable Value   IGST      Total
+
+Example Item A       1000.00         180.00    1180.00
+Example Item B        500.00          90.00     590.00
+Total                1500.00         270.00    9999.00`);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/totals row claims/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('readable means verified, not merely parsed', () => {
+  it('refuses a table with a total and nothing to check it against', () => {
+    /*
+     * Amazon's fee invoice reached this state: a total recovered, no taxable
+     * value, and the tie passing because there was nothing on the other side
+     * of it to disagree. A figure no arithmetic checked is precisely what this
+     * reader exists not to produce.
+     */
+    const t = read(`Tax Invoice
+Invoice Number : T5
+
+Description                    Qty    Total
+
+Example Fee                      1     9.00`);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/nothing checks the other/);
+  });
+
+  it('refuses a table with no money column at all', () => {
+    const t = read(`Tax Invoice
+Invoice Number : T6
+
+Sr. no   HSN        Description        Qty
+
+1        85235100   Example Item       1`);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/nothing here to post/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('column labels', () => {
+  it('joins a header split across lines', () => {
+    // Flipkart writes "Gross" above "Amount ₹". Read as two rows, the second
+    // becomes a data row whose Gross cell contains the word "Amount".
+    const t = read(`Tax Invoice
+Invoice Number : T7
+
+     Description        Qty      Gross      Taxable      IGST      Total
+                                Amount     value        Amt.
+
+Example Item              1     1180.00    1000.00     180.00    1180.00`);
+    expect(t.readable).toBe(true);
+    expect(t.header).toContain('Gross Amount');
+    expect(t.sums.taxable).toBe('1000.00');
+  });
+
+  it('will not read a bare "Amount" as a total', () => {
+    /*
+     * Amazon has "Tax Amount" AND "Total Amount". Mapping any "amount" to
+     * `total` summed both, and a ₹9.00 invoice reported ₹10.37 — the tax added
+     * to the total that already contained it.
+     *
+     * A bare "Amount" is gross, taxable, tax or total depending on the vendor,
+     * so it takes part in no sum. Losing a column is recoverable; inventing a
+     * total is not.
+     */
+    const t = read(`Tax Invoice
+Invoice Number : T8
+
+Description            Qty        Amount        Tax Amount        Total Amount
+
+Example Item             1           9.00              1.37               10.37`);
+    // Note the extra "Qty": a header is only recognised on two or more column
+    // words, so "Description / Amount" alone would not be found at all. That
+    // is deliberately conservative — a missed table refuses, it does not guess.
+    expect(t.header).toEqual(
+      ['Description', 'Qty', 'Amount', 'Tax Amount', 'Total Amount']);
+    expect(t.roles).toEqual(['description', 'qty', 'other', 'other', 'total']);
+    expect(t.sums.total).toBe('10.37');
+  });
+});
