@@ -198,19 +198,46 @@ export function tableFromRows(rows: WordRow[]): WordTable | null {
   const header = bands.map((b) => b.labels.join(' '));
   const numericBand = new Set<number>();
   const out: string[][] = [];
+  const AMOUNT = /^[₹$(]?-?[\d,]+(?:\.\d+)?\)?%?$/;
 
   for (const r of rows.slice(headerEnd + 1)) {
     const cells = cellsFor(r, bands);
     if (cells.every((c) => c === '')) continue;
 
-    // Does this row contradict a band the table has been filling with numbers?
+    /*
+     * ── The truncation defect ──────────────────────────────────────────────
+     *
+     * This loop used to `break` on any row that put non-numeric text into a
+     * band the table had been filling with figures. That ended the table at
+     * the first line of an item's own continuation.
+     *
+     * Two real Flipkart invoices were silently under-reported because of it.
+     * One has three fee lines — 50.00, 109.32 and 168.64 — each followed by
+     * "1. [IMEI/Serial No: ...]" and "IGST: 18.0 %". The IMEI text runs into
+     * the numeric bands, so the table stopped after the FIRST line and
+     * reported a taxable value of 50.00 against a true 327.96.
+     *
+     * Both gates passed it. One row's 50.00 + 9.00 = 59.00 ties perfectly on
+     * its own, so the arithmetic had nothing to object to — a whole-table
+     * check cannot see rows that were never presented to it. A model reading
+     * the same page returned all three lines, which is how this was found.
+     *
+     * The distinction that fixes it: a continuation line carries no amount of
+     * its own, while content genuinely below the table does. So a row with
+     * text where figures belong and NO figure anywhere is an item's own
+     * overflow and is skipped; a row with both is the start of something else
+     * — a floated "Grand Total", a signature block — and ends the table.
+     */
     const contradicts = cells.some((c, i) =>
-      numericBand.has(i) && c !== '' && !/^[₹$(]?-?[\d,.]+\)?%?$/.test(c.trim()));
-    if (contradicts) break;
+      numericBand.has(i) && c !== '' && !AMOUNT.test(c.trim()));
+    const carriesAnAmount = cells.some((c) => AMOUNT.test(c.trim()));
 
-    cells.forEach((c, i) => {
-      if (/^[₹$(]?-?[\d,.]+\)?$/.test(c.trim())) numericBand.add(i);
-    });
+    if (contradicts) {
+      if (!carriesAnAmount) continue;   // an item's own wrapped text
+      break;                            // something that is not this table
+    }
+
+    cells.forEach((c, i) => { if (AMOUNT.test(c.trim())) numericBand.add(i); });
     out.push(cells);
   }
 

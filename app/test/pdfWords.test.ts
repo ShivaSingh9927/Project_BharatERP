@@ -221,3 +221,67 @@ describe('the word path faces the same gates as the text path', () => {
     expect(t.reason).toMatch(/no row of words looks like a table header/);
   });
 });
+
+// ---------------------------------------------------------------------------
+/*
+ * The truncation defect, found by a model disagreeing with us.
+ *
+ * `readable: true` and a tied sum were taken as proof the table was read
+ * correctly. They are not proof it was read COMPLETELY — a whole-table check
+ * cannot see rows that were never presented to it.
+ */
+describe('an item that wraps does not end the table', () => {
+  /*
+   * The real Flipkart geometry: three fee lines, each followed by an
+   * "[IMEI/Serial No: ...]" line and an "IGST: 18.0 %" line whose text runs
+   * out of the description column and into the numeric bands.
+   */
+  const threeFeeLines = () => wordsToRows([
+    w('Description', 40, 100), w('Qty', 150, 100),
+    w('Taxable', 200, 100), w('IGST', 280, 100), w('Total', 340, 100),
+
+    w('Credit Card Fee', 40, 130), w('1', 150, 130),
+    w('50.00', 200, 130), w('9.00', 280, 130), w('59.00', 340, 130),
+    w('1. [IMEI/Serial No: 0000000000 ]', 40, 138, 260),
+    w('IGST: 18.0 %', 40, 146),
+
+    w('Protect Promise Fee', 40, 160), w('1', 150, 160),
+    w('109.32', 200, 160), w('19.68', 280, 160), w('129.00', 340, 160),
+    w('1. [IMEI/Serial No: 0000000000 ]', 40, 168, 260),
+    w('IGST: 18.0 %', 40, 176),
+
+    w('Offer Handling Fee', 40, 190), w('1', 150, 190),
+    w('168.64', 200, 190), w('30.36', 280, 190), w('199.00', 340, 190),
+    w('1. [IMEI/Serial No: 0000000000 ]', 40, 198, 260),
+    w('IGST: 18.0 %', 40, 206),
+  ]);
+
+  it('reads every line item, not just the first', () => {
+    /*
+     * This reported a taxable value of 50.00 against a true 327.96 — and
+     * passed both gates, because one row's 50.00 + 9.00 = 59.00 ties
+     * perfectly on its own. The bill would have been posted at a seventh of
+     * its value with a clean arithmetic trail behind it.
+     */
+    const t = readInvoiceTableFromWords(
+      [{ number: 1, width: 600, height: 800, rows: threeFeeLines() }]);
+    expect(t.readable).toBe(true);
+    expect(t.sums.taxable).toBe('327.96');
+    expect(t.sums.igst).toBe('59.04');
+    expect(t.sums.total).toBe('387.00');
+  });
+
+  it('still stops at content that is genuinely below the table', () => {
+    /*
+     * The distinction doing the work: an item's continuation carries no amount
+     * of its own, while a floated "Grand Total" does. Counting that as an item
+     * row would double the total.
+     */
+    const rows = [...threeFeeLines(), ...wordsToRows([
+      w('Grand Total', 200, 230), w('387.00', 340, 230),
+    ])];
+    const t = readInvoiceTableFromWords(
+      [{ number: 1, width: 600, height: 800, rows }]);
+    expect(t.sums.total).toBe('387.00');
+  });
+});
