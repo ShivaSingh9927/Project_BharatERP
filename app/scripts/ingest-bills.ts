@@ -17,6 +17,9 @@
  *   DEEPSEEK_MODEL  defaults to deepseek-chat
  *   APPROVED_BY     required with --post: AT-13 refuses an AI-proposed voucher
  *                   with no named approver, and the database enforces it
+ *
+ * The bill date is read off each document. A document whose date cannot be
+ * settled is blocked, not dated with today.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -88,18 +91,14 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
 
     ready++;
     const s = p.table.sums;
-    console.log(`  ${label} ready${via}${check}  taxable=${s.taxable} ` +
+    console.log(`  ${label} ready${via}${check}  ${p.billDate}  taxable=${s.taxable} ` +
                 `gst=${[s.cgst, s.sgst, s.igst].filter(Boolean).join('+') || '0'} ` +
                 `total=${s.total}`);
     for (const wn of p.warnings) console.log(`      ! ${wn}`);
 
     if (post) {
-      // The bill date is not read off the document: every vendor writes dates
-      // differently and a misread one lands the bill in the wrong return
-      // period. Today's date is a placeholder a reviewer must correct.
-      const billDate = new Date().toISOString().slice(0, 10);
       try {
-        const bill = await postProposal(firmId, p, { billDate, approvedBy: approvedBy! });
+        const bill = await postProposal(firmId, p, { approvedBy: approvedBy! });
         posted++;
         console.log(`      posted ${bill.voucherId} — ITC ${bill.itcEligibility}, ` +
                     `claimable ${bill.itcClaimableValue}`);

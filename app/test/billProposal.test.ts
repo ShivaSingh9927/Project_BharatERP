@@ -56,9 +56,20 @@ const intraStateTable = () => page([
   w('90.00', 260, 130), w('1180.00', 330, 130),
 ]);
 
-const doc = (supplier: string | null, number: string, taxLine: string) =>
+/**
+ * A document fixture. Carries an unambiguous invoice date because the date is
+ * now read rather than supplied — a fixture without one is blocked, which is
+ * the behaviour tested separately below.
+ *
+ * The date sits inside the seeded fiscal year on purpose. With today's date
+ * hardcoded that never mattered; now that the real date is used, `V-6: no
+ * fiscal year covers posting date` fires — another control that only had
+ * something to bite on once the field stopped being a placeholder.
+ */
+const doc = (supplier: string | null, number: string, taxLine: string,
+             dateLine = 'Invoice Date : 27-08-2026') =>
   splitDocuments(
-    `Tax Invoice\nInvoice Number # ${number}\n`
+    `Tax Invoice\nInvoice Number # ${number}\n${dateLine}\n`
     + (supplier ? `GSTIN - ${supplier}\n` : '')
     + `${taxLine}\nWhether tax is payable under reverse charge - No`)[0]!;
 
@@ -254,7 +265,7 @@ describe('posting a ready proposal', () => {
       .toEqual(['50.00', '109.32', '168.64']);
 
     const bill = await postProposal(t.firmId, p,
-      { billDate: '2026-07-01', approvedBy: t.userId });
+      { approvedBy: t.userId });
     expect(bill.taxableValue).toBe('327.96');
     expect(bill.totalGst).toBe('59.04');       // not 59.03
   });
@@ -284,7 +295,7 @@ describe('posting a ready proposal', () => {
     expect(p.partyName).toBe('Near Supplier');
 
     const bill = await postProposal(t.firmId, p,
-      { billDate: '2026-07-01', approvedBy: t.userId });
+      { approvedBy: t.userId });
     expect(bill.taxableValue).toBe('1000.00');
     expect(bill.totalGst).toBe('180.00');
     expect(bill.grandTotal).toBe('1180.00');
@@ -308,7 +319,7 @@ describe('posting a ready proposal', () => {
     const p = await propose(doc(UNKNOWN, 'P12', 'IGST 18 %'),
       interStateTable('1000.00', '180.00', '1180.00'));
     await expect(postProposal(t.firmId, p,
-      { billDate: '2026-07-01', approvedBy: t.userId }))
+      { approvedBy: t.userId }))
       .rejects.toThrow(/not ready to post/);
   });
 
@@ -343,7 +354,7 @@ describe('the tax split is warned about, not blocked', () => {
     expect(p.warnings.join(' ')).toMatch(/check the place of supply/);
 
     const bill = await postProposal(t.firmId, p,
-      { billDate: '2026-07-01', approvedBy: t.userId });
+      { approvedBy: t.userId });
     expect(bill.grandTotal).toBe('1180.00');
   });
 
@@ -432,7 +443,7 @@ describe('a model as extractor of last resort', () => {
   it('posts what the model read, through the same gates', async () => {
     const p = await propose(doc(SAME_STATE, 'L5', 'IGST 18 %'), unreadable(), spyLlm());
     const bill = await postProposal(t.firmId, p,
-      { billDate: '2026-07-01', approvedBy: t.userId });
+      { approvedBy: t.userId });
     expect(bill.taxableValue).toBe('1000.00');
     expect(bill.totalGst).toBe('180.00');
   });
@@ -580,5 +591,75 @@ describe('compareReadings', () => {
       table({ taxable: '100.00' }),
       table({ taxable: '100.00', cgst: '9.00' })))
       .toEqual(['cgst: not found vs 9.00']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/*
+ * The date, read off the document.
+ *
+ * It used to be today's, with a comment telling a reviewer to correct it. A
+ * wrong date lands the bill in the wrong GST return period, which is a
+ * correction to two filings rather than one edit — and nothing downstream can
+ * tell that a plausible date is the wrong one.
+ */
+describe('the invoice date', () => {
+  it('is read from the document, not from the clock', async () => {
+    const p = await propose(
+      doc(SAME_STATE, 'D1', 'IGST 18 %', 'Invoice Date : 27-08-2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.billDate).toBe('2026-08-27');
+    expect(p.input!.billDate).toBe('2026-08-27');
+  });
+
+  it('records how the date was settled', async () => {
+    const p = await propose(
+      doc(SAME_STATE, 'D2', 'IGST 18 %', 'Invoice Date : 03-Jun-2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.billDate).toBe('2026-06-03');
+    expect(p.billDateBasis).toMatch(/read as "03-Jun-2026"/);
+  });
+
+  it('blocks an ambiguous date rather than picking a reading', async () => {
+    /*
+     * "04.09.2026" is 4 September or 9 April. Those are different return
+     * periods. "Indian invoices are day-first" is true and is exactly the kind
+     * of assumption that has produced every wrong answer here so far.
+     */
+    const p = await propose(
+      doc(SAME_STATE, 'D3', 'IGST 18 %', 'Invoice Date : 04.09.2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/could be 2026-09-04 or 2026-04-09/);
+  });
+
+  it('resolves an ambiguous date from an unambiguous one on the same document', async () => {
+    // What rescues Amazon: its signature block prints a year-first
+    // `2026.09.03`, so the 09 in `04.09.2026` is the month.
+    const p = await propose(
+      doc(SAME_STATE, 'D4', 'IGST 18 %',
+          'Invoice Date : 04.09.2026\nDigitally signed Date: 2026.09.03 22:21:45 UTC'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.billDate).toBe('2026-09-04');
+    expect(p.billDateBasis).toMatch(/day-first/);
+  });
+
+  it('blocks a document with no date at all', async () => {
+    const p = await propose(
+      doc(SAME_STATE, 'D5', 'IGST 18 %', 'no date here'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/no date appears/);
+  });
+
+  it('lets a reviewer override what was read', async () => {
+    // The parser can be right and still not be what the reviewer wants — a
+    // date corrected on the paper by hand, say.
+    const p = await propose(
+      doc(SAME_STATE, 'D6', 'IGST 18 %', 'Invoice Date : 27-08-2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    const bill = await postProposal(t.firmId, p,
+      { approvedBy: t.userId, billDate: '2026-09-01' });
+    expect(bill.grandTotal).toBe('1180.00');
   });
 });

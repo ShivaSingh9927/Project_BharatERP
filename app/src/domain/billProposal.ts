@@ -54,6 +54,7 @@ import { extractPdfWords, type WordPage } from '../parse/pdfWords.ts';
 import { extractPdfText } from '../parse/pdf.ts';
 import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts';
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
+import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { readInvoiceTableFromWords, type InvoiceTable } from '../parse/invoiceTable.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
@@ -88,6 +89,9 @@ export interface BillProposal {
    * is not the same as agreeing, and is recorded rather than glossed.
    */
   crossChecked: 'off' | 'agreed' | 'disagreed' | 'unavailable';
+  /** The date read off the document, and how it was settled (PR-7). */
+  billDate?: string;
+  billDateBasis?: string;
 }
 
 export interface ProposeInput {
@@ -318,11 +322,12 @@ export async function proposeBills(
 ): Promise<BillProposal[]> {
   const fileHash = contentHash(input.file);
   const pages = extractPdfWords(input.file, input.password);
-  const segments = splitDocuments(extractPdfText(input.file, input.password));
+  const text = extractPdfText(input.file, input.password);
+  const segments = splitDocuments(text);
 
   const out: BillProposal[] = [];
   for (const seg of segments) {
-    out.push(await proposeFromDocument(firmId, input, seg, pages, fileHash));
+    out.push(await proposeFromDocument(firmId, input, seg, pages, fileHash, text));
   }
   return out;
 }
@@ -338,6 +343,7 @@ export async function proposeBills(
 export async function proposeFromDocument(
   firmId: string, input: Omit<ProposeInput, 'file' | 'password'>,
   seg: DocumentSegment, pages: WordPage[], fileHash: string,
+  fileText?: string,
 ): Promise<BillProposal> {
   const profile = extractTaxProfile(seg);
   let table = readInvoiceTableFromWords(
@@ -405,6 +411,20 @@ export async function proposeFromDocument(
       // Recorded, not treated as assent: nobody confirmed this reading.
       crossChecked = 'unavailable';
     }
+  }
+
+  /*
+   * The date. Previously TODAY, with a comment telling a reviewer to fix it —
+   * the worst-filled field in the pipeline, because a wrong date lands the
+   * bill in the wrong return period and nothing downstream can tell.
+   *
+   * `fileText` is passed so the day-first/month-first question is settled from
+   * the whole file: how dates are arranged is a property of whatever generated
+   * the PDF, and one PDF has one generator.
+   */
+  const dateRead = extractInvoiceDate(seg.text, fileText);
+  if (dateRead.date === undefined) {
+    blockers.push(`the invoice date could not be read — ${dateRead.reason}`);
   }
 
   // --- supplier ------------------------------------------------------------
@@ -573,11 +593,12 @@ export async function proposeFromDocument(
     documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName,
     blockers, warnings, readBy, llmProvenance, crossChecked,
+    billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {
       clientId: input.clientId,
       partyId: partyId!,
       billNumber: seg.documentNumber!,
-      billDate: '',                      // set by the caller — see postProposal
+      billDate: dateRead.date!,          // a blocker above if it could not be read
       isReverseCharge: profile.reverseCharge === true,
       lines,
       createdBy: input.createdBy,
@@ -608,15 +629,13 @@ export async function proposeFromDocument(
  * "Auto-post" would mean a CA pre-approved the pattern, never that nobody is
  * responsible.
  *
- * The bill date is a parameter rather than something read off the document.
- * Dates are the one field where every vendor in the corpus differs —
- * 27-08-2025, 04.09.2026, "July 9, 2026", 01-Aug-2026 — and a misread date
- * lands the bill in the wrong return period, which is a correction to two
- * filings rather than one edit.
+ * `billDate` is now READ from the document, so it is only an override here —
+ * for the reviewer who can see something the parser could not. It used to be
+ * mandatory and was filled with today's date by every caller.
  */
 export async function postProposal(
   firmId: string, proposal: BillProposal,
-  opts: { billDate: string; approvedBy: string },
+  opts: { approvedBy: string; billDate?: string },
 ): Promise<CreatedBill> {
   if (proposal.input === null) {
     throw new ValidationError(
@@ -624,7 +643,7 @@ export async function postProposal(
   }
   return createBill(firmId, {
     ...proposal.input,
-    billDate: opts.billDate,
+    billDate: opts.billDate ?? proposal.input.billDate,
     approvedBy: opts.approvedBy,
   });
 }
