@@ -89,7 +89,60 @@ export interface ParsedAmount {
   /** The Dr/Cr marker as written, for callers that need the distinction. */
   suffix: 'dr' | 'cr' | null;
   blank: boolean;
+  /**
+   * The currency the figure was written in, when the cell said so: an ISO code
+   * or a symbol. Null when the cell carried no currency mark at all.
+   *
+   * Recorded rather than assumed. A figure of 44.96 means nothing until it is
+   * known whether that is rupees or euros, and this parser used to strip `$`
+   * and `₹` alike and return a bare number — so a euro invoice and a rupee
+   * invoice produced identical output.
+   */
+  currency: Currency | null;
 }
+
+/** The currencies this parser can name. Not a list of what GST accepts. */
+export type Currency = 'INR' | 'USD' | 'EUR' | 'GBP';
+
+/*
+ * `$` is taken as USD, and that is an assumption rather than a reading — the
+ * same symbol serves the Canadian, Australian and Singapore dollar. Callers
+ * converting to rupees are told which figures were assumed rather than read
+ * (see `currencyWasAssumed`), because an FX rate applied to the wrong dollar
+ * is wrong by a fifth, not by a rounding.
+ */
+const SYMBOLS: ReadonlyArray<readonly [RegExp, Currency, boolean]> = [
+  [/[₹]|\bRs\.?\b|\bINR\b/i, 'INR', false],
+  [/\bUSD\b/i,                   'USD', false],
+  [/\bEUR\b/i,                   'EUR', false],
+  [/\bGBP\b/i,                   'GBP', false],
+  [/€/,                           'EUR', false],
+  [/£/,                           'GBP', false],
+  [/\$/,                          'USD', true],
+];
+
+/** The currency named in a piece of text, if any. */
+export function currencyOf(raw: string): Currency | null {
+  for (const [re, code] of SYMBOLS) if (re.test(raw)) return code;
+  return null;
+}
+
+/** True when the currency was inferred from an ambiguous symbol, not read. */
+export function currencyWasAssumed(raw: string): boolean {
+  for (const [re, , assumed] of SYMBOLS) if (re.test(raw)) return assumed;
+  return false;
+}
+
+/**
+ * The shape of a money cell, currency marks and all.
+ *
+ * Shared with the column reader, which used its own copy accepting only `₹`
+ * and `$`. A euro figure therefore did not look like an amount, so no column
+ * of a Hetzner invoice was recognised as carrying money and the table was
+ * refused as having no header.
+ */
+export const AMOUNT_SHAPE =
+  /^(?:[₹$€£]|Rs\.?|INR|USD|EUR|GBP)?\s*\(?-?[\d,]+(?:\.\d+)?\)?\s*(?:INR|USD|EUR|GBP)?%?$/i;
 
 /**
  * Parse an Indian statement amount.
@@ -103,7 +156,8 @@ export function parseAmount(raw: string): ParsedAmount {
   const s = raw.trim();
 
   if (s.length === 0 || s === '-' || s === '–' || /^nil$/i.test(s)) {
-    return { value: '0.00', negative: false, suffix: null, blank: true };
+    return { value: '0.00', negative: false, suffix: null, blank: true,
+             currency: null };
   }
 
   let negative = false;
@@ -134,12 +188,18 @@ export function parseAmount(raw: string): ParsedAmount {
     body = body.slice(0, marker.index);
   }
 
-  body = body.replace(/[₹$\s]/g, '').replace(/,/g, '');
+  const currency = currencyOf(body);
+  body = body
+    .replace(/\b(?:INR|USD|EUR|GBP|Rs)\b\.?/gi, '')
+    .replace(/[₹$€£\s]/g, '')
+    .replace(/,/g, '');
 
   if (body.startsWith('-')) { negative = !negative; body = body.slice(1); }
   else if (body.startsWith('+')) body = body.slice(1);
 
-  if (body.length === 0) return { value: '0.00', negative: false, suffix, blank: true };
+  if (body.length === 0) {
+    return { value: '0.00', negative: false, suffix, blank: true, currency };
+  }
 
   if (!/^\d+(\.\d+)?$/.test(body)) {
     throw new ValidationError(`"${raw}" is not a recognisable amount`, 'BR-6');
@@ -151,7 +211,7 @@ export function parseAmount(raw: string): ParsedAmount {
   const cents = (BigInt(whole!) * 1000n + BigInt(f3) + 5n) / 10n;
   const value = `${cents / 100n}.${String(cents % 100n).padStart(2, '0')}`;
 
-  return { value, negative, suffix, blank: false };
+  return { value, negative, suffix, blank: false, currency };
 }
 
 /** True when the text looks like a number rather than a label. */

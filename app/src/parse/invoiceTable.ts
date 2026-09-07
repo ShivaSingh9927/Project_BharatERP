@@ -174,6 +174,15 @@ function roleOf(label: string): ColumnRole {
    * depending on the vendor — so it maps to `other` and takes no part in any
    * sum. Losing a column is recoverable; inventing a total is not.
    */
+  /*
+   * A total qualified as being BEFORE tax is a taxable value, whatever it is
+   * called. Hetzner heads its columns "Total (excl. VAT)" and "Total", and
+   * reading both as totals summed a document's value twice while leaving it
+   * with no taxable figure at all — so the arithmetic had nothing to check and
+   * the document was refused for it.
+   */
+  if (/\btotal\b/.test(t)
+      && /\b(?:excl|excluding|before|net\s+of|pre)\b/.test(t)) return 'taxable';
   if (/\btotal\b/.test(t))                      return 'total';
   if (/\bnet\b/.test(t))                        return 'taxable';
   if (/\bhsn\b|\bsac\b/.test(t))                return 'hsn';
@@ -309,14 +318,18 @@ export function readInvoiceTable(segment: DocumentSegment): InvoiceTable {
  * written to suit it.
  */
 export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
-  const t = tableFromRows(pages.flatMap((p) => p.rows));
+  const allRows = pages.flatMap((p) => p.rows);
+  const t = tableFromRows(allRows);
+  // The page as text, so a total floated outside the table can still check it.
+  const text = allRows
+    .map((r) => r.words.map((w) => w.text).join(' ')).join('\n');
   if (!t) {
     return {
       readable: false, roles: [], header: [], rows: [], totals: null, sums: {},
       reason: 'no row of words looks like a table header',
     };
   }
-  const graded = gradeTable(t.header, t.rows);
+  const graded = gradeTable(t.header, t.rows, statedTotalsInText(text));
 
   /*
    * The bands were computed and discarded until now, which made a documented
@@ -337,13 +350,86 @@ export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
 }
 
 /**
+ * Every figure the running text calls a total.
+ *
+ * Not every document states its total inside the table. Three foreign
+ * suppliers in the corpus float it to the right of the page instead — "Total
+ * ₹929.00", "Total $9.56", "Total: 11.09 USD" — where the geometry rule that
+ * ends a table correctly excludes it, leaving the item rows with nothing to be
+ * checked against.
+ *
+ * The figures come back as decimal strings; which one is right is the caller's
+ * problem, and a document usually states the same total several ways
+ * ("Subtotal", "Total", "Amount due") which is a help rather than a hindrance.
+ *
+ * Deliberately not used to SUPPLY a total — only to check one. A label picked
+ * off free text is far weaker evidence than a column, and the difference
+ * between checking and trusting is the whole design here.
+ */
+export function statedTotalsInText(text: string): string[] {
+  const LABEL =
+    /\b(?:sub\s*total|grand\s+total|total\s+amount|amount\s+(?:due|payable)|total)\b/i;
+  const out = new Set<string>();
+
+  for (const line of text.split('\n')) {
+    if (!LABEL.test(line)) continue;
+    // Everything after the label, so "Total 44.96" is read and a line that
+    // merely mentions the word in a sentence contributes nothing.
+    const after = line.slice(line.search(LABEL));
+    for (const m of after.matchAll(
+      /(?:[₹$€£]|Rs\.?|INR|USD|EUR|GBP)\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*(?:INR|USD|EUR|GBP)/gi)) {
+      try { out.add(parseAmount(m[1] ?? m[2] ?? '').value); } catch { /* not one */ }
+    }
+  }
+  return [...out];
+}
+
+/**
+ * A bare "Amount" column, on a table where nothing else could be the total.
+ *
+ * `roleOf` sends a bare "Amount" to `other` on purpose, and that rule stays:
+ * Amazon prints "Tax Amount" beside "Total Amount", and reading either as the
+ * total once turned a 9.00 invoice into 10.37.
+ *
+ * But a foreign supplier's invoice is "Description, Quantity, Unit Price,
+ * Amount" and nothing else. There is no tax, no column called total, and
+ * exactly one column of money — so the ambiguity the rule guards against
+ * cannot arise, and refusing the document left it with no figure at all.
+ *
+ * All three conditions are required. Any tax column means the document is an
+ * Indian tax invoice and the caution applies; a column already called total
+ * means there is a better candidate; and more than one bare "Amount" is the
+ * Amazon case exactly.
+ *
+ * Mutates `roles` in place, which is ugly and keeps the decision in one place
+ * rather than threading a second array through every caller.
+ */
+function resolveBareAmount(header: string[], roles: ColumnRole[]): void {
+  const taxed: ColumnRole[] =
+    ['cgst', 'sgst', 'igst', 'cess', 'tax_amount', 'tax_type', 'taxable'];
+  if (roles.some((r) => taxed.includes(r) || r === 'total')) return;
+
+  const bare = /^\s*(?:amount|value)\s*[\p{Sc}]?\s*$/iu;
+  const candidates = header
+    .map((h, i) => ({ h, i }))
+    .filter(({ h, i }) => roles[i] === 'other' && bare.test(h));
+
+  if (candidates.length === 1) roles[candidates[0]!.i] = 'total';
+}
+
+/**
  * The acceptance gates, shared by both paths.
  *
  * Everything here decides whether the cells can be BELIEVED, and none of it
  * knows or cares how they were located.
  */
-export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable {
+export function gradeTable(
+  header: string[], dataRows: string[][],
+  /** Figures the surrounding text calls a total — see `statedTotalsInText`. */
+  statedTotals: readonly string[] = [],
+): InvoiceTable {
   const roles = header.map(roleOf);
+  resolveBareAmount(header, roles);
 
   const table: InvoiceTable = {
     readable: false, roles, header,
@@ -374,6 +460,29 @@ export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable
    * All of them are excluded from the item sums; the first is kept as the
    * figure to check those sums against.
    */
+  /*
+   * Nothing after the totals block belongs to this table.
+   *
+   * Hetzner prints a second table directly below the first — a tax-code
+   * summary with the same captions and the same column positions — so the
+   * geometry test that ends a table saw no break and read both as one. The
+   * summary restates the invoice, and its 44.96 was added to the 44.96 above
+   * it: a 44.96 invoice with a total column summing to 89.92.
+   *
+   * A table states its total at the end. The block is allowed to run on,
+   * because documents do state totals twice — a Flipkart page prints "Total"
+   * and then "Grand Total" — but the first row after it that is NOT a totals
+   * row starts something else.
+   */
+  const firstTotal = table.rows.findIndex((r) =>
+    r.cells.some((c) => TOTAL_ROW.test(c)));
+  if (firstTotal >= 0) {
+    let end = firstTotal;
+    while (end + 1 < table.rows.length
+           && table.rows[end + 1]!.cells.some((c) => TOTAL_ROW.test(c))) end++;
+    table.rows = table.rows.slice(0, end + 1);
+  }
+
   const totalsRows = table.rows.filter((r) =>
     r.cells.some((c) => TOTAL_ROW.test(c)));
   table.totals = totalsRows[0] ?? null;
@@ -407,6 +516,66 @@ export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable
    * empty, which is the worst possible answer: a confident yes carrying no
    * figures. `readable` has to mean a figure was actually recovered.
    */
+  /*
+   * On a document that charges no tax, the total IS the taxable value.
+   *
+   * The rule below demands both, because a total with nothing beside it is
+   * unchecked. That reasoning holds only where tax exists to check it against.
+   * An import of service carries one money column and no tax at all — there is
+   * no second figure anywhere on the paper — so demanding one refused four
+   * perfectly legible invoices for missing something they cannot have.
+   *
+   * What replaces the tie as the check is the document's own totals row: the
+   * item rows must sum to the total it states. `checkStated` has already
+   * established that above, and without a totals row there is no check and the
+   * figure stays refused.
+   */
+  const untaxed = !roles.some((r) =>
+    (['cgst', 'sgst', 'igst', 'cess', 'tax_amount'] as ColumnRole[]).includes(r));
+  if (untaxed && table.sums.total !== undefined
+      && table.sums.taxable === undefined) {
+    const inTable = table.totals !== null;
+    /*
+     * The LARGEST figure the document calls a total, not any of them.
+     *
+     * Kamatera bills in sections and states a total for each: "Total Monthly
+     * Recurring Services (Current Month): 6.00 USD", and two more below it.
+     * Matching any stated total accepted the first section's 6.00 as the whole
+     * of an 11.09 invoice — two thirds of the document missing, and a check
+     * that reported success. This is the blindness gate 2 already has, arrived
+     * at from a new direction.
+     *
+     * A section total is smaller than the invoice's, so requiring the largest
+     * refuses that. Where the largest is something else entirely — arrears
+     * carried forward, a gross before discount — the item rows will not equal
+     * it and the document is refused, which is the direction to fail in.
+     */
+    const largest = statedTotals.reduce<string | null>(
+      (a, b) => (a === null || paise(b) > paise(a) ? b : a), null);
+    const inText = largest !== null && paise(largest) === paise(table.sums.total);
+
+    if (!inTable && !inText) {
+      return {
+        ...table,
+        reason: 'this document charges no tax, so nothing in the table checks ' +
+          `its figures, and no total stated anywhere on it matches the ${table.sums.total} ` +
+          `the item rows sum to` +
+          (statedTotals.length > 0
+            ? ` — the largest it states is ${largest}. A row was probably missed.`
+            : ', and it states no total at all. There is nothing here to verify against.'),
+      };
+    }
+
+    table.sums.taxable = table.sums.total;
+    table.warnings = [
+      ...(table.warnings ?? []),
+      'this document charges no tax, so its total is taken as the taxable ' +
+      `value. The item rows sum to ${table.sums.total}, which is the total ` +
+      `the document states ${inTable ? 'in its totals row' : 'on the page'}; ` +
+      'nothing else on the document checks that figure.',
+    ];
+  }
+
   if (table.sums.total === undefined || table.sums.taxable === undefined) {
     /*
      * `readable` has to mean VERIFIED, not merely parsed.

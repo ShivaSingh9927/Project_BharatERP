@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { splitDocuments } from '../src/parse/documentSplit.ts';
-import { readInvoiceTable } from '../src/parse/invoiceTable.ts';
+import { readInvoiceTable, gradeTable, statedTotalsInText } from '../src/parse/invoiceTable.ts';
 
 const read = (text: string) => readInvoiceTable(splitDocuments(text)[0]!);
 
@@ -168,7 +168,14 @@ Description                    Qty    Total
 
 Example Fee                      1     9.00`);
     expect(t.readable).toBe(false);
-    expect(t.reason).toMatch(/nothing checks the other/);
+    /*
+     * The wording moved when untaxed documents got their own path: this
+     * fixture charges no tax, so it is now refused for stating no total to
+     * check against rather than for missing one side of the tie. Same refusal,
+     * and a more accurate reason — there is no tax here for a taxable value to
+     * sit opposite.
+     */
+    expect(t.reason).toMatch(/nothing here to verify against/);
   });
 
   it('refuses a table with no money column at all', () => {
@@ -300,5 +307,68 @@ Sr.   Description        Taxable Value   CGST (INR)   SGST (INR)   Total
     expect(t.readable).toBe(true);
     expect(t.roundOff).toBeUndefined();
     expect(t.warnings).toBeUndefined();
+  });
+});
+
+/**
+ * A document that charges no tax — bills-and-expenses.md §4.3.
+ *
+ * An import of service has one money column and no tax anywhere, so the tie
+ * has nothing to work with. Four foreign invoices in the corpus were refused
+ * for lacking a taxable value they cannot have. What checks them instead is
+ * the total the document states in its own text.
+ */
+describe('a document with no tax at all', () => {
+  const rows = [
+    ['Traffic routing', '1', '9.00', '9.00'],
+    ['Payment fee', '1', '0.56', '0.56'],
+  ];
+  const header = ['Description', 'Quantity', 'Unit Price', 'Amount'];
+
+  it('takes the total as the taxable value when the page states that total', () => {
+    const t = gradeTable(header, rows, ['9.56']);
+    expect(t.readable).toBe(true);
+    expect(t.sums.taxable).toBe('9.56');
+    expect(t.warnings?.join(' ')).toMatch(/charges no tax/);
+  });
+
+  it('refuses when the page states no total at all', () => {
+    // Nothing to check a single figure against, which is where this started.
+    const t = gradeTable(header, rows, []);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/nothing here to verify against/);
+  });
+
+  it('refuses when the rows read do not reach the total stated', () => {
+    /*
+     * The case that matters. A real Kamatera invoice bills in sections and
+     * states a total for each; only the first section's rows were read, and
+     * matching ANY stated total accepted 6.00 as the whole of an 11.09
+     * invoice. Requiring the largest catches the two thirds that were missed.
+     */
+    const t = gradeTable(header, rows, ['9.56', '20.00']);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/largest it states is 20\.00/);
+    expect(t.reason).toMatch(/row was probably missed/);
+  });
+
+  it('reads a total floated outside the table, and only from a total label', () => {
+    expect(statedTotalsInText('Total  $9.56')).toEqual(['9.56']);
+    expect(statedTotalsInText('Amount due   ₹929.00')).toEqual(['929.00']);
+    expect(statedTotalsInText('Total: 11.09 USD')).toEqual(['11.09']);
+    // A line that merely mentions a figure is not a stated total.
+    expect(statedTotalsInText('Traffic routing; #532846  1  $9.00')).toEqual([]);
+  });
+
+  it('does not apply where the document does charge tax', () => {
+    /*
+     * The relaxation is only safe because there is no tax to check against.
+     * A taxed document with a total and no taxable column is still the Amazon
+     * failure, and still refused.
+     */
+    const t = gradeTable(
+      ['Description', 'IGST', 'Total'], [['Fee', '0.76', '5.00']], ['5.00']);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/only a total|nothing checks the other/);
   });
 });

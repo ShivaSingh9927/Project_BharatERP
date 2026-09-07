@@ -16,6 +16,7 @@
  */
 
 import type { Word, WordRow } from './pdfWords.ts';
+import { AMOUNT_SHAPE } from './values.ts';
 
 /**
  * A column, as declared by the header words above it.
@@ -38,10 +39,27 @@ interface Band {
   labels: string[];
 }
 
-/** Words that identify a row as the table's header. Shared with the text path. */
+/**
+ * Words that identify a row as the table's header.
+ *
+ * The first nine are the vocabulary of an Indian GST invoice, and requiring
+ * two of them worked until the first foreign supplier arrived. An import of
+ * service has an ordinary commercial table — "Description, Quantity, Unit
+ * Price, Amount" — which scored ONE and was refused, and a German host's
+ * "Service, Period, Total, Tax" scored nothing at all. Four documents were
+ * unreadable for want of vocabulary rather than for want of structure.
+ *
+ * The generic captions below are far weaker evidence on their own: "amount",
+ * "rate" and "total" appear all over an invoice. What makes them safe is the
+ * structural test in `headerScore` — a header NAMES columns, it does not hold
+ * figures — which the words alone could never provide.
+ */
 const HEADER_HINTS = [
   /\btaxable\b/i, /\bcgst\b/i, /\bsgst\b/i, /\bigst\b/i,
   /\bhsn\b/i, /\bsac\b/i, /\bqty\b/i, /\bdescription\b/i, /\bparticulars\b/i,
+  /\bquantity\b/i, /\bunit\s*price\b/i, /\bamount\b/i, /\brate\b/i,
+  /\bitem\b/i, /\bproduct\b/i, /\bservice\b/i, /\bperiod\b/i, /\btotal\b/i,
+  /\bdisc(?:ount)?\b/i,
 ];
 
 const HAS_DIGIT = /\d/;
@@ -58,6 +76,17 @@ function rowText(r: WordRow): string {
 }
 
 function headerScore(r: WordRow): number {
+  /*
+   * A row holding money is a data row, whatever it is called.
+   *
+   * This is what lets the generic captions above be trusted. "Total | $9.56"
+   * carries two hint words and would otherwise outscore a real header; the
+   * figure beside them settles it. It also costs nothing on the documents that
+   * already worked, because no invoice in the corpus prints a bare number in
+   * its caption.
+   */
+  if (r.words.some((w) => AMOUNT_SHAPE.test(w.text.trim()))) return 0;
+
   const t = rowText(r);
   return HEADER_HINTS.filter((h) => h.test(t)).length;
 }
@@ -252,7 +281,10 @@ export function tableFromRows(rows: WordRow[]): WordTable | null {
   const header = bands.map((b) => b.labels.join(' '));
   const numericBand = new Set<number>();
   const out: string[][] = [];
-  const AMOUNT = /^[₹$(]?-?[\d,]+(?:\.\d+)?\)?%?$/;
+  // Shared with `values.ts`, which is where the currency knowledge lives. The
+  // local copy here accepted only rupees and dollars, so a euro column was not
+  // seen as money at all.
+  const AMOUNT = AMOUNT_SHAPE;
 
   for (const r of rows.slice(headerEnd + 1)) {
     const cells = cellsFor(r, bands);
