@@ -161,6 +161,19 @@ function bandOf(xMin: number, xMax: number, bands: Band[]): number {
   return nearest;
 }
 
+/**
+ * A totals caption, wherever in the row it landed.
+ *
+ * Deliberately not anchored to a column: vendors float it wherever there is
+ * room — Flipkart puts it under the description, Amazon writes "TOTAL:" hard
+ * against the left margin.
+ */
+const TOTALS_CAPTION = /^\s*(?:grand\s+)?total(?:\s+(?:qty|price|amount))?\s*:?\s*$/i;
+
+function looksLikeTotals(cells: string[]): boolean {
+  return cells.some((c) => TOTALS_CAPTION.test(c));
+}
+
 function cellsFor(r: WordRow, bands: Band[]): string[] {
   const cells: string[][] = bands.map(() => []);
   for (const w of r.words) cells[bandOf(w.xMin, w.xMax, bands)]!.push(w.text);
@@ -232,9 +245,33 @@ export function tableFromRows(rows: WordRow[]): WordTable | null {
       numericBand.has(i) && c !== '' && !AMOUNT.test(c.trim()));
     const carriesAnAmount = cells.some((c) => AMOUNT.test(c.trim()));
 
+    /*
+     * A totals row is the one thing that contradicts AND carries amounts and
+     * still belongs to the table — in fact it is the most valuable row on the
+     * page.
+     *
+     * The rule above was written to keep a floated "Grand Total" out of the
+     * item sums, and it did that by ending the table at the first row with
+     * both text and figures. But the document's OWN stated totals row looks
+     * exactly like that: a caption in a numeric band beside a set of amounts.
+     * So it was discarded on 6 of the 11 readable documents, Blinkit among
+     * them, even though the paper prints "Total 499.50 499.50 6549.00" plainly.
+     *
+     * Losing it costs the best check there is. It is the vendor's own
+     * arithmetic over the same rows we just read, so comparing our sum against
+     * it catches a missed or double-counted row without needing a second
+     * reader at all — precisely the class of defect that got past both gates
+     * last time.
+     *
+     * So it is kept, and it ends the table: nothing after a totals row is part
+     * of the body. `gradeTable` recognises it by caption, excludes it from the
+     * item sums, and checks those sums against it.
+     */
     if (contradicts) {
-      if (!carriesAnAmount) continue;   // an item's own wrapped text
-      break;                            // something that is not this table
+      if (!carriesAnAmount) continue;      // an item's own wrapped text
+      if (!looksLikeTotals(cells)) break;  // a signature block, a stray figure
+      out.push(cells);
+      break;
     }
 
     cells.forEach((c, i) => { if (AMOUNT.test(c.trim())) numericBand.add(i); });

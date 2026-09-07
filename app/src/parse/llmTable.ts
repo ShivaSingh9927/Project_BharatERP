@@ -70,8 +70,12 @@ Rules, all of them mandatory:
   Do not reformat numbers. Do not strip currency symbols.
 - Do NOT calculate anything. Do not add, subtract, total, or correct any value.
   If the printed figures do not add up, transcribe them as printed.
-- Do NOT include a totals row, a "grand total" line, an amount-in-words line,
-  or anything below the table body.
+- If the document prints a totals row for the table, DO include it, as the
+  last row, with its caption ("Total", "TOTAL:", "Grand Total") left in
+  whichever cell it is printed in. Transcribe its figures as printed; do not
+  compute them.
+- Do NOT include an amount-in-words line, a signature block, or any other
+  content below the table.
 - Do NOT invent a column that is not printed, and do not merge two printed
   columns into one.
 - If you cannot find a line-item table, return {"header": [], "rows": []}.

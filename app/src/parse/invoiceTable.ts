@@ -312,11 +312,23 @@ export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable
     };
   }
 
-  const totalsIdx = table.rows.findIndex((r) =>
+  /*
+   * A document may state its totals MORE THAN ONCE. One real Flipkart page
+   * prints a "Total" row for the table and a floated "Grand Total" beneath it,
+   * both carrying 28014.00.
+   *
+   * Excluding only the first left the second counted as an item, so the total
+   * column summed to 56028.00 and the table was refused — a correct document
+   * rejected because a restatement was read as a second sale.
+   *
+   * All of them are excluded from the item sums; the first is kept as the
+   * figure to check those sums against.
+   */
+  const totalsRows = table.rows.filter((r) =>
     r.cells.some((c) => TOTAL_ROW.test(c)));
-  if (totalsIdx >= 0) table.totals = table.rows[totalsIdx]!;
+  table.totals = totalsRows[0] ?? null;
 
-  const itemRows = table.rows.filter((_, i) => i !== totalsIdx);
+  const itemRows = table.rows.filter((r) => !totalsRows.includes(r));
   table.sums = sumByRole(itemRows, roles);
 
   // ── Gate 2: the arithmetic ties ──────────────────────────────────────────

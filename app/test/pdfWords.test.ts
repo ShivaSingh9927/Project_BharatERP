@@ -285,3 +285,80 @@ describe('an item that wraps does not end the table', () => {
     expect(t.sums.total).toBe('387.00');
   });
 });
+
+// ---------------------------------------------------------------------------
+/*
+ * The document's own totals row is the best check available: the vendor's
+ * arithmetic over the same rows we just read. It catches a missed or
+ * double-counted row without needing a second reader — the class of defect
+ * that got past both gates once already.
+ */
+describe('the printed totals row', () => {
+  const withTotals = (totalCaption: string, extra: Word[] = []) => wordsToRows([
+    w('Description', 40, 100), w('Qty', 150, 100),
+    w('Taxable', 200, 100), w('IGST', 280, 100), w('Total', 340, 100),
+    w('Item A', 40, 130), w('1', 150, 130),
+    w('600.00', 200, 130), w('108.00', 280, 130), w('708.00', 340, 130),
+    w('Item B', 40, 145), w('1', 150, 145),
+    w('400.00', 200, 145), w('72.00', 280, 145), w('472.00', 340, 145),
+    w(totalCaption, 40, 165), w('2', 150, 165),
+    w('1000.00', 200, 165), w('180.00', 280, 165), w('1180.00', 340, 165),
+    ...extra,
+  ]);
+
+  it('is kept, though it looks exactly like content below the table', () => {
+    /*
+     * A totals row contradicts the numeric bands AND carries amounts, which is
+     * the signature the loop uses to stop. It was therefore discarded on 6 of
+     * 11 readable documents — Blinkit among them, though the paper plainly
+     * prints "Total 499.50 499.50 6549.00".
+     */
+    const t = readInvoiceTableFromWords(
+      [{ number: 1, width: 600, height: 800, rows: withTotals('Total') }]);
+    expect(t.readable).toBe(true);
+    expect(t.totals).not.toBeNull();
+    expect(t.sums.taxable).toBe('1000.00');   // the items, not the items twice
+  });
+
+  it('excludes EVERY restatement, not just the first', () => {
+    /*
+     * A real Flipkart page prints "Total" for the table and a floated "Grand
+     * Total" beneath it, both carrying the same figure. Excluding only the
+     * first counted the second as an item, the total column summed to double,
+     * and a correct document was refused.
+     */
+    const t = readInvoiceTableFromWords([{
+      number: 1, width: 600, height: 800,
+      rows: withTotals('Total', [
+        w('Grand Total', 200, 190), w('1180.00', 340, 190),
+      ]),
+    }]);
+    expect(t.readable).toBe(true);
+    expect(t.sums.total).toBe('1180.00');
+  });
+
+  it('refuses when the stated total contradicts the rows above it', () => {
+    const rows = wordsToRows([
+      w('Description', 40, 100), w('Qty', 150, 100),
+      w('Taxable', 200, 100), w('IGST', 280, 100), w('Total', 340, 100),
+      w('Item A', 40, 130), w('1', 150, 130),
+      w('600.00', 200, 130), w('108.00', 280, 130), w('708.00', 340, 130),
+      w('Total', 40, 165), w('1', 150, 165),
+      w('9999.00', 200, 165), w('108.00', 280, 165), w('708.00', 340, 165),
+    ]);
+    const t = readInvoiceTableFromWords(
+      [{ number: 1, width: 600, height: 800, rows }]);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/totals row claims/);
+  });
+
+  it('still stops at a signature block, which is not a totals row', () => {
+    const t = readInvoiceTableFromWords([{
+      number: 1, width: 600, height: 800,
+      rows: withTotals('Total', [
+        w('For Example Traders', 200, 190), w('9999.00', 340, 190),
+      ]),
+    }]);
+    expect(t.sums.total).toBe('1180.00');
+  });
+});

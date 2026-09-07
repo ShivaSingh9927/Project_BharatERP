@@ -147,8 +147,44 @@ describe('the document is data, not instructions (BE-3)', () => {
     expect(SYSTEM_PROMPT).toMatch(/transcribe them as printed/);
   });
 
-  it('forbids a totals row, which we detect ourselves', () => {
-    expect(SYSTEM_PROMPT).toMatch(/Do NOT include a totals row/);
+  it('asks for the printed totals row, to check the item sums against', () => {
+    /*
+     * Excluded at first, which was a mistake. The coordinate path checks its
+     * item sums against the printed totals row; the model path had no
+     * equivalent, so a model reading was accepted on internal consistency
+     * alone — exactly what let a truncated table through once already.
+     *
+     * A fabricated totals row is safe: it is only ever used to CHECK, never
+     * posted, so inventing one causes a refusal not a wrong bill.
+     */
+    expect(SYSTEM_PROMPT).toMatch(/DO include it/);
+    expect(SYSTEM_PROMPT).toMatch(/do not\s+compute them/);
+  });
+
+  it('refuses when the returned totals row disagrees with the rows above it', async () => {
+    const r = await readInvoiceTableFromLlm('text', fake(JSON.stringify({
+      header: ['Description', 'Taxable Value', 'IGST', 'Total'],
+      rows: [
+        ['Item A', '1000.00', '180.00', '1180.00'],
+        ['Total', '9999.00', '180.00', '1180.00'],
+      ],
+    })));
+    expect(r.table.readable).toBe(false);
+    expect(r.table.reason).toMatch(/totals row claims/);
+  });
+
+  it('accepts a reading the totals row confirms', async () => {
+    const r = await readInvoiceTableFromLlm('text', fake(JSON.stringify({
+      header: ['Description', 'Taxable Value', 'IGST', 'Total'],
+      rows: [
+        ['Item A', '600.00', '108.00', '708.00'],
+        ['Item B', '400.00', '72.00', '472.00'],
+        ['Total', '1000.00', '180.00', '1180.00'],
+      ],
+    })));
+    expect(r.table.readable).toBe(true);
+    expect(r.table.sums.taxable).toBe('1000.00');
+    expect(r.table.totals).not.toBeNull();
   });
 });
 
