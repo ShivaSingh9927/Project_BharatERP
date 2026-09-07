@@ -852,7 +852,51 @@ export async function proposeFromDocument(
         `${STATUTORY_RATES.join('%, ')}%.`);
     }
 
-    if (rate === null) {
+    /*
+     * A rate PER LINE, when one rate cannot explain the whole document.
+     *
+     * A Zepto grocery bill taxes noodles at 5% and fresh vegetables at nil, on
+     * the same invoice — so no single scheduled rate reproduces its total tax
+     * and the document was refused as "probably taxed at more than one rate".
+     * It is, and that is ordinary: a mixed basket is the normal case in retail,
+     * not an exception.
+     *
+     * Each row carries its own taxable value and its own tax, so each row can
+     * be tested against the schedule on its own. The bar is unchanged — every
+     * line must resolve exactly, or nothing posts — which is why this is a
+     * fallback rather than the first thing tried: one rate agreeing across the
+     * whole document is stronger evidence than seven agreeing separately.
+     */
+    const perLine = rate !== null ? null : items.map(({ row, taxable: tv }) => {
+      const rowTax = (['cgst', 'sgst', 'igst'] as const)
+        .reduce((sum, k) => {
+          const c = row.by[k]?.trim();
+          if (c === undefined || c === '') return sum;
+          try { return sum + paise(parseAmount(c).value); } catch { return sum; }
+        }, 0n);
+      return deriveGstRate([tv], money(rowTax), profile.rates,
+                           profile.taxKind === 'intra');
+    });
+
+    if (perLine !== null && perLine.every((r) => r !== null)) {
+      for (const [i, { row, taxable: tv }] of items.entries()) {
+        lines.push({
+          description: row.by.description?.trim()
+            || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
+          hsnSac: row.by.hsn?.replace(/^\D+/, '').trim() || undefined,
+          unitPrice: tv,
+          quantity: '1',
+          gstRate: perLine[i]!,
+          expenseAccountId: input.expenseAccountId,
+          chargedTax: chargedOn(row),
+        });
+      }
+      const distinct = [...new Set(perLine)].sort();
+      warnings.push(
+        `this document is taxed at more than one rate (${distinct.join('%, ')}%). ` +
+        'Each line was matched to a scheduled rate using its own taxable value ' +
+        'and its own tax; no single rate explains the document as a whole.');
+    } else if (rate === null) {
       blockers.push(
         `no single GST rate explains this document: tax of ${tax} on a taxable ` +
         `value of ${taxable} matches no scheduled rate exactly` +
@@ -934,7 +978,42 @@ export async function proposeFromDocument(
     }
   }
 
-  if (profile.resolvedKind === 'unspecified') {
+  /*
+   * The TABLE can settle what the heading and the running text could not.
+   *
+   * Zepto heads its page "TAX INVOICE/BILL OF SUPPLY" and prints its tax rates
+   * inside table columns rather than in a sentence, so `invoiceTax` — which
+   * reads names and rates from running text — cannot tell which document this
+   * is. It was refused for that, though the table plainly shows 3.05 of CGST
+   * and 3.05 of S/UT GST charged on a taxable value of 236.92.
+   *
+   * Tax charged means a tax invoice. This only ever moves a document from
+   * "unknown" to "tax invoice", which is the safe direction: the failure that
+   * matters is calling something a bill of supply when it charged tax, because
+   * that silently destroys a credit the client is entitled to.
+   */
+  const tableShowsTax = table.readable
+    && (['cgst', 'sgst', 'igst'] as const)
+      .some((k) => table.sums[k] !== undefined && paise(table.sums[k]!) > 0n);
+
+  if (profile.resolvedKind === 'unspecified' && tableShowsTax) {
+    /*
+     * Drop the warning this supersedes. `taxProfileWarnings` said the credit
+     * must not be claimed unread, which was right on the text alone and is
+     * wrong once the table has been read — and two warnings contradicting each
+     * other is worse than either, because the reviewer has to work out which
+     * one is stale.
+     */
+    for (let i = warnings.length - 1; i >= 0; i--) {
+      if (/Do not claim input credit on it unread/.test(warnings[i]!)) {
+        warnings.splice(i, 1);
+      }
+    }
+    warnings.push(
+      'the heading names several document types and the rates are not written ' +
+      'in the text, but the table charges GST — so this is treated as a tax ' +
+      'invoice. Input credit is claimable on it.');
+  } else if (profile.resolvedKind === 'unspecified') {
     blockers.push(
       'the document does not say whether it is a tax invoice or a bill of ' +
       'supply, and its rates could not be read — input credit must not be ' +
@@ -1048,7 +1127,7 @@ export async function postProposal(
   if (unanswered.length > 0) {
     throw new ValidationError(
       'this bill has questions that have to be answered before it can post: ' +
-      unanswered.map((c) => c.question).join(' '), 'PB-7');
+      unanswered.map((c) => c.question).join(' '), 'PB-8');
   }
   for (const c of proposal.confirmations) {
     const given = answers[c.field]!;
@@ -1056,7 +1135,7 @@ export async function postProposal(
       throw new ValidationError(
         `"${given}" is not one of the readings offered for ${c.field} — it ` +
         `was either ${c.chose} or ${c.instead}. An answer that is neither is ` +
-        'a different edit, and belongs on the bill rather than here.', 'PB-7');
+        'a different edit, and belongs on the bill rather than here.', 'PB-8');
     }
   }
   const bill = await createBill(firmId, {

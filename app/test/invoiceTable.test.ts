@@ -392,3 +392,114 @@ describe('a document with no tax at all', () => {
     expect(t.reason).toMatch(/only a total|nothing checks the other/);
   });
 });
+
+/**
+ * The Zepto geometry — a rate column and an amount column for every tax, a
+ * three-line stacked heading, and the totals stated twice with only the
+ * second labelled.
+ *
+ * Every one of these was a separate refusal on a real document.
+ */
+describe('a rate column that does not say it is one', () => {
+  it('reclassifies a money column whose cells are all percentages', () => {
+    /*
+     * Zepto captions its rate columns "CGST" and "S/UT GST" with no per-cent
+     * sign anywhere in the heading, though every cell beneath reads "2.50%".
+     * Read from the caption those were tax amounts, so gate 1 refused the
+     * whole table on "0.00%" — which does not parse as an amount.
+     */
+    const t = gradeTable(
+      ['Taxable Amt.', 'CGST', 'S/UT GST', 'CGST Amt.', 'S/UT GST Amt.', 'Total Amt.'],
+      [['54.29', '2.50%', '2.50%', '1.36', '1.36', '57.00']]);
+    expect(t.roles[1]).toBe('rate');
+    expect(t.roles[2]).toBe('rate');
+    expect(t.roles[3]).toBe('cgst');
+    expect(t.roles[4]).toBe('sgst');
+  });
+
+  it('leaves a column mixing figures and percentages alone', () => {
+    /*
+     * That is a misread boundary, which is precisely what gate 1 exists to
+     * catch. Relabelling it as a rate would hide the fault.
+     */
+    const t = gradeTable(
+      ['Taxable', 'CGST', 'Total'],
+      [['100.00', '9.00', '109.00'], ['100.00', '9.00%', '109.00']]);
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/should hold one amount per row/);
+  });
+
+  it('recognises a state GST column whose caption lost its S/UT', () => {
+    /*
+     * CGST never travels alone — there is no central-only intra-state supply.
+     * Zepto stacks its heading over three lines and the "S/UT" lands in a
+     * neighbouring band, so the column arrives called "GST Amt." and
+     * classified as nothing, dropping its half of the tax.
+     *
+     * A guess, and a safe one: if it were really a COMBINED figure the
+     * arithmetic would come out over by the central half and be refused.
+     */
+    const t = gradeTable(
+      ['Taxable Amt.', 'CGST Amt.', 'GST Amt.', 'Total Amt.'],
+      [['54.29', '1.36', '1.36', '57.01']]);
+    expect(t.roles[2]).toBe('sgst');
+    expect(t.readable).toBe(true);
+  });
+});
+
+describe('a totals row with nothing written in it', () => {
+  const header = ['SR No', 'Description', 'Taxable Amt.', 'CGST Amt.', 'Total Amt.'];
+
+  it('is recognised by restating the rows above it', () => {
+    /*
+     * Zepto prints its totals twice: once as a bare line of figures with every
+     * label column empty, and once below as "Item Total". Only the second says
+     * what it is, so the first was counted as an item and every figure on the
+     * bill doubled. The arithmetic still nearly tied, because both sides
+     * doubled together, which is how it got as far as it did.
+     */
+    const t = gradeTable(header, [
+      ['1', 'Noodles', '54.29', '1.36', '57.00'],
+      ['2', 'Bananas', '13.33', '0.33', '14.00'],
+      ['', '', '67.62', '1.69', '71.00'],
+    ]);
+    expect(t.sums.taxable).toBe('67.62');     // not 135.24
+    expect(t.totals).not.toBeNull();
+  });
+
+  it('keeps a second line that merely looks like a total', () => {
+    /*
+     * The guard that matters. Two equal lines: the last one's total equals the
+     * sum of the others, and dropping it would silently halve the bill. It
+     * carries a serial and a description, so it identifies itself as an item.
+     */
+    const t = gradeTable(header, [
+      ['1', 'Item A', '50.00', '0.00', '50.00'],
+      ['2', 'Item B', '50.00', '0.00', '50.00'],
+    ]);
+    expect(t.sums.taxable).toBe('100.00');
+  });
+});
+
+describe('a stated total that agrees with the parts, not the column', () => {
+  it('accepts a document that rounds each line to a rupee', () => {
+    /*
+     * Zepto rounds every line to a whole rupee, so its total column sums to
+     * 71.00 while the row restating those lines says 71.01 — taxable plus tax,
+     * unrounded. Insisting on the total column refused sound arithmetic.
+     *
+     * Still exact: the alternative is computed, not tolerated.
+     */
+    const t = gradeTable(
+      ['SR No', 'Description', 'Taxable Amt.', 'CGST Amt.', 'S/UT GST Amt.', 'Total Amt.'],
+      [
+        // 57.01 printed as 57.00, and 38.02 printed as 38.00.
+        ['1', 'Noodles', '54.29', '1.36', '1.36', '57.00'],
+        ['2', 'Chutney', '36.20', '0.91', '0.91', '38.00'],
+        ['', '', '90.49', '2.27', '2.27', '95.03'],
+      ]);
+    expect(t.readable).toBe(true);
+    expect(t.sums.total).toBe('95.00');       // the rounded lines
+    expect(t.roundOff).toBe('-0.03');         // ...against parts of 95.03
+  });
+});

@@ -260,15 +260,46 @@ describe('what will not be posted', () => {
     expect(p.blockers.join(' ')).toMatch(/no single GST rate explains/);
   });
 
-  it('refuses a document that never said which kind it is', async () => {
-    // An Amazon or Zepto heading naming three document types, whose rates
-    // could not be read. Input credit must not rest on that.
+  it('refuses a document that never said which kind it is, and shows no tax', async () => {
+    /*
+     * An Amazon or Zepto heading naming three document types, whose rates
+     * could not be read from the text. Input credit must not rest on that —
+     * unless the table settles it, which is the case below.
+     */
     const seg = splitDocuments(
       `Tax Invoice/Bill of Supply/Cash Memo\nInvoice Number : P6\n`
+      + `Invoice Date : 03-Jun-2026\n`
       + `GSTIN - ${SAME_STATE}\nSR HSN Qty CGST S/UT GST\n1 30049011 1 2.50% 2.50%`)[0]!;
-    const p = await propose(seg, intraStateTable());
+    const untaxed = page([
+      w('Qty', 40, 100), w('Taxable', 90, 100), w('CGST', 200, 100),
+      w('SGST', 260, 100), w('Total', 330, 100),
+      w('1', 40, 130), w('1000.00', 90, 130), w('0.00', 200, 130),
+      w('0.00', 260, 130), w('1000.00', 330, 130),
+    ]);
+    const p = await propose(seg, untaxed);
     expect(p.input).toBeNull();
     expect(p.blockers.join(' ')).toMatch(/does not say whether it is a tax invoice/);
+  });
+
+  it('lets the TABLE settle a kind the heading and text could not', async () => {
+    /*
+     * Zepto heads its page "TAX INVOICE/BILL OF SUPPLY" and prints its rates
+     * in table columns rather than in a sentence, so the text reader cannot
+     * classify it — while the table plainly charges CGST and SGST.
+     *
+     * Tax charged means a tax invoice. This only moves a document from unknown
+     * to tax invoice, which is the safe direction: calling something a bill of
+     * supply when it charged tax silently destroys a credit.
+     */
+    const seg = splitDocuments(
+      `Tax Invoice/Bill of Supply/Cash Memo\nInvoice Number : P6b\n`
+      + `Invoice Date : 03-Jun-2026\n`
+      + `GSTIN - ${SAME_STATE}\nSR HSN Qty CGST S/UT GST\n1 30049011 1 2.50% 2.50%`)[0]!;
+    const p = await propose(seg, intraStateTable());
+    expect(p.blockers).toEqual([]);
+    expect(p.warnings.join(' ')).toMatch(/the table charges GST/);
+    // ...and the warning it supersedes is gone, not left to contradict it.
+    expect(p.warnings.join(' ')).not.toMatch(/Do not claim input credit on it unread/);
   });
 });
 
@@ -338,6 +369,50 @@ describe('questions a human has to answer', () => {
           'Invoice Date : 04.09.2026\nDigitally signed Date: 2026.09.03 22:21:45 UTC'),
       interStateTable('1000.00', '180.00', '1180.00'));
     expect(p.confirmations).toEqual([]);
+  });
+});
+
+describe('a bill taxed at more than one rate', () => {
+  it('matches each line to its own scheduled rate', async () => {
+    /*
+     * A Zepto grocery basket: noodles at 5%, fresh vegetables at nil, on one
+     * invoice. No single scheduled rate reproduces the total tax, so the
+     * document was refused as "probably taxed at more than one rate". It is,
+     * and that is the normal case in retail rather than an exception.
+     *
+     * The bar is unchanged: every line must resolve exactly or nothing posts.
+     */
+    const basket = page([
+      w('Qty', 40, 100), w('Taxable', 90, 100), w('CGST', 200, 100),
+      w('SGST', 260, 100), w('Total', 330, 100),
+      w('1', 40, 130), w('54.29', 90, 130), w('1.36', 200, 130),
+      w('1.36', 260, 130), w('57.01', 330, 130),
+      w('1', 40, 145), w('25.00', 90, 145), w('0.00', 200, 145),
+      w('0.00', 260, 145), w('25.00', 330, 145),
+    ]);
+    const p = await propose(doc(SAME_STATE, 'MR1', 'CGST 2.5 % SGST 2.5 %'), basket);
+    expect(p.blockers).toEqual([]);
+    expect(p.input!.lines.map((l) => l.gstRate)).toEqual(['5', '0']);
+    expect(p.warnings.join(' ')).toMatch(/taxed at more than one rate \(0%, 5%\)/);
+
+    // PB-4 must recompute per line too. It used to take the FIRST line's rate
+    // and apply it to the whole bill, which reported a mismatch on figures
+    // that were correct.
+    const bill = await postProposal(t.firmId, p, { approvedBy: t.userId });
+    expect(bill.taxableValue).toBe('79.29');
+    expect(bill.totalGst).toBe('2.72');
+    expect(bill.warnings.join(' ')).not.toMatch(/PB-4 tax mismatch/);
+  });
+
+  it('still refuses when a line matches no scheduled rate', async () => {
+    const odd = page([
+      w('Qty', 40, 100), w('Taxable', 90, 100), w('IGST', 200, 100), w('Total', 280, 100),
+      w('1', 40, 130), w('100.00', 90, 130), w('7.00', 200, 130), w('107.00', 280, 130),
+    ]);
+    // No rate stated on the document, so it has to be inferred — and 7% of
+    // 100.00 matches nothing in the schedule.
+    const p = await propose(doc(SAME_STATE, 'MR2', 'IGST'), odd);
+    expect(p.blockers.join(' ')).toMatch(/no single GST rate explains/);
   });
 });
 

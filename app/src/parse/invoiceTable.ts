@@ -395,6 +395,67 @@ export function statedTotalsInText(text: string): string[] {
 }
 
 /**
+ * A money column whose cells are all percentages is a RATE column, whatever
+ * its caption says.
+ *
+ * Zepto prints a rate column and an amount column for each tax and captions
+ * the first pair "CGST" and "S/UT GST" — no per-cent sign anywhere in the
+ * heading, though every cell beneath reads "2.50%". Read from the caption
+ * alone those are tax amounts, so 2.50 was about to be added to the tax on the
+ * bill; what actually happened is that gate 1 refused the whole table, because
+ * "0.00%" does not parse as an amount.
+ *
+ * The cells are the better evidence and they are unanimous. A column mixing
+ * figures and percentages is NOT reclassified — that is a misread boundary,
+ * which is exactly what gate 1 exists to catch, and quietly relabelling it
+ * would hide the fault.
+ */
+function resolveRateColumns(dataRows: string[][], roles: ColumnRole[]): void {
+  for (const [i, role] of roles.entries()) {
+    if (!MONEY_ROLES.includes(role)) continue;
+
+    let seen = 0, pct = 0;
+    for (const row of dataRows) {
+      const cell = row[i]?.trim();
+      if (cell === undefined || cell === '') continue;
+      seen++;
+      if (/%$/.test(cell)) pct++;
+    }
+    if (seen > 0 && pct === seen) roles[i] = 'rate';
+  }
+}
+
+/**
+ * CGST never travels alone.
+ *
+ * A supply taxed at CGST is taxed at SGST or UTGST in the same breath — there
+ * is no such thing as a central-only intra-state supply. So a table with a
+ * CGST amount column and no state counterpart has lost the counterpart's
+ * caption, not found a document without one.
+ *
+ * Zepto stacks its heading over three lines and the "S/UT" of "S/UT GST Amt."
+ * sits on the top one, which lands in a neighbouring band; the column arrives
+ * captioned "GST Amt." and classified as nothing at all, so its 1.36 was
+ * dropped and the bill no longer added up.
+ *
+ * This is a guess, and it is a safe one because gate 2 checks it immediately:
+ * if the column is really a COMBINED GST amount rather than the state half,
+ * the arithmetic comes out over by the central half and the table is refused.
+ * A guess the gates can catch is a different thing from a guess they cannot.
+ */
+function resolveLoneCgst(header: string[], roles: ColumnRole[]): void {
+  if (!roles.includes('cgst') || roles.includes('sgst')) return;
+
+  const candidates = header
+    .map((h, i) => ({ h: h.toLowerCase(), i }))
+    .filter(({ h, i }) =>
+      roles[i] === 'other' && /\bgst\b/.test(h) && /\bam(?:oun)?t\b/.test(h)
+      && !/\bc\s*gst\b|\bigst\b|\bcess\b/.test(h));
+
+  if (candidates.length === 1) roles[candidates[0]!.i] = 'sgst';
+}
+
+/**
  * A bare "Amount" column, on a table where nothing else could be the total.
  *
  * `roleOf` sends a bare "Amount" to `other` on purpose, and that rule stays:
@@ -448,6 +509,8 @@ export function gradeTable(
 ): InvoiceTable {
   const roles = header.map(roleOf);
   resolveBareAmount(header, roles);
+  resolveRateColumns(dataRows, roles);
+  resolveLoneCgst(header, roles);
 
   const table: InvoiceTable = {
     readable: false, roles, header,
@@ -501,11 +564,62 @@ export function gradeTable(
     table.rows = table.rows.slice(0, end + 1);
   }
 
-  const totalsRows = table.rows.filter((r) =>
+  const totalsRows: TableRow[] = table.rows.filter((r) =>
     r.cells.some((c) => TOTAL_ROW.test(c)));
   table.totals = totalsRows[0] ?? null;
 
-  const itemRows = table.rows.filter((r) => !totalsRows.includes(r));
+  let itemRows = table.rows.filter((r) => !totalsRows.includes(r));
+
+  /*
+   * A row that restates the sum of the rows above it is a totals row, even
+   * with nothing written in it to say so.
+   *
+   * Zepto prints its totals TWICE: once as a bare line of figures with every
+   * label column empty, and once below as "Item Total". Only the second says
+   * what it is, so the first was counted as an item and every figure on the
+   * bill doubled — a 243.02 invoice reporting a taxable value of 473.84. The
+   * arithmetic still nearly tied, because both sides doubled together, which
+   * is how it got as far as it did.
+   *
+   * Three conditions, and all three are needed. It must be LAST, because a
+   * total comes after the things it totals. It must carry no serial and no
+   * description, because an item identifies itself. And its total must equal
+   * the sum of the others exactly — which is what stops a two-line invoice of
+   * equal halves losing its second line.
+   */
+  if (itemRows.length > 1) {
+    const last = itemRows[itemRows.length - 1]!;
+    const rest = itemRows.slice(0, -1);
+    const identified = (last.by.serial ?? '').trim() !== ''
+      || (last.by.description ?? '').trim() !== '';
+
+    if (!identified) {
+      /*
+       * Matched on the TAXABLE value, not the total.
+       *
+       * Zepto rounds each line's total to a whole rupee, so its item totals
+       * sum to 243.00 while the restating row says 243.02 — the unrounded
+       * figure. Comparing totals therefore missed by two paise and the row was
+       * kept as an item, doubling the bill. Taxable values are not rounded per
+       * line, so they match exactly, and an exact match is a far stronger
+       * signal than a total within some tolerance.
+       */
+      const on: ColumnRole = last.by.taxable !== undefined ? 'taxable' : 'total';
+      const mine = last.by[on];
+      const restated = sumByRole(rest, roles)[on];
+      let same = false;
+      try {
+        same = mine !== undefined && restated !== undefined
+          && paise(parseAmount(mine).value) === paise(restated);
+      } catch { same = false; }
+      if (same) {
+        totalsRows.unshift(last);
+        table.totals = totalsRows[0]!;
+        itemRows = rest;
+      }
+    }
+  }
+
   table.sums = sumByRole(itemRows, roles);
 
   // ── Gate 2: the arithmetic ties ──────────────────────────────────────────
@@ -809,11 +923,28 @@ function checkStated(
   totals: Partial<Record<ColumnRole, string>>,
   sums: Partial<Record<ColumnRole, string>>,
 ): { ok: boolean; detail?: string } {
+  /*
+   * A stated total may agree with the sum of the PARTS instead of the sum of
+   * the total column, and both are correct answers.
+   *
+   * Zepto rounds each line to a whole rupee: its seven lines total 243.00 in
+   * the total column, while the row restating them says 243.02 — taxable plus
+   * tax, unrounded. Insisting on the total column refused a document whose
+   * arithmetic is perfectly sound.
+   *
+   * Still exact. The alternative is computed, not tolerated, so a row that
+   * actually went missing still fails both comparisons.
+   */
+  const partsSum = TIE_ADDENDS
+    .filter((r) => sums[r] !== undefined)
+    .reduce((acc, r) => acc + paise(sums[r]!), 0n);
+
   for (const role of [...TIE_ADDENDS, 'total' as const]) {
     const t = totals[role], s = sums[role];
     if (t === undefined || s === undefined || t === '') continue;
     let stated: bigint;
     try { stated = paise(parseAmount(t).value); } catch { continue; }
+    if (role === 'total' && stated === partsSum) continue;
     if (stated !== paise(s)) {
       return {
         ok: false,

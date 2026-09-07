@@ -322,6 +322,51 @@ function resolveRounding(beforeRounding: bigint, stated?: string): bigint {
  * amount. Recompute from taxable value × rate and compare. On mismatch the
  * document goes to the CA for adjudication; it is never silently corrected.
  */
+/**
+ * PB-4 for a bill whose lines are not all at the same rate.
+ *
+ * `verifyTaxFigures` takes one rate and one taxable value, and the caller was
+ * passing the FIRST line's rate for the whole bill. On a Zepto grocery basket
+ * — noodles at 5%, fresh vegetables at nil — that computed 2.5% of everything
+ * and reported a mismatch against figures that were correct.
+ *
+ * Each line is taxed at its own rate and rounded in its own right before the
+ * sum, which is how the vendor's system does it and the only way the two can
+ * be compared. Deliberately recomputed from the rate rather than read from
+ * `chargedTax`: this is the independent check, and checking the vendor's
+ * figure against the vendor's figure would always pass.
+ */
+export function verifyTaxLines(
+  lines: ReadonlyArray<{ taxableValue: string; gstRate: string }>,
+  intraState: boolean,
+  claimed: { cgst?: string; sgst?: string; igst?: string },
+): { matches: boolean; expected: { cgst: string; sgst: string; igst: string }; detail?: string } {
+  let expCgst = 0n, expSgst = 0n, expIgst = 0n;
+
+  for (const l of lines) {
+    const tv = paise(l.taxableValue);
+    if (intraState) {
+      const half = pct(tv, money(paise(l.gstRate) / 2n));
+      expCgst += half; expSgst += half;
+    } else {
+      expIgst += pct(tv, l.gstRate);
+    }
+  }
+
+  const gotCgst = paise(claimed.cgst ?? '0');
+  const gotSgst = paise(claimed.sgst ?? '0');
+  const gotIgst = paise(claimed.igst ?? '0');
+  const matches = gotCgst === expCgst && gotSgst === expSgst && gotIgst === expIgst;
+
+  return {
+    matches,
+    expected: { cgst: money(expCgst), sgst: money(expSgst), igst: money(expIgst) },
+    detail: matches ? undefined
+      : `document claims CGST ${money(gotCgst)} / SGST ${money(gotSgst)} / IGST ${money(gotIgst)}; ` +
+        `computed CGST ${money(expCgst)} / SGST ${money(expSgst)} / IGST ${money(expIgst)}`,
+  };
+}
+
 export function verifyTaxFigures(
   taxableValue: string, gstRate: string, intraState: boolean,
   claimed: { cgst?: string; sgst?: string; igst?: string },

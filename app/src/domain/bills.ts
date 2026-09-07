@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { withFirm } from '../db/pool.ts';
 import { ValidationError } from './types.ts';
 import { validateGstin, isIntraState, isValidStateCode } from './gstin.ts';
-import { computeInvoice, verifyTaxFigures, money, paise } from './tax.ts';
+import { computeInvoice, verifyTaxLines, money, paise } from './tax.ts';
 import { decideItc, type ItcEligibility } from './itc.ts';
 import { resolveAndComputeTds, type EntityType, type TdsComputation } from './tds.ts';
 
@@ -403,9 +403,11 @@ export async function createBill(
     // Recompute independently; a mismatch is a finding for the CA, never
     // something to silently overwrite.
     if (input.claimedTotals) {
-      const v = verifyTaxFigures(
-        money(totals.taxableValue),
-        lineRates[0] ?? '0',
+      const v = verifyTaxLines(
+        resolved.map((l, i) => ({
+          taxableValue: money(totals.lines[i]!.taxableValue),
+          gstRate: lineRates[i]!,
+        })),
         intraState,
         input.claimedTotals,
       );
