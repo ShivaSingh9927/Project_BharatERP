@@ -874,9 +874,10 @@ misleading. No unit test can hold that opinion.
 | Statement files | 49 | PDF/fixed-width; banks other than HDFC and SBI |
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
 | PDF / fixed-width | 31 | Forward-marker coverage |
+| Word positions / columns | 12 | Zepto's rate-in-an-amount-column; captions with fewer than two recognised column words |
 | Invoice line-item table | 14 | Amazon and Zepto geometries (refused, not misread); per-line HSN → rate resolution |
 | Invoice tax profile | 19 | Amounts (deferred until column detection); vendors outside the six-vendor corpus |
 | Document splitting | 26 | Vendors outside the seven-invoice corpus; scanned (OCR) invoices, where page structure survives but heading position may not |
 | OCR / markdown | 14 | Live provider calls (mocked by design); multi-page scans; 300 DPI accuracy |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **400** | |
+| **Total** | **412** | |

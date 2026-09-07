@@ -1,0 +1,218 @@
+/**
+ * Turn positioned words into a table of cells.
+ *
+ * Spec: bills-and-expenses.md §4.3
+ *
+ * With real coordinates, a column is not a run of whitespace that repeats down
+ * the page — it is a horizontal band, and the header declares where the bands
+ * are. Every threshold the gutter approach needed (`MIN_GUTTER`, `WIDE_GAP`,
+ * the straddle test, the two-pass trim) exists only because spacing was a
+ * proxy for position. None of them appear here.
+ *
+ * One thing carries over unchanged and deliberately: the OUTPUT shape. This
+ * produces the same `{ header, rows }` the fixed-width path produces, so the
+ * role mapping and both acceptance gates in `invoiceTable.ts` are reused
+ * exactly. A new way of finding columns should have to pass the same exam.
+ */
+
+import type { Word, WordRow } from './pdfWords.ts';
+
+/** A column, as declared by the header words that sit above it. */
+interface Band { xMin: number; xMax: number; labels: string[] }
+
+/** Words that identify a row as the table's header. Shared with the text path. */
+const HEADER_HINTS = [
+  /\btaxable\b/i, /\bcgst\b/i, /\bsgst\b/i, /\bigst\b/i,
+  /\bhsn\b/i, /\bsac\b/i, /\bqty\b/i, /\bdescription\b/i, /\bparticulars\b/i,
+];
+
+const HAS_DIGIT = /\d/;
+
+export interface WordTable {
+  header: string[];
+  rows: string[][];
+  /** Column bands, for callers that want to explain where a figure came from. */
+  bands: Array<{ xMin: number; xMax: number }>;
+}
+
+function rowText(r: WordRow): string {
+  return r.words.map((w) => w.text).join(' ');
+}
+
+function headerScore(r: WordRow): number {
+  const t = rowText(r);
+  return HEADER_HINTS.filter((h) => h.test(t)).length;
+}
+
+/**
+ * Groups the caption's words into columns.
+ *
+ * Two wrong answers came before this one, and the measurements that settled it
+ * are worth keeping.
+ *
+ * **One band per header word** was too fine. Blinkit's caption reads
+ * "CGST (%)   CGST (INR)   SGST (%)   SGST (INR)" — four columns written as
+ * eight words. Each word became its own column, two of them labelled "CGST",
+ * and the rate 9.00 and the amount 499.50 landed in one each. Both mapped to
+ * the `cgst` role and were summed: 508.50, on an invoice that had read
+ * correctly under the fixed-width path.
+ *
+ * **Transitive overlap across every word** was too coarse. It assumed no word
+ * in one column ever overlaps a word in another, and Amazon breaks that: its
+ * figures are wide relative to the gaps, so ₹2,626.27 reaches into the column
+ * beside it and bridged "Net Amount", "Tax Rate" and "Tax Amount" into one
+ * column captioned "Rate Tax Amount Net".
+ *
+ * What separates them was measured, not guessed. Gaps between adjacent words,
+ * as a fraction of the median word height — so, roughly, ems:
+ *
+ *     Blinkit caption    inside a column 0.23em   between columns 1.08–1.22em
+ *     Amazon prose       between words   0.30em
+ *     Amazon figures     between columns 0.43–0.61em
+ *
+ * Amazon's columns are barely further apart than its own prose spacing, which
+ * is exactly why `-layout` rounded them to a single space, and why no gap
+ * threshold can recover them from DATA rows.
+ *
+ * But its CAPTION words sit 40–60pt apart. So columns are taken from the
+ * caption alone and data rows are only ever assigned into them. Amazon's
+ * narrow figure gaps then never have to be resolved at all.
+ */
+const COLUMN_GAP_EM = 0.5;
+
+function medianHeight(words: Word[]): number {
+  const h = words.map((w) => w.yMax - w.yMin).sort((a, b) => a - b);
+  return h[Math.floor(h.length / 2)] ?? 1;
+}
+
+/** Splits one caption row into bands at every gap wider than half an em. */
+function bandsInRow(row: WordRow): Band[] {
+  const words = [...row.words].sort((a, b) => a.xMin - b.xMin);
+  const threshold = medianHeight(words) * COLUMN_GAP_EM;
+  const bands: Band[] = [];
+
+  for (const w of words) {
+    const open = bands[bands.length - 1];
+    if (open && w.xMin - open.xMax <= threshold) {
+      open.xMax = Math.max(open.xMax, w.xMax);
+      open.labels.push(w.text);
+    } else {
+      bands.push({ xMin: w.xMin, xMax: w.xMax, labels: [w.text] });
+    }
+  }
+  return bands;
+}
+
+/**
+ * Merges per-row bands into columns by horizontal overlap, which is what
+ * stacks Amazon's "Net" over "Amount" into one column without needing to know
+ * how many lines its caption occupies.
+ */
+function columnsFrom(headerRows: WordRow[]): Band[] {
+  const bands: Band[] = [];
+  for (const row of headerRows) {
+    for (const b of bandsInRow(row)) {
+      const hits = bands.filter((x) => b.xMin <= x.xMax && b.xMax >= x.xMin);
+      if (hits.length === 0) { bands.push(b); continue; }
+      /*
+       * Labels keep READING ORDER: earlier caption rows first, then this one.
+       * Folding the new band in as the accumulator's seed reversed them —
+       * Amazon's "Net Amount" came out "Amount Net", and a three-way merge
+       * came out "Rate Tax Amount Net". Roles are matched order-insensitively
+       * so nothing computed wrongly, but the caption is what a person reads
+       * when asking where a figure came from, and backwards is not an answer.
+       */
+      const merged: Band = {
+        xMin: Math.min(b.xMin, ...hits.map((x) => x.xMin)),
+        xMax: Math.max(b.xMax, ...hits.map((x) => x.xMax)),
+        labels: [...hits.flatMap((x) => x.labels), ...b.labels],
+      };
+      for (const x of hits) bands.splice(bands.indexOf(x), 1);
+      bands.push(merged);
+    }
+  }
+  return bands.sort((a, b) => a.xMin - b.xMin);
+}
+
+/**
+ * Places a word in the band it overlaps most.
+ *
+ * Falls back to the nearest band by centre when a word overlaps none, because
+ * a right-aligned figure can sit slightly clear of its left-aligned heading.
+ * Returning a band always, rather than dropping the word, matters: a dropped
+ * amount would quietly shrink a sum, and the arithmetic gate would then blame
+ * the document.
+ */
+function bandOf(xMin: number, xMax: number, bands: Band[]): number {
+  let best = -1, bestOverlap = 0;
+  bands.forEach((b, i) => {
+    const overlap = Math.min(xMax, b.xMax) - Math.max(xMin, b.xMin);
+    if (overlap > bestOverlap) { bestOverlap = overlap; best = i; }
+  });
+  if (best >= 0) return best;
+
+  const centre = (xMin + xMax) / 2;
+  let nearest = 0, nearestGap = Infinity;
+  bands.forEach((b, i) => {
+    const gap = centre < b.xMin ? b.xMin - centre
+      : centre > b.xMax ? centre - b.xMax : 0;
+    if (gap < nearestGap) { nearestGap = gap; nearest = i; }
+  });
+  return nearest;
+}
+
+function cellsFor(r: WordRow, bands: Band[]): string[] {
+  const cells: string[][] = bands.map(() => []);
+  for (const w of r.words) cells[bandOf(w.xMin, w.xMax, bands)]!.push(w.text);
+  return cells.map((c) => c.join(' '));
+}
+
+/**
+ * Reads the table out of a page's rows, or returns null when there is no
+ * header to anchor it.
+ *
+ * The body ends at the first row that puts non-numeric text into a band the
+ * rows above it fill with figures. That is the same principle the fixed-width
+ * path used — content below a table is laid out for a human and stops
+ * respecting the columns — but expressed against the columns themselves rather
+ * than against a straddle test, which could not see it. "Amount in Words:
+ * Three Thousand Ninety-nine only" is made of small words that straddle
+ * nothing, yet it lands squarely in the money bands, and that is what gives it
+ * away.
+ */
+export function tableFromRows(rows: WordRow[]): WordTable | null {
+  let headerAt = -1, best = 1;   // two hints minimum
+  rows.forEach((r, i) => {
+    const s = headerScore(r);
+    if (s > best) { best = s; headerAt = i; }
+  });
+  if (headerAt < 0) return null;
+
+  // The header runs on while the rows below it carry no digits.
+  let headerEnd = headerAt;
+  while (headerEnd + 1 < rows.length && !HAS_DIGIT.test(rowText(rows[headerEnd + 1]!))) {
+    headerEnd++;
+  }
+
+  const bands = columnsFrom(rows.slice(headerAt, headerEnd + 1));
+  const header = bands.map((b) => b.labels.join(' '));
+  const numericBand = new Set<number>();
+  const out: string[][] = [];
+
+  for (const r of rows.slice(headerEnd + 1)) {
+    const cells = cellsFor(r, bands);
+    if (cells.every((c) => c === '')) continue;
+
+    // Does this row contradict a band the table has been filling with numbers?
+    const contradicts = cells.some((c, i) =>
+      numericBand.has(i) && c !== '' && !/^[₹$(]?-?[\d,.]+\)?%?$/.test(c.trim()));
+    if (contradicts) break;
+
+    cells.forEach((c, i) => {
+      if (/^[₹$(]?-?[\d,.]+\)?$/.test(c.trim())) numericBand.add(i);
+    });
+    out.push(cells);
+  }
+
+  return { header, rows: out, bands: bands.map(({ xMin, xMax }) => ({ xMin, xMax })) };
+}

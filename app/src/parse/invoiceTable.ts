@@ -53,6 +53,8 @@
  */
 
 import { detectBoundaries, sliceCells } from './fixedWidth.ts';
+import { tableFromRows } from './wordColumns.ts';
+import type { WordPage } from './pdfWords.ts';
 import { parseAmount } from './values.ts';
 import { paise, money } from '../domain/tax.ts';
 import type { DocumentSegment } from './documentSplit.ts';
@@ -61,13 +63,24 @@ import type { DocumentSegment } from './documentSplit.ts';
 export type ColumnRole =
   | 'taxable' | 'cgst' | 'sgst' | 'igst' | 'cess' | 'total'
   | 'gross' | 'discount'          // money, but not part of the tie
+  /*
+   * Amazon does not put the tax's NAME in the caption. It has a "Tax Type"
+   * column whose cell reads IGST or CGST, and a "Tax Amount" column beside it.
+   * The same caption therefore means IGST on one row and CGST on the next, so
+   * the pair has to be resolved per row rather than per column.
+   *
+   * Without this, Amazon's fee invoices read taxable 4.24 and total 5.00 and
+   * refused, because the 0.76 of IGST between them had nowhere to go.
+   */
+  | 'tax_amount' | 'tax_type'
   | 'rate' | 'qty' | 'hsn' | 'description' | 'serial' | 'other';
 
 /** Roles whose values must sum to `total`. */
 const TIE_ADDENDS: ColumnRole[] = ['taxable', 'cgst', 'sgst', 'igst', 'cess'];
 
 /** Roles that must hold exactly one amount per cell, or the columns are wrong. */
-const MONEY_ROLES: ColumnRole[] = [...TIE_ADDENDS, 'total', 'gross', 'discount'];
+const MONEY_ROLES: ColumnRole[] =
+  [...TIE_ADDENDS, 'total', 'gross', 'discount', 'tax_amount'];
 
 export interface TableRow {
   cells: string[];
@@ -105,6 +118,12 @@ function roleOf(label: string): ColumnRole {
   if (/\b(?:sgst|utgst|s\/ut\s*gst)\b/.test(t)) return isRate ? 'rate' : 'sgst';
   if (/\bigst\b/.test(t))  return isRate ? 'rate' : 'igst';
   if (/\bcess\b/.test(t))  return isRate ? 'rate' : 'cess';
+
+  // Checked before the generic rules: "Tax Type" would otherwise fall through
+  // to `other`, and "Tax Amount" is exactly the ambiguous bare "amount" the
+  // rule below refuses to treat as a total.
+  if (/\btax\b/.test(t) && /\btype\b/.test(t))    return 'tax_type';
+  if (/\btax\b/.test(t) && /\bamo?u?nt\b/.test(t)) return 'tax_amount';
 
   if (/\btaxable\b/.test(t))                    return 'taxable';
   if (/\bdiscount\b|\bdisc\.?\b/.test(t))       return 'discount';
@@ -240,11 +259,41 @@ export function readInvoiceTable(segment: DocumentSegment): InvoiceTable {
     .map((l) => sliceCells(l, boundaries).map((c) => c.trim()));
   const header = headerRows[0]!.map((_, c) =>
     headerRows.map((r) => r[c] ?? '').filter((x) => x !== '').join(' '));
-  const roles = header.map(roleOf);
 
   const dataRows = region.slice(headerLines)
     .map((l) => sliceCells(l, boundaries).map((c) => c.trim()))
     .filter((cells) => cells.some((c) => c !== ''));
+
+  return gradeTable(header, dataRows);
+}
+
+/**
+ * Reads the table from positioned words instead of reconstructed spacing.
+ *
+ * The only difference from the path above is HOW the cells were found. Both
+ * then face the same two gates, which is the point: a new way of locating
+ * columns should prove itself against the same exam, not against a looser one
+ * written to suit it.
+ */
+export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
+  const t = tableFromRows(pages.flatMap((p) => p.rows));
+  if (!t) {
+    return {
+      readable: false, roles: [], header: [], rows: [], totals: null, sums: {},
+      reason: 'no row of words looks like a table header',
+    };
+  }
+  return gradeTable(t.header, t.rows);
+}
+
+/**
+ * The acceptance gates, shared by both paths.
+ *
+ * Everything here decides whether the cells can be BELIEVED, and none of it
+ * knows or cares how they were located.
+ */
+export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable {
+  const roles = header.map(roleOf);
 
   const table: InvoiceTable = {
     readable: false, roles, header,
@@ -357,6 +406,26 @@ function firstUnparseableMoneyCell(
   return null;
 }
 
+/**
+ * Which tax the row's "Tax Type" cell names, or null when it names none.
+ *
+ * Returning null rather than guessing is what keeps the arithmetic honest: an
+ * unattributed tax amount is simply left out, the sum then falls short of the
+ * total, and gate 2 refuses the table. Silently folding it into IGST would
+ * make the tie pass on an assumption nobody checked.
+ */
+function namedTaxOf(
+  row: TableRow, roles: ColumnRole[],
+): 'cgst' | 'sgst' | 'igst' | 'cess' | null {
+  const i = roles.indexOf('tax_type');
+  const t = i >= 0 ? (row.cells[i] ?? '') : '';
+  if (/\bigst\b/i.test(t)) return 'igst';
+  if (/\bcgst\b/i.test(t)) return 'cgst';
+  if (/\b(?:sgst|utgst)\b/i.test(t)) return 'sgst';
+  if (/\bcess\b/i.test(t)) return 'cess';
+  return null;
+}
+
 function sumByRole(
   rows: TableRow[], roles: ColumnRole[],
 ): Partial<Record<ColumnRole, string>> {
@@ -369,7 +438,15 @@ function sumByRole(
       if (text === '' || TOTAL_ROW.test(text)) continue;
       let p: bigint;
       try { p = paise(parseAmount(text).value); } catch { continue; }
-      acc.set(role, (acc.get(role) ?? 0n) + p);
+
+      // A "Tax Amount" is credited to whichever tax its row names.
+      let target = role;
+      if (role === 'tax_amount') {
+        const named = namedTaxOf(row, roles);
+        if (named === null) continue;   // unnamed tax: leave the tie to fail
+        target = named;
+      }
+      acc.set(target, (acc.get(target) ?? 0n) + p);
     }
   }
   const out: Partial<Record<ColumnRole, string>> = {};

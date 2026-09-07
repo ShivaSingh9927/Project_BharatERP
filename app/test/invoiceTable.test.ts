@@ -221,7 +221,14 @@ Example Item             1           9.00              1.37               10.37`
     // is deliberately conservative — a missed table refuses, it does not guess.
     expect(t.header).toEqual(
       ['Description', 'Qty', 'Amount', 'Tax Amount', 'Total Amount']);
-    expect(t.roles).toEqual(['description', 'qty', 'other', 'other', 'total']);
+    expect(t.roles).toEqual(
+      ['description', 'qty', 'other', 'tax_amount', 'total']);
     expect(t.sums.total).toBe('10.37');
+
+    // "Tax Amount" is a tax whose NAME lives in another column. This table has
+    // no "Tax Type" column to name it, so the 1.37 is credited nowhere rather
+    // than guessed at — see the pdfWords tests for why that matters.
+    expect(t.sums.tax_amount).toBeUndefined();
+    expect(t.sums.igst).toBeUndefined();
   });
 });
