@@ -23,15 +23,27 @@
  *
  * "Indian invoices are day-first" is true, and is exactly the kind of
  * assumption that has produced every wrong answer in this codebase so far. So
- * ambiguity is resolved from EVIDENCE ON THE DOCUMENT or not at all.
+ * ambiguity is resolved from EVIDENCE ON THE DOCUMENT first, and only then
+ * from convention — and never silently.
  *
- * Amazon supplies its own: the digital-signature block prints `2026.09.03`,
- * year first and therefore unambiguous, and its month of 09 sits in the same
- * position as the 09 in `04.09.2026`. The document has said it writes
- * day-first, so 4 September stands without anyone guessing.
+ * Amazon supplies its own evidence: the digital-signature block prints
+ * `2026.09.03`, year first and therefore unambiguous, and its month of 09 sits
+ * in the same position as the 09 in `04.09.2026`. The document has said it
+ * writes day-first, so 4 September stands without anyone guessing.
  *
  * Zepto and Hetzner carry exactly one date each and nothing to check it
- * against. Those are refused, and the refusal names both readings.
+ * against. These were refused outright, and that was too brittle: an invoice
+ * plainly reading 01/09/2026 is not unreadable, it is written in a format two
+ * countries read differently. So the day-first reading is offered — India
+ * writes the day first — together with the other one, and the bill CANNOT POST
+ * until a human says which is right. Not a warning: warnings get clicked past,
+ * and the two readings fall in different return periods where no arithmetic
+ * will ever notice the mistake.
+ *
+ * The line this holds is between not knowing the CONVENTION and not knowing
+ * the VALUE. A date read off the paper whose format is uncertain can be
+ * offered for confirmation. A figure that was never read cannot be guessed at,
+ * and stays refused.
  *
  * ── When ambiguity does not matter ────────────────────────────────────────
  *
@@ -165,6 +177,15 @@ export interface DateResult {
   reason?: string;
   /** How it was decided, for the audit trail (PR-7). */
   basis?: string;
+  /**
+   * The other reading, when the digits alone do not settle which is meant.
+   *
+   * Present means `date` is a DEFAULT and not a reading: it was chosen by
+   * convention, and a human has to say whether the convention holds for this
+   * document. The caller turns this into something that must be answered
+   * before the bill can post — not a warning, which nobody reads.
+   */
+  alternative?: string;
 }
 
 /**
@@ -208,10 +229,25 @@ export function extractInvoiceDate(text: string, fileText?: string): DateResult 
       return { date: monthFirst,
                basis: `"${c.raw}" read month-first, as another date on the document is` };
     }
+    /*
+     * Nothing on the document settles the order, so convention does — and it
+     * is offered as a question, not as an answer.
+     *
+     * Refusing outright was the old behaviour and it was too brittle: an
+     * invoice that plainly reads 01/09/2026 is not unreadable, it is written
+     * in a format that two countries interpret differently. India writes the
+     * day first, in the Gazette, on every government form and on every other
+     * document in this corpus, so day-first is the reading to offer.
+     *
+     * What keeps it honest is that `alternative` is set. The caller must not
+     * post this bill until a human confirms, because the two readings fall in
+     * different return periods and no arithmetic anywhere will notice.
+     */
     return {
-      reason: `the date "${c.raw}" could be ${dayFirst} or ${monthFirst}, and ` +
-              'nothing else on the document settles which. Those fall in ' +
-              'different return periods, so it must be entered by hand.',
+      date: dayFirst,
+      alternative: monthFirst,
+      basis: `"${c.raw}" read day-first by Indian convention — nothing on the ` +
+             'document settles it',
     };
   };
 

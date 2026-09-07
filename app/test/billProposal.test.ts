@@ -273,6 +273,74 @@ describe('what will not be posted', () => {
 });
 
 // ---------------------------------------------------------------------------
+/**
+ * The third state: read, but needing a human to settle something.
+ *
+ * The reason this is not just a warning is that a bill already carries five
+ * warnings on an ordinary day and nobody reads the fifth. A question that
+ * cannot be scrolled past is a different thing, and it is what lets the reader
+ * offer a best guess instead of refusing a legible document.
+ */
+describe('questions a human has to answer', () => {
+  const dateOf = async (billNumber: string) =>
+    (await ownerPool.query<{ bill_date: string }>(
+      `SELECT to_char(bill_date, 'YYYY-MM-DD') AS bill_date
+         FROM purchase_bills WHERE bill_number = $1`,
+      [billNumber])).rows[0]!.bill_date;
+
+  const ambiguous = () => propose(
+    doc(SAME_STATE, 'CF1', 'IGST 18 %', 'Invoice Date : 04.09.2026'),
+    interStateTable('1000.00', '180.00', '1180.00'));
+
+  it('refuses to post while a question is unanswered', async () => {
+    const p = await ambiguous();
+    await expect(postProposal(t.firmId, p, { approvedBy: t.userId }))
+      .rejects.toThrow(/have to be answered/);
+  });
+
+  it('posts the reading offered, once it is confirmed', async () => {
+    const p = await ambiguous();
+    const bill = await postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { billDate: '2026-09-04' },
+    });
+    expect(bill.billNumber).toBe('CF1');
+    expect(await dateOf('CF1')).toBe('2026-09-04');
+  });
+
+  it('posts the OTHER reading when the reviewer picks it, and says so', async () => {
+    /*
+     * The point of asking. A reviewer holding the invoice can see what the
+     * page cannot say, and their answer outranks the convention.
+     */
+    const p = await propose(
+      doc(SAME_STATE, 'CF2', 'IGST 18 %', 'Invoice Date : 04.09.2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    const bill = await postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { billDate: '2026-04-09' },
+    });
+    expect(await dateOf('CF2')).toBe('2026-04-09');
+    expect(bill.warnings.join(' ')).toMatch(/chose the other reading/);
+  });
+
+  it('refuses an answer that is neither reading', async () => {
+    // A third date is a different edit, not an answer to this question.
+    const p = await propose(
+      doc(SAME_STATE, 'CF3', 'IGST 18 %', 'Invoice Date : 04.09.2026'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    await expect(postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { billDate: '2026-07-01' },
+    })).rejects.toThrow(/not one of the readings offered/);
+  });
+
+  it('asks nothing when the document settles it', async () => {
+    const p = await propose(
+      doc(SAME_STATE, 'CF4', 'IGST 18 %',
+          'Invoice Date : 04.09.2026\nDigitally signed Date: 2026.09.03 22:21:45 UTC'),
+      interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.confirmations).toEqual([]);
+  });
+});
+
 describe('posting a ready proposal', () => {
   it('posts one line per item row, so the rounding matches the vendor', async () => {
     /*
@@ -652,17 +720,26 @@ describe('the invoice date', () => {
     expect(p.billDateBasis).toMatch(/read as "03-Jun-2026"/);
   });
 
-  it('blocks an ambiguous date rather than picking a reading', async () => {
+  it('asks about an ambiguous date instead of deciding it alone', async () => {
     /*
-     * "04.09.2026" is 4 September or 9 April. Those are different return
-     * periods. "Indian invoices are day-first" is true and is exactly the kind
-     * of assumption that has produced every wrong answer here so far.
+     * "04.09.2026" is 4 September or 9 April, and those are different return
+     * periods.
+     *
+     * This used to be a hard block. Refusing a document that is perfectly
+     * legible, over a format two countries read differently, turned out to be
+     * too brittle to be useful — so the Indian reading is offered and the
+     * other one travels with it. What makes that safe is that it is a
+     * QUESTION: `postProposal` will not post the bill until it is answered.
      */
     const p = await propose(
       doc(SAME_STATE, 'D3', 'IGST 18 %', 'Invoice Date : 04.09.2026'),
       interStateTable('1000.00', '180.00', '1180.00'));
-    expect(p.input).toBeNull();
-    expect(p.blockers.join(' ')).toMatch(/could be 2026-09-04 or 2026-04-09/);
+    expect(p.blockers).toEqual([]);
+    expect(p.confirmations).toHaveLength(1);
+    expect(p.confirmations[0]!.field).toBe('billDate');
+    expect(p.confirmations[0]!.chose).toBe('2026-09-04');
+    expect(p.confirmations[0]!.instead).toBe('2026-04-09');
+    expect(p.confirmations[0]!.question).toMatch(/not sure of the date format/);
   });
 
   it('resolves an ambiguous date from an unambiguous one on the same document', async () => {

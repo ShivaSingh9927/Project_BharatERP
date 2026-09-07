@@ -77,6 +77,26 @@ export interface BillProposal {
   blockers: string[];
   /** Worth a reviewer's attention, but not blocking. */
   warnings: string[];
+  /**
+   * Questions that must be ANSWERED before this bill can post.
+   *
+   * The third state, between ready and blocked, and the distinction it draws
+   * is between not knowing a CONVENTION and not knowing a VALUE:
+   *
+   *   01/09/2026 on a German invoice — the value was read off the paper; only
+   *   which half is the month is uncertain. India writes the day first, so
+   *   that reading is offered, and a human confirms it.
+   *
+   *   a Kamatera invoice where three of its sections went unread — the value
+   *   was never obtained at all. Nothing to offer, so it stays BLOCKED.
+   *   Guessing there would be inventing a figure.
+   *
+   * These are not warnings, and the difference is deliberate. A bill already
+   * carries five warnings on a normal day and people stop reading them;
+   * `postProposal` refuses outright until each of these is confirmed, so the
+   * question cannot be clicked past.
+   */
+  confirmations: Confirmation[];
   /** Present only when `blockers` is empty. */
   input: CreateBillInput | null;
   /**
@@ -94,6 +114,18 @@ export interface BillProposal {
   /** The date read off the document, and how it was settled (PR-7). */
   billDate?: string;
   billDateBasis?: string;
+}
+
+/** One thing a human has to settle before a bill can post. */
+export interface Confirmation {
+  /** Stable identifier, so an answer can name what it answers. */
+  field: string;
+  /** What the software chose, and will post if confirmed. */
+  chose: string;
+  /** The other reading it might have been. */
+  instead: string;
+  /** Put to the reviewer in their own words. */
+  question: string;
 }
 
 export interface ProposeInput {
@@ -478,6 +510,7 @@ export async function proposeFromDocument(
     pages.filter((p) => seg.pages.includes(p.number)), profile.charged);
 
   const blockers: string[] = [];
+  const confirmations: Confirmation[] = [];
   const warnings = taxProfileWarnings(seg, profile);
   const currency = tableCurrency(table);
   const pageText = pages
@@ -558,6 +591,23 @@ export async function proposeFromDocument(
   const dateRead = extractInvoiceDate(seg.text, fileText);
   if (dateRead.date === undefined) {
     blockers.push(`the invoice date could not be read — ${dateRead.reason}`);
+  } else if (dateRead.alternative !== undefined) {
+    /*
+     * Read, but in a format two countries disagree about. The day-first
+     * reading is offered because that is how India writes dates; the other one
+     * travels with it so the reviewer is choosing rather than approving.
+     */
+    confirmations.push({
+      field: 'billDate',
+      chose: dateRead.date,
+      instead: dateRead.alternative,
+      question:
+        `I am not sure of the date format on this document. I read it as ` +
+        `${dateRead.date}, taking the day first as Indian documents do, but ` +
+        `it could equally be ${dateRead.alternative}. Nothing else on the ` +
+        'page settles it, and the two fall in different GST return periods. ' +
+        'Please check the invoice and confirm.',
+    });
   }
 
   /*
@@ -920,7 +970,7 @@ export async function proposeFromDocument(
     index: seg.index, pages: seg.pages,
     documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName,
-    blockers, warnings, readBy, llmProvenance, crossChecked,
+    blockers, warnings, confirmations, readBy, llmProvenance, crossChecked,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {
       clientId: input.clientId,
@@ -969,17 +1019,61 @@ export async function proposeFromDocument(
  */
 export async function postProposal(
   firmId: string, proposal: BillProposal,
-  opts: { approvedBy: string; billDate?: string; sourceUri?: string },
+  opts: {
+    approvedBy: string; billDate?: string; sourceUri?: string;
+    /**
+     * Answers to `proposal.confirmations`, by field. The value is what the
+     * human says the field should be — usually what was offered, sometimes
+     * the alternative.
+     */
+    confirm?: Record<string, string>;
+  },
 ): Promise<CreatedBill> {
   if (proposal.input === null) {
     throw new ValidationError(
       `this document is not ready to post: ${proposal.blockers.join(' ')}`, 'PB-6');
   }
+
+  /*
+   * Every question answered, or nothing posts.
+   *
+   * This is what separates a confirmation from a warning. A bill routinely
+   * carries five warnings and nobody reads the fifth; refusing here means the
+   * question has to be answered rather than scrolled past. AT-13 already
+   * guarantees a named human is present — this gives them something to do
+   * beyond saying yes.
+   */
+  const answers = opts.confirm ?? {};
+  const unanswered = proposal.confirmations.filter((c) => !(c.field in answers));
+  if (unanswered.length > 0) {
+    throw new ValidationError(
+      'this bill has questions that have to be answered before it can post: ' +
+      unanswered.map((c) => c.question).join(' '), 'PB-7');
+  }
+  for (const c of proposal.confirmations) {
+    const given = answers[c.field]!;
+    if (given !== c.chose && given !== c.instead) {
+      throw new ValidationError(
+        `"${given}" is not one of the readings offered for ${c.field} — it ` +
+        `was either ${c.chose} or ${c.instead}. An answer that is neither is ` +
+        'a different edit, and belongs on the bill rather than here.', 'PB-7');
+    }
+  }
   const bill = await createBill(firmId, {
     ...proposal.input,
-    billDate: opts.billDate ?? proposal.input.billDate,
+    // A confirmed answer outranks what was read; an explicit override outranks
+    // both, because a reviewer can see things neither could.
+    billDate: opts.billDate ?? answers['billDate'] ?? proposal.input.billDate,
     approvedBy: opts.approvedBy,
   });
+
+  for (const c of proposal.confirmations) {
+    if (answers[c.field] !== c.chose) {
+      bill.warnings.push(
+        `${c.field} was posted as ${answers[c.field]}, not the ${c.chose} read ` +
+        `from the document — ${opts.approvedBy} chose the other reading.`);
+    }
+  }
 
   /*
    * Provenance is written AFTER the bill, and its failure does not unwind it.

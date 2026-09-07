@@ -41,16 +41,28 @@ describe('dates that settle themselves', () => {
 
 // ---------------------------------------------------------------------------
 describe('dates that do not', () => {
-  it('refuses when both readings fall in different months', () => {
+  it('offers the Indian reading but will not let it pass unconfirmed', () => {
     /*
-     * The one that matters. "Indian invoices are day-first" is true and is
-     * exactly the kind of assumption that has produced every wrong answer in
-     * this codebase — so it is not made.
+     * This used to refuse outright, on the grounds that "Indian invoices are
+     * day-first" is the kind of assumption that has produced every wrong
+     * answer in this codebase. It is still an assumption — what changed is
+     * that it is now offered as a QUESTION rather than made silently.
+     *
+     * `alternative` being set is the whole safeguard: the caller must turn it
+     * into something a human answers before the bill can post. Dropping that
+     * field and keeping the date would put a guess in the ledger.
      */
     const r = on('Invoice Date : 04.09.2026');
-    expect(r.date).toBeUndefined();
-    expect(r.reason).toMatch(/could be 2026-09-04 or 2026-04-09/);
-    expect(r.reason).toMatch(/different return periods/);
+    expect(r.date).toBe('2026-09-04');          // day-first, by convention
+    expect(r.alternative).toBe('2026-04-09');   // ...and the other reading
+    expect(r.basis).toMatch(/nothing on the document settles it/);
+  });
+
+  it('does not ask when the document itself settles the order', () => {
+    // Evidence beats convention, and evidence needs no confirmation.
+    const r = on('Invoice Date : 04.09.2026', 'Invoice Date : 04.09.2026\nsigned 2026.09.03');
+    expect(r.date).toBe('2026-09-04');
+    expect(r.alternative).toBeUndefined();
   });
 
   it('refuses a document with no date', () => {
@@ -93,8 +105,12 @@ describe('resolving ambiguity from the document itself', () => {
      * file, same system, same day.
      */
     const segment = 'Invoice Date : 04.09.2026';
-    expect(on(segment).date).toBeUndefined();
-    expect(on(segment, `${segment}\nelsewhere: 2026.09.03`).date).toBe('2026-09-04');
+    // Alone it can only fall back on convention, and says so by asking.
+    expect(on(segment).alternative).toBe('2026-04-09');
+    // With the rest of the file it is read, not guessed.
+    const whole = on(segment, `${segment}\nelsewhere: 2026.09.03`);
+    expect(whole.date).toBe('2026-09-04');
+    expect(whole.alternative).toBeUndefined();
   });
 
   it('recognises month-first when the page proves it', () => {

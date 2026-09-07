@@ -43,6 +43,7 @@ const post = process.argv.includes('--post');
 const flag = (n: string) =>
   process.argv.find((a) => a.startsWith(`--${n}=`))?.split('=').slice(1).join('=');
 const rcmRate = flag('rcm-rate');
+const confirmAll = process.argv.includes('--confirm');
 const fx = new Map((flag('fx') ?? '').split(',').filter(Boolean)
   .map((p) => p.split(':') as [string, string]));
 const approvedBy = process.env.APPROVED_BY;
@@ -71,7 +72,7 @@ if (llm && !settings.extraction) {
               'so no document will leave the building.\n');
 }
 
-let posted = 0, ready = 0, blocked = 0;
+let posted = 0, ready = 0, blocked = 0, needsAnswer = 0;
 const tally = { coordinates: 0, llm: 0 };
 const checks = { off: 0, agreed: 0, disagreed: 0, unavailable: 0 };
 
@@ -134,6 +135,20 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
       continue;
     }
 
+    /*
+     * Read, but with something for a human to settle. Kept separate from
+     * `ready` in the counts, because a run that says "20 ready" when three of
+     * them are waiting on an answer is telling the user the wrong thing.
+     */
+    if (p.confirmations.length > 0 && !confirmAll) {
+      needsAnswer++;
+      console.log(`  ${label} NEEDS YOUR CONFIRMATION${check}  ${p.billDate}`);
+      for (const c of p.confirmations) console.log(`      ? ${c.question}`);
+      for (const wn of p.warnings) console.log(`      ! ${wn}`);
+      console.log('      (re-run with --confirm to accept the readings above)');
+      continue;
+    }
+
     ready++;
     const s = p.table.sums;
     console.log(`  ${label} ready${via}${check}  ${p.billDate}  taxable=${s.taxable} ` +
@@ -144,7 +159,11 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
     if (post) {
       try {
         const bill = await postProposal(firmId, p, {
-          approvedBy: approvedBy!, sourceUri: `file://${join(dir, file)}` });
+          approvedBy: approvedBy!, sourceUri: `file://${join(dir, file)}`,
+          // --confirm accepts every reading offered. Acceptable for a bulk
+          // run over a folder; a real reviewer answers one bill at a time.
+          confirm: Object.fromEntries(p.confirmations.map((c) => [c.field, c.chose])),
+        });
         posted++;
         console.log(`      posted ${bill.voucherId} — ITC ${bill.itcEligibility}, ` +
                     `claimable ${bill.itcClaimableValue}`);
@@ -160,7 +179,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
 }
 
 console.log('=== summary ===');
-console.log(`ready ${ready}, blocked ${blocked}${post ? `, posted ${posted}` : ''}`);
+console.log(`ready ${ready}, needing an answer ${needsAnswer}, ` +
+            `blocked ${blocked}${post ? `, posted ${posted}` : ''}`);
 console.log(`read by coordinates ${tally.coordinates}, by model ${tally.llm}`);
 if (settings.crossCheck) {
   console.log(`cross-check: agreed ${checks.agreed}, disagreed ${checks.disagreed}, ` +
