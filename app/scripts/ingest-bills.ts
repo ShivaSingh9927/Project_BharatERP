@@ -86,6 +86,9 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
       blocked++;
       console.log(`  ${label} BLOCKED${check}`);
       for (const b of p.blockers) console.log(`      - ${b}`);
+      // A blocked document's warnings still matter: they are usually what the
+      // reviewer needs in order to clear the blocker by hand.
+      for (const wn of p.warnings) console.log(`      ! ${wn}`);
       continue;
     }
 
@@ -103,6 +106,9 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
         posted++;
         console.log(`      posted ${bill.voucherId} — ITC ${bill.itcEligibility}, ` +
                     `claimable ${bill.itcClaimableValue}`);
+        // `createBill` has its own warnings — the supplier's tax being taken
+        // over ours is one of them, and it was invisible until now.
+        for (const wn of bill.warnings) console.log(`      ! ${wn}`);
       } catch (e) {
         console.log(`      REFUSED BY createBill: ${(e as Error).message}`);
       }

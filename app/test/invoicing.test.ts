@@ -405,3 +405,118 @@ describe('settlement and integrity', () => {
     expect(cgst!.rootType).toBe('liability');
   });
 });
+
+/**
+ * The supplier's printed tax wins on a purchase bill — bills-and-expenses.md
+ * §4.3.
+ *
+ * Not a concession to sloppy vendors. The credit claimed has to be the tax the
+ * supplier charged, because that is the figure filed against us in GSTR-2B; a
+ * ledger holding what we think they should have charged reconciles against
+ * nothing. Every figure below is off a real invoice in the corpus.
+ */
+describe('a supplier\'s printed tax', () => {
+  const line = (
+    unitPrice: string, gstRate: string,
+    chargedTax?: { cgst?: string; sgst?: string; igst?: string; cess?: string },
+  ) => ({ quantity: '1', unitPrice, gstRate, chargedTax });
+
+  it('is taken in place of the computed figure, and says it was', () => {
+    // Amazon: 18% of 58.47 computes 10.52; the invoice prints 10.53, because
+    // it was priced backwards from a round ₹69.00.
+    const t = computeInvoice([line('58.47', '18', { igst: '10.53' })], false);
+    expect(money(t.totalIgst)).toBe('10.53');
+    expect(t.taxAsCharged).toBe(true);
+    expect(money(t.grandTotal)).toBe('69.00');
+  });
+
+  it('is taken for each half of an intra-state charge', () => {
+    // A Flipkart appliance: 9% of 8083.90 computes 727.55, printed 727.54
+    // twice, against a stated total of 9539.00.
+    const t = computeInvoice(
+      [line('8083.90', '18', { cgst: '727.54', sgst: '727.54' })], true);
+    expect(money(t.totalCgst)).toBe('727.54');
+    expect(money(t.totalSgst)).toBe('727.54');
+    expect(money(t.grandTotal)).toBe('9539.00');
+    // 9538.98 rounded to the rupee: the two paise land in round-off.
+    expect(money(t.roundOff)).toBe('0.02');
+  });
+
+  it('is refused when the rate cannot account for it', () => {
+    // Two paise, not one: past what rounding explains, so it is a misread.
+    expect(() => computeInvoice(
+      [line('58.47', '18', { igst: '10.54' })], false)).toThrow(/misread/);
+  });
+
+  it('is refused when it is nowhere near the rate', () => {
+    // The shape of a misread column: the rate's own figure, not the tax.
+    expect(() => computeInvoice(
+      [line('58.47', '18', { igst: '18.00' })], false)).toThrow(/PB-4/);
+  });
+
+  it('is ignored when the document splits the tax differently than we do', () => {
+    /*
+     * A document charging CGST+SGST where the place of supply computes IGST is
+     * not a rounding disagreement, and deferring to it here dropped the tax to
+     * zero: both printed halves went into components this calculation had at
+     * nought. That disagreement is reported separately; the computation stands.
+     */
+    const t = computeInvoice(
+      [line('1000.00', '18', { cgst: '90.00', sgst: '90.00' })], false);
+    expect(money(t.totalIgst)).toBe('180.00');
+    expect(money(t.totalCgst)).toBe('0.00');
+    expect(t.taxAsCharged).toBe(false);
+  });
+
+  it('leaves a component the document did not print as computed', () => {
+    // A document showing only IGST has not told us there is no cess.
+    const t = computeInvoice(
+      [{ quantity: '1', unitPrice: '100.00', gstRate: '18', cessRate: '12',
+         chargedTax: { igst: '18.00' } }], false);
+    expect(money(t.totalCess)).toBe('12.00');
+  });
+
+  it('is unaffected when the printed figure agrees exactly', () => {
+    const t = computeInvoice([line('1000.00', '18', { igst: '180.00' })], false);
+    expect(money(t.totalIgst)).toBe('180.00');
+    expect(t.taxAsCharged).toBe(false);
+  });
+});
+
+/**
+ * Whether to round to the rupee is the supplier's decision — gl-engine.md V-10.
+ *
+ * Both of these are real documents. Rounding unconditionally posted the second
+ * one at 521.00 with 36 paise of round-off it never printed.
+ */
+describe('rounding a bill to the total its document states', () => {
+  const line = (unitPrice: string, gstRate: string, chargedTax?: object) =>
+    ({ quantity: '1', unitPrice, gstRate, chargedTax }) as never;
+
+  it('rounds to the nearest rupee when nothing is stated', () => {
+    // An invoice we are raising: no document to defer to.
+    const t = computeInvoice([line('8083.90', '18', { cgst: '727.54', sgst: '727.54' })], true);
+    expect(money(t.grandTotal)).toBe('9539.00');
+    expect(money(t.roundOff)).toBe('0.02');
+  });
+
+  it('takes a stated whole-rupee total, absorbing the difference', () => {
+    const t = computeInvoice(
+      [line('8083.90', '18', { cgst: '727.54', sgst: '727.54' })], true, '9539.00');
+    expect(money(t.grandTotal)).toBe('9539.00');
+    expect(money(t.roundOff)).toBe('0.02');
+  });
+
+  it('leaves a stated total that is not a whole rupee alone', () => {
+    // 496.54 + 24.82 = 521.36, and the document says 521.36. Nothing to round.
+    const t = computeInvoice([line('496.54', '5', { igst: '24.82' })], false, '521.36');
+    expect(money(t.grandTotal)).toBe('521.36');
+    expect(money(t.roundOff)).toBe('0.00');
+  });
+
+  it('refuses a stated total more than a rupee from its parts', () => {
+    // Deferring this far would let a misread total rewrite the bill.
+    expect(() => computeInvoice(
+      [line('496.54', '5', { igst: '24.82' })], false, '531.36')).toThrow(/misread/);
+  });
+});

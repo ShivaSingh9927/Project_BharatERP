@@ -143,8 +143,20 @@ describe('deriveGstRate', () => {
      * right before being added, so candidates have to be tested the same way.
      */
     expect(deriveGstRate(['50.00', '109.32', '168.64'], '59.04')).toBe('18');
-    expect(deriveGstRate('327.96', '59.04')).toBeNull();      // the aggregate
-    expect(deriveGstRate('327.96', '59.03')).toBe('18');      // ...which is why
+    expect(deriveGstRate('327.96', '59.03')).toBe('18');      // the aggregate
+
+    /*
+     * The aggregate now also answers 18, because a paisa is forgiven, and this
+     * assertion used to be `toBeNull()`.
+     *
+     * That is a real loss of signal and the right trade. The paisa was never
+     * telling us the RATE — 18 is the answer either way — it was telling us
+     * where the vendor rounded, and refusing the document over it meant
+     * refusing invoices that were correct. What replaces exactness as the
+     * safeguard is uniqueness: a tax that fits two scheduled rates within a
+     * paisa still returns null.
+     */
+    expect(deriveGstRate('327.96', '59.04')).toBe('18');
   });
 
   it('computes an intra-state rate as two halves rounded separately', () => {
@@ -156,8 +168,28 @@ describe('deriveGstRate', () => {
      * wrong and refused a perfectly good bill.
      */
     expect(deriveGstRate('105.94', '19.06', [], true)).toBe('18');
-    expect(deriveGstRate('105.94', '19.06', [], false)).toBeNull();
     expect(deriveGstRate('105.94', '19.07', [], false)).toBe('18');
+
+    /*
+     * Reading the split off the paisa no longer works either, and should not
+     * have been relied on. Whether a supply is intra-state or inter-state is
+     * decided by the place of supply, not by which rounding a tax figure
+     * happens to match — this project already got that backwards once and
+     * blocked bills over it. The rate comes back correct; the split is settled
+     * elsewhere and disagreements about it are warned about in their own right.
+     */
+    expect(deriveGstRate('105.94', '19.06', [], false)).toBe('18');
+  });
+
+  it('refuses a rate it cannot pick uniquely, which is what bounds the slack', () => {
+    /*
+     * Uniqueness doing the work exactness used to. On a taxable value this
+     * small the scheduled rates are only paise apart: 0.25% of 2.00 is 0.01
+     * and so is 0.50% — nothing here distinguishes them, so nothing is
+     * returned. This is the case that made allowing slack look dangerous, and
+     * it is refused rather than guessed.
+     */
+    expect(deriveGstRate('2.00', '0.01')).toBeNull();
   });
 
   it('reports zero tax as a zero rate, not as unknown', () => {

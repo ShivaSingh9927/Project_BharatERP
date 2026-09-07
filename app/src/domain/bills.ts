@@ -25,6 +25,16 @@ export interface BillLineInput {
   unitPrice: string;
   gstRate?: string;
   expenseAccountId: string;
+  /**
+   * The tax printed on this line of the vendor's document, when there is one.
+   *
+   * On a purchase bill this WINS over the computed figure, within the paisa
+   * `tax.ts` allows. The credit we claim must be the tax the vendor charged,
+   * because that is the figure that will appear against us in GSTR-2B; a
+   * ledger that records what we think they should have charged reconciles
+   * against nothing.
+   */
+  chargedTax?: { cgst?: string; sgst?: string; igst?: string; cess?: string };
 }
 
 export interface CreateBillInput {
@@ -315,9 +325,29 @@ export async function createBill(
         quantity: l.quantity ?? '1',
         unitPrice: l.unitPrice,
         gstRate: lineRates[i]!,
+        chargedTax: l.chargedTax,
       })),
       intraState,
+      // The vendor's own total decides the rounding, for the same reason their
+      // tax decides the tax: this is their document, not our computation.
+      input.claimedTotals?.grandTotal,
     );
+
+    /*
+     * Said out loud, because it changes what the figure means.
+     *
+     * Everywhere else in this system a tax figure is one we computed and can
+     * re-derive. These came off a document, and the difference — a paisa a
+     * line — is the vendor's rounding, not ours. A reviewer comparing the
+     * ledger to the invoice should be told why they agree exactly.
+     */
+    if (totals.taxAsCharged) {
+      warnings.push(
+        'the tax on this bill is the tax the supplier printed, which differs ' +
+        'by up to a paisa a line from what its rate computes. The supplier\'s ' +
+        'figure is the one recorded: it is what input credit is claimed on and ' +
+        'what GSTR-2B will show.');
+    }
 
     /*
      * Split the tax by what is actually claimable (G-9).

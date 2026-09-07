@@ -115,6 +115,18 @@ export interface InvoiceTable {
   /** Sums over the item rows, by role. */
   sums: Partial<Record<ColumnRole, string>>;
   /**
+   * Things the reader accepted but a human should see. A rounding difference
+   * between the parts and the stated total lands here rather than in `reason`:
+   * strict enough to name, not fatal enough to refuse.
+   */
+  warnings?: string[];
+  /**
+   * The difference the vendor rounded away, when the parts and the stated
+   * total differ by less than a rupee. Signed as the document sees it:
+   * stated total minus the sum of the parts.
+   */
+  roundOff?: string;
+  /**
    * One entry per column, aligned to `roles`, when the reader knew where the
    * columns were. This is what makes PR-6 possible — bounding boxes exist only
    * at extraction time and cannot be reconstructed later.
@@ -372,6 +384,17 @@ export function gradeTable(header: string[], dataRows: string[][]): InvoiceTable
   // ── Gate 2: the arithmetic ties ──────────────────────────────────────────
   const tie = checkTie(table.sums);
   if (!tie.ok) return { ...table, reason: tie.detail };
+  if (tie.roundOff !== undefined) {
+    table.roundOff = tie.roundOff;
+    table.warnings = [
+      ...(table.warnings ?? []),
+      `the parts sum to ${money(paise(table.sums.total!) - paise(tie.roundOff))} ` +
+      `but the document states ${table.sums.total} — a ${tie.roundOff} rounding ` +
+      'difference. The document prints no round-off line, so this is inferred ' +
+      'from the figures, not read. Posted to Round Off; confirm it against the ' +
+      'invoice before approving.',
+    ];
+  }
 
   if (table.totals) {
     const stated = checkStated(table.totals.by, table.sums);
@@ -514,7 +537,7 @@ function sumByRole(
  * perfectly good layouts.
  */
 function checkTie(sums: Partial<Record<ColumnRole, string>>):
-  { ok: boolean; detail?: string } {
+  { ok: boolean; detail?: string; roundOff?: string } {
   if (sums.total === undefined || sums.taxable === undefined) return { ok: true };
 
   let expected = 0n;
@@ -524,6 +547,9 @@ function checkTie(sums: Partial<Record<ColumnRole, string>>):
   const stated = paise(sums.total);
   if (expected === stated) return { ok: true };
 
+  const round = asRoundOff(expected, stated);
+  if (round !== null) return { ok: true, roundOff: round };
+
   const parts = TIE_ADDENDS.filter((r) => sums[r] !== undefined)
     .map((r) => `${r} ${sums[r]}`).join(' + ');
   return {
@@ -532,6 +558,45 @@ function checkTie(sums: Partial<Record<ColumnRole, string>>):
             `total column sums to ${sums.total}. Either a column was misread or ` +
             'the document is inconsistent — both need a human.',
   };
+}
+
+/**
+ * A rounding difference, or not a rounding difference. There is no third answer.
+ *
+ * Vendors round the payable total to the nearest rupee and print only the
+ * rounded figure — a real invoice in the corpus states 9539.00 against parts
+ * that sum to 9538.98, and prints no round-off line anywhere, so the two paise
+ * cannot be read, only inferred. Refusing that document is wrong; it is
+ * correct and internally consistent.
+ *
+ * What this deliberately is NOT is a tolerance. "Within 50 paise" would be a
+ * hole in the only exact check this module has: the same corpus contains
+ * ₹5.00 platform fees, where 50 paise is a tenth of the document, and a
+ * misread landing inside the window would pass in silence. So the difference
+ * has to be explained, not merely be small:
+ *
+ *   - the stated total must BE a whole rupee, because that is what rounding to
+ *     the nearest rupee produces. 5.37 against parts of 5.35 is not a
+ *     round-off, it is a misread, and it still refuses.
+ *   - the parts must round to exactly that rupee. 9535.00 stated against
+ *     9538.98 read fails: the difference is under four rupees but the parts
+ *     round to 9539, not 9535.
+ *   - and the gap must be under a rupee, which the two rules above already
+ *     imply and this states so the bound is visible.
+ *
+ * Anything that survives all three is reported, never swallowed: the caller
+ * records it against the bill and puts a warning in front of the approver.
+ */
+function asRoundOff(expected: bigint, stated: bigint): string | null {
+  if (stated % 100n !== 0n) return null;
+
+  const gap = stated - expected;
+  if (gap <= -100n || gap >= 100n) return null;
+
+  const nearestRupee = ((expected + 50n) / 100n) * 100n;
+  if (nearestRupee !== stated) return null;
+
+  return money(gap);
 }
 
 /** A stated totals row must agree with the item rows it claims to total. */

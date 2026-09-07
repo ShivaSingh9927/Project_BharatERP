@@ -56,7 +56,7 @@ import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts'
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
 import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
-import { readInvoiceTableFromWords, type InvoiceTable } from '../parse/invoiceTable.ts';
+import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
 export interface BillProposal {
@@ -279,14 +279,84 @@ export function deriveGstRate(
   const totalAt = (rate: string): bigint =>
     lines.reduce((sum, lineP) => sum + taxAt(lineP, rate, intraState), 0n);
 
-  // The document's own word first: if it states a rate and that rate produces
-  // the tax printed beside it, there is nothing to infer.
+  /*
+   * The document's own word first: if it states a rate and that rate produces
+   * the tax printed beside it, there is nothing to infer.
+   *
+   * "Produces" allows a paisa per component per line, and only here — for a
+   * rate the document actually printed. Vendors price backwards from a
+   * round-rupee total, so the printed tax can sit a paisa off the rate printed
+   * next to it: a Flipkart appliance states 9% and 727.54 where 9% of 8083.90
+   * is 727.55, and refusing it made the software right and the invoice wrong,
+   * which is the wrong way round for a purchase bill.
+   *
+   * The inferred search below takes the same slack, and is protected by
+   * something better than exactness: it must fit EXACTLY ONE scheduled rate.
+   *
+   * Exactness looked like the safeguard and was not. It rejected an appliance
+   * invoice whose 18% works out to 727.55 a half where the document prints
+   * 727.54 — the same vendor rounding the printed-rate branch above forgives,
+   * refused only because that document states its rate as the 9% half rather
+   * than the 18% pair, so there was nothing to match against.
+   *
+   * The danger exactness was guarding against is real but is uniqueness's job:
+   * on a small enough line two neighbouring rates can both land within a
+   * paisa, and the wrong rate misfiles the credit in GSTR-2, where the figure
+   * is right and the classification is not. When that happens more than one
+   * candidate fits, `fits.length === 1` fails, and the document is refused —
+   * which is the correct answer and a tighter one than exactness gave.
+   */
+  const slack = BigInt(lines.length) * (intraState ? 2n : 1n);
   for (const r of readRates) {
-    if (totalAt(r) === tx) return r;
+    const at = totalAt(r);
+    const diff = at > tx ? at - tx : tx - at;
+    if (diff <= slack) return r;
   }
 
-  const fits = STATUTORY_RATES.filter((r) => totalAt(r) === tx);
+  const fits = STATUTORY_RATES.filter((r) => {
+    const at = totalAt(r);
+    return (at > tx ? at - tx : tx - at) <= slack;
+  });
   return fits.length === 1 ? fits[0]! : null;
+}
+
+/**
+ * The tax components printed on one row, normalised.
+ *
+ * Returns undefined when the row breaks out no tax at all, which is the
+ * difference between "this line is untaxed" and "this document does not split
+ * its tax by line" — only the second is safe to fall back to computation on.
+ */
+function chargedOn(row: TableRow): BillLineInput['chargedTax'] {
+  const out: Record<string, string> = {};
+  for (const k of ['cgst', 'sgst', 'igst', 'cess'] as const) {
+    const raw = row.by[k]?.trim();
+    if (raw === undefined || raw === '') continue;
+    try { out[k] = parseAmount(raw).value; } catch { /* gate 1's problem */ }
+  }
+  /*
+   * Some documents name the component in a column of its own instead of
+   * heading a column with it. Amazon prints "Tax Type: IGST" beside "Tax
+   * Amount: 24.82" rather than an IGST column, so looking only for named
+   * columns found nothing and the supplier's figure was silently replaced by
+   * our own — the exact substitution this function exists to make.
+   *
+   * Only when the row names ONE component. "CGST/SGST" against a single
+   * combined figure would have to be halved to be used, and half of a rounded
+   * number is not a figure the supplier printed; that case falls back to
+   * computation, where the halving is at least done by the rate.
+   */
+  if (Object.keys(out).length === 0) {
+    const named = (row.by.tax_type ?? '').toUpperCase()
+      .match(/\b(?:C|S|UT|I)GST\b/g) ?? [];
+    const raw = row.by.tax_amount?.trim();
+    if (named.length === 1 && raw !== undefined && raw !== '') {
+      const k = named[0] === 'UTGST' ? 'sgst' : named[0]!.toLowerCase();
+      try { out[k] = parseAmount(raw).value; } catch { /* gate 1's problem */ }
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 async function statesFor(
@@ -508,6 +578,20 @@ export async function proposeFromDocument(
     blockers.push(`the line-item table could not be read: ${table.reason}`);
   }
 
+  /*
+   * Whatever the reader accepted but wants a human to see — today only a
+   * rounding difference between the parts and the stated total.
+   *
+   * This is the whole point of the round-off rule being a warning rather than
+   * a tolerance. `computeTotals` has always rounded the payable total to the
+   * nearest rupee and posted the difference to Round Off, capped at ₹1 by
+   * V-10; the parser was refusing documents the ledger would have handled
+   * correctly. Accepting them silently would have been the other error, so the
+   * difference travels with the proposal and reaches the approver AT-13
+   * already requires.
+   */
+  if (table.warnings) warnings.push(...table.warnings);
+
   const lines: BillLineInput[] = [];
   if (table.readable) {
     const taxable = table.sums.taxable!;
@@ -532,13 +616,22 @@ export async function proposeFromDocument(
      * Four whole files failed to read at all, which is a louder failure than
      * the aggregate rounding this change was fixing.
      */
-    const lineTaxables = itemRows
-      .map((r) => {
-        const raw = r.by.taxable?.trim();
-        if (raw === undefined || raw === '') return undefined;
-        try { return parseAmount(raw).value; } catch { return undefined; }
-      })
-      .filter((v): v is string => v !== undefined);
+    /*
+     * The value stays WITH its row.
+     *
+     * This was two parallel arrays, and the taxable one was filtered while the
+     * row one was not — so every wrapped description line dropped a value and
+     * shifted the indices, and a line's description and HSN could be read off
+     * a different row than its figure. Nothing caught it because both arrays
+     * were plausible and the arithmetic only ever looked at the figures.
+     */
+    const items = itemRows.flatMap((r) => {
+      const raw = r.by.taxable?.trim();
+      if (raw === undefined || raw === '') return [];
+      try { return [{ row: r, taxable: parseAmount(raw).value }]; }
+      catch { return []; }
+    });
+    const lineTaxables = items.map((it) => it.taxable);
 
     const rate = deriveGstRate(
       lineTaxables.length > 0 ? lineTaxables : taxable,
@@ -572,15 +665,49 @@ export async function proposeFromDocument(
        * A side benefit worth having: the description and HSN survive per line,
        * which is what GSTR-2B reconciliation needs.
        */
-      for (const [i, tv] of lineTaxables.entries()) {
+      /*
+       * A line worth nothing is not posted.
+       *
+       * Amazon prints a zero-value shipping line — quantity 1, value 0.00, tax
+       * 0.00 — and posting it produced a zero ledger entry, which
+       * `ledger_nonzero_ck` refuses outright. One free line took a whole
+       * correct bill down with it.
+       *
+       * Only when the tax is zero too. A line at nil value still carrying tax
+       * is a contradiction worth seeing, not something to quietly drop, and it
+       * will fail the arithmetic where a human can read about it.
+       */
+      const postable = items.filter(({ row, taxable: tv }) => {
+        if (paise(tv) !== 0n) return true;
+        const t = chargedOn(row);
+        return t !== undefined
+          && Object.values(t).some((v) => paise(v) !== 0n);
+      });
+      if (postable.length < items.length) {
+        warnings.push(
+          `${items.length - postable.length} line(s) on this document are worth ` +
+          'nothing and carry no tax — free delivery or a waived fee — and are ' +
+          'not posted. The figures are unaffected.');
+      }
+
+      for (const { row, taxable: tv } of postable) {
         lines.push({
-          description: itemRows[i]?.by.description?.trim()
+          description: row.by.description?.trim()
             || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
-          hsnSac: itemRows[i]?.by.hsn?.replace(/^\D+/, '').trim() || undefined,
+          hsnSac: row.by.hsn?.replace(/^\D+/, '').trim() || undefined,
           unitPrice: tv,
           quantity: '1',
           gstRate: rate,
           expenseAccountId: input.expenseAccountId,
+          /*
+           * The tax as printed on this very row, so the ledger records the
+           * supplier's figure rather than our re-derivation of it.
+           *
+           * Only from a row that actually shows the component. An absent cell
+           * means the document did not break the tax down that far, and
+           * passing '' or 0 would assert the supplier charged nothing.
+           */
+          chargedTax: chargedOn(row),
         });
       }
     }

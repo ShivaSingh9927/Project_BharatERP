@@ -232,3 +232,73 @@ Example Item             1           9.00              1.37               10.37`
     expect(t.sums.igst).toBeUndefined();
   });
 });
+
+/*
+ * A rounding difference is accepted, named, and bounded — bills-and-expenses.md
+ * §4.3, gl-engine.md V-10.
+ *
+ * The document these are built from states a total of 9539.00 against parts
+ * that sum to 9538.98 and prints NO round-off line anywhere, so the two paise
+ * can only be inferred. Refusing it would be wrong — `computeTotals` has
+ * always rounded the payable total to the nearest rupee — but accepting it in
+ * silence would be worse, so it is accepted with a warning.
+ *
+ * The three refusals below are what stop this being a tolerance. The same
+ * corpus contains ₹5.00 platform fees, where "within 50 paise" would be a
+ * tenth of the document.
+ */
+describe('rounding to the nearest rupee', () => {
+  const table = (taxable: string, cgst: string, sgst: string, total: string) =>
+    `Tax Invoice
+
+GSTIN     :   09AAACB1111B1Z0        Invoice Number : R1
+
+Sr.   Description        Taxable Value   CGST (INR)   SGST (INR)   Total
+
+1     Example Item       ${taxable.padEnd(15)} ${cgst.padEnd(12)} ${sgst.padEnd(12)} ${total}
+`;
+
+  it('accepts two paise absorbed into a whole-rupee total, and says so', () => {
+    const t = read(table('8083.90', '727.54', '727.54', '9539.00'));
+    expect(t.readable).toBe(true);
+    expect(t.roundOff).toBe('0.02');
+    expect(t.warnings?.join(' ')).toMatch(/9538\.98[\s\S]*9539\.00/);
+    // The difference is inferred, and the warning has to admit that.
+    expect(t.warnings?.join(' ')).toMatch(/prints\s+no\s+round-off\s+line/);
+  });
+
+  it('refuses a difference when the stated total is not a whole rupee', () => {
+    /*
+     * 5.35 read against 5.37 stated. Two paise again — the same gap the case
+     * above accepts — but rounding to the nearest rupee cannot produce 5.37,
+     * so this is a misread wearing a rounding difference's clothes. It is
+     * also the shape a ₹5.00 platform fee would take, where two paise is not
+     * negligible at all.
+     */
+    const t = read(table('4.53', '0.41', '0.41', '5.37'));
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/does not add up/);
+    expect(t.roundOff).toBeUndefined();
+  });
+
+  it('refuses a difference under a rupee that rounds to a different rupee', () => {
+    // 8538.98 read against 9539.00 stated: a thousand rupees apart, so no.
+    const t = read(table('7083.90', '727.54', '727.54', '9539.00'));
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/does not add up/);
+  });
+
+  it('refuses a whole rupee or more, however whole the total looks', () => {
+    // 9538.00 read against 9539.00 stated — exactly the bound, and out.
+    const t = read(table('8082.92', '727.54', '727.54', '9539.00'));
+    expect(t.readable).toBe(false);
+    expect(t.reason).toMatch(/does not add up/);
+  });
+
+  it('says nothing when the figures tie exactly', () => {
+    const t = read(table('8083.92', '727.54', '727.54', '9539.00'));
+    expect(t.readable).toBe(true);
+    expect(t.roundOff).toBeUndefined();
+    expect(t.warnings).toBeUndefined();
+  });
+});
