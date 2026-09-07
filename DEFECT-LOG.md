@@ -875,6 +875,7 @@ misleading. No unit test can hold that opinion.
 | `.xlsx` / zip | 18 | Merged cells; multi-sheet workbooks; `.xls` (pre-2007) |
 | PDF / fixed-width | 31 | Forward-marker coverage |
 | LLM extraction | 26 | Measured 2026-09-07 against `deepseek-chat`: 9 agreements, 2 disagreements (**our parser was wrong on both**), 7 newly readable, 6 still unread. The sandbox has no route to the API; the probe is run outside it |
+| Extraction provenance | 9 | Blob storage — `original_blob_uri` records a path, nothing archives the original |
 | Invoice dates | 19 | Vendors writing an ambiguous date with nothing on the page to settle it (Zepto, Hetzner) — refused by design |
 | Bill proposals | 46 | Reading the place of supply (would turn the tax-split warning back into a check); bill date is still supplied by the caller |
 | Word positions / columns | 18 | Zepto's rate-in-an-amount-column; captions with fewer than two recognised column words |
@@ -883,4 +884,4 @@ misleading. No unit test can hold that opinion.
 | Document splitting | 26 | Vendors outside the seven-invoice corpus; scanned (OCR) invoices, where page structure survives but heading position may not |
 | OCR / markdown | 14 | Live provider calls (mocked by design); multi-page scans; 300 DPI accuracy |
 | End-to-end flow | 10 | Resolving the ambiguous pair; bulk accept |
-| **Total** | **502** | |
+| **Total** | **511** | |

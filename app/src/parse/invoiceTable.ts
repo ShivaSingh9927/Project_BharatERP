@@ -88,6 +88,21 @@ export interface TableRow {
   by: Partial<Record<ColumnRole, string>>;
 }
 
+/**
+ * Where a column's figures were read from, in PDF points.
+ *
+ * Kept per column rather than per figure because a column IS the region: every
+ * value in it shares the same horizontal band, and the page is on the segment.
+ * Absent on the text and model paths, which have no geometry to offer.
+ */
+export interface ColumnSource {
+  caption: string;
+  page: number;
+  xMin: number; xMax: number;
+  /** Page size, so the band can be normalised 0–1 for storage (PR-6). */
+  pageWidth: number; pageHeight: number;
+}
+
 export interface InvoiceTable {
   readable: boolean;
   /** Present when `readable` is false: what stopped it. */
@@ -99,6 +114,12 @@ export interface InvoiceTable {
   totals: TableRow | null;
   /** Sums over the item rows, by role. */
   sums: Partial<Record<ColumnRole, string>>;
+  /**
+   * One entry per column, aligned to `roles`, when the reader knew where the
+   * columns were. This is what makes PR-6 possible — bounding boxes exist only
+   * at extraction time and cannot be reconstructed later.
+   */
+  columnSources?: ColumnSource[];
 }
 
 /**
@@ -283,7 +304,24 @@ export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
       reason: 'no row of words looks like a table header',
     };
   }
-  return gradeTable(t.header, t.rows);
+  const graded = gradeTable(t.header, t.rows);
+
+  /*
+   * The bands were computed and discarded until now, which made a documented
+   * claim about provenance false. The page is whichever one held the table —
+   * `tableFromRows` works over the segment's rows, and a table does not
+   * straddle pages in this corpus.
+   */
+  const page = pages[0];
+  if (page) {
+    graded.columnSources = t.bands.map((b, i) => ({
+      caption: graded.header[i] ?? '',
+      page: page.number,
+      xMin: b.xMin, xMax: b.xMax,
+      pageWidth: page.width, pageHeight: page.height,
+    }));
+  }
+  return graded;
 }
 
 /**

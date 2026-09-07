@@ -67,7 +67,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
     proposals = await proposeBills(firmId, {
       clientId, file: readFileSync(join(dir, file)),
       createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-      expenseAccountId, llm,
+      expenseAccountId, llm, sourceUri: `file://${join(dir, file)}`,
     });
   } catch (e) {
     console.log(`  could not read the file: ${(e as Error).message}\n`);
@@ -98,7 +98,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
 
     if (post) {
       try {
-        const bill = await postProposal(firmId, p, { approvedBy: approvedBy! });
+        const bill = await postProposal(firmId, p, {
+          approvedBy: approvedBy!, sourceUri: `file://${join(dir, file)}` });
         posted++;
         console.log(`      posted ${bill.voucherId} — ITC ${bill.itcEligibility}, ` +
                     `claimable ${bill.itcClaimableValue}`);

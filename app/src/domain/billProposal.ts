@@ -55,6 +55,7 @@ import { extractPdfText } from '../parse/pdf.ts';
 import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts';
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
 import { extractInvoiceDate } from '../parse/invoiceDate.ts';
+import { recordProvenance } from './provenance.ts';
 import { readInvoiceTableFromWords, type InvoiceTable } from '../parse/invoiceTable.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
@@ -111,6 +112,11 @@ export interface ProposeInput {
    * consent — `firm_ai_settings` is.
    */
   llm?: LlmClient;
+  /**
+   * Where the original file lives — the auditor's evidence (Lesson 11). Used
+   * to register the document so every posted figure can point back at it.
+   */
+  sourceUri?: string;
 }
 
 /**
@@ -635,15 +641,38 @@ export async function proposeFromDocument(
  */
 export async function postProposal(
   firmId: string, proposal: BillProposal,
-  opts: { approvedBy: string; billDate?: string },
+  opts: { approvedBy: string; billDate?: string; sourceUri?: string },
 ): Promise<CreatedBill> {
   if (proposal.input === null) {
     throw new ValidationError(
       `this document is not ready to post: ${proposal.blockers.join(' ')}`, 'PB-6');
   }
-  return createBill(firmId, {
+  const bill = await createBill(firmId, {
     ...proposal.input,
     billDate: opts.billDate ?? proposal.input.billDate,
     approvedBy: opts.approvedBy,
   });
+
+  /*
+   * Provenance is written AFTER the bill, and its failure does not unwind it.
+   *
+   * The ledger is append-only, so by this point the voucher exists and is
+   * correct. Losing the audit trail is a real loss and a lesser one than
+   * throwing past a completed write — a caller cannot un-post the bill, so an
+   * exception here would leave them with a posted voucher and an error to
+   * explain. The gap is reported instead.
+   */
+  try {
+    await recordProvenance(firmId, proposal, {
+      clientId: proposal.input.clientId,
+      voucherId: bill.voucherId,
+      sourceUri: opts.sourceUri ?? 'unrecorded',
+    });
+  } catch (e) {
+    bill.warnings.push(
+      'the bill posted, but where its figures were read from could not be ' +
+      `recorded: ${e instanceof Error ? e.message : String(e)}. The figures ` +
+      'are correct; the trail back to the document is missing.');
+  }
+  return bill;
 }

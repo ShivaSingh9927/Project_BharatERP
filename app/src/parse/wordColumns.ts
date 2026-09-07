@@ -17,8 +17,26 @@
 
 import type { Word, WordRow } from './pdfWords.ts';
 
-/** A column, as declared by the header words that sit above it. */
-interface Band { xMin: number; xMax: number; labels: string[] }
+/**
+ * A column, as declared by the header words above it.
+ *
+ * `xMin`/`xMax` are the ASSIGNMENT band and never move once the caption is
+ * read. `figMin`/`figMax` are what gets reported for provenance: the same band
+ * widened to cover the figures actually placed in it.
+ *
+ * They have to be separate. Widening the assignment band was tried and
+ * corrupted the table: one item's continuation is a single wide run of text
+ * ("1. [IMEI/Serial No: ...]") that lands in the description column and spans
+ * 40 to 300 points. Widening from it stretched the description band across
+ * four columns, and every figure on every later row was then assigned to the
+ * description instead — a three-fee invoice read 50.00 where it should have
+ * read 327.96, the exact defect this reader had just been fixed for.
+ */
+interface Band {
+  xMin: number; xMax: number;
+  figMin: number; figMax: number;
+  labels: string[];
+}
 
 /** Words that identify a row as the table's header. Shared with the text path. */
 const HEADER_HINTS = [
@@ -97,7 +115,8 @@ function bandsInRow(row: WordRow): Band[] {
       open.xMax = Math.max(open.xMax, w.xMax);
       open.labels.push(w.text);
     } else {
-      bands.push({ xMin: w.xMin, xMax: w.xMax, labels: [w.text] });
+      bands.push({ xMin: w.xMin, xMax: w.xMax,
+                   figMin: w.xMin, figMax: w.xMax, labels: [w.text] });
     }
   }
   return bands;
@@ -125,6 +144,8 @@ function columnsFrom(headerRows: WordRow[]): Band[] {
       const merged: Band = {
         xMin: Math.min(b.xMin, ...hits.map((x) => x.xMin)),
         xMax: Math.max(b.xMax, ...hits.map((x) => x.xMax)),
+        figMin: Math.min(b.figMin, ...hits.map((x) => x.figMin)),
+        figMax: Math.max(b.figMax, ...hits.map((x) => x.figMax)),
         labels: [...hits.flatMap((x) => x.labels), ...b.labels],
       };
       for (const x of hits) bands.splice(bands.indexOf(x), 1);
@@ -178,6 +199,26 @@ function cellsFor(r: WordRow, bands: Band[]): string[] {
   const cells: string[][] = bands.map(() => []);
   for (const w of r.words) cells[bandOf(w.xMin, w.xMax, bands)]!.push(w.text);
   return cells.map((c) => c.join(' '));
+}
+
+/**
+ * Records how far the FIGURES in each column reach, for provenance only.
+ *
+ * A caption is narrow — "Taxable" is 23pt — while the figures beneath it are
+ * wider and, being right-aligned, offset from it. A highlight drawn on the
+ * caption's box misses the number it is meant to point at.
+ *
+ * Only amounts widen it, and only the assignment band's twin. Text is
+ * irrelevant to where a figure sits, and letting it in is what broke the
+ * table (see `Band`).
+ */
+function noteFigureExtent(bands: Band[], row: WordRow): void {
+  for (const w of row.words) {
+    if (!/^[₹$(]?-?[\d,]+(?:\.\d+)?\)?%?$/.test(w.text)) continue;
+    const b = bands[bandOf(w.xMin, w.xMax, bands)]!;
+    b.figMin = Math.min(b.figMin, w.xMin);
+    b.figMax = Math.max(b.figMax, w.xMax);
+  }
 }
 
 /**
@@ -270,13 +311,17 @@ export function tableFromRows(rows: WordRow[]): WordTable | null {
     if (contradicts) {
       if (!carriesAnAmount) continue;      // an item's own wrapped text
       if (!looksLikeTotals(cells)) break;  // a signature block, a stray figure
+      noteFigureExtent(bands, r);
       out.push(cells);
       break;
     }
 
     cells.forEach((c, i) => { if (AMOUNT.test(c.trim())) numericBand.add(i); });
+    noteFigureExtent(bands, r);
     out.push(cells);
   }
 
-  return { header, rows: out, bands: bands.map(({ xMin, xMax }) => ({ xMin, xMax })) };
+  // Reported extents, not assignment bands — see `Band`.
+  return { header, rows: out,
+           bands: bands.map(({ figMin, figMax }) => ({ xMin: figMin, xMax: figMax })) };
 }
