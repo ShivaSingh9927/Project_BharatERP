@@ -26,6 +26,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { proposeBills, postProposal, llmSettings } from '../src/domain/billProposal.ts';
 import { llmClientFromEnv } from '../src/parse/llmTable.ts';
+import { sandboxLookupFromEnv } from '../src/integrations/sandboxGst.ts';
 import { closePools } from '../src/db/pool.ts';
 
 const [firmId, clientId, expenseAccountId, dir] = process.argv.slice(2);
@@ -61,10 +62,12 @@ if (post && !approvedBy) {
 }
 
 const llm = llmClientFromEnv() ?? undefined;
+const gstinLookup = sandboxLookupFromEnv() ?? undefined;
 const settings = await llmSettings(firmId);
 
 console.log(`model available : ${llm ? `${llm.provider}/${llm.model}` : 'no key set'}`);
 console.log(`firm allows it  : extraction=${settings.extraction} cross-check=${settings.crossCheck}`);
+console.log(`GSTIN lookup    : ${gstinLookup ? gstinLookup.source : 'no key set'}`);
 console.log(`mode            : ${post ? 'POSTING' : 'dry run'}\n`);
 
 if (llm && !settings.extraction) {
@@ -83,7 +86,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
     proposals = await proposeBills(firmId, {
       clientId, file: readFileSync(join(dir, file)),
       createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-      expenseAccountId, llm, sourceUri: `file://${join(dir, file)}`,
+      expenseAccountId, llm, gstinLookup, sourceUri: `file://${join(dir, file)}`,
       ...(rcmRate === undefined ? {} : { reverseCharge: { rate: rcmRate } }),
     });
 
@@ -106,7 +109,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
           proposals = await proposeBills(firmId, {
             clientId, file: readFileSync(join(dir, file)),
             createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-            expenseAccountId, llm, sourceUri: `file://${join(dir, file)}`,
+            expenseAccountId, llm, gstinLookup,
+            sourceUri: `file://${join(dir, file)}`,
             reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! },
           });
         }

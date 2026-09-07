@@ -58,6 +58,8 @@ import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
 import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
+import { readRegistration, checkRegistration } from './gstinRegistry.ts';
+import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
 export interface BillProposal {
@@ -73,6 +75,8 @@ export interface BillProposal {
   /** Matched supplier, when the GSTIN identified exactly one. */
   partyId: string | null;
   partyName: string | null;
+  /** What the GST portal says about the supplier, when it could be asked. */
+  registration: GstinRecord | null;
   /** Empty when the proposal is ready to post. */
   blockers: string[];
   /** Worth a reviewer's attention, but not blocking. */
@@ -116,6 +120,12 @@ export interface BillProposal {
   billDateBasis?: string;
 }
 
+/** True when the table itself shows GST was charged. */
+function tableChargesTax(t: InvoiceTable): boolean {
+  return t.readable && (['cgst', 'sgst', 'igst'] as const)
+    .some((k) => t.sums[k] !== undefined && paise(t.sums[k]!) > 0n);
+}
+
 /** One thing a human has to settle before a bill can post. */
 export interface Confirmation {
   /** Stable identifier, so an answer can name what it answers. */
@@ -145,6 +155,12 @@ export interface ProposeInput {
    * consent — `firm_ai_settings` is.
    */
   llm?: LlmClient;
+  /**
+   * Checks a supplier GSTIN against the GST portal, through a licensed
+   * provider. Optional: without it the bill still posts, and says that the
+   * registration went unchecked rather than implying it was fine.
+   */
+  gstinLookup?: GstinLookup;
   /**
    * Where the original file lives — the auditor's evidence (Lesson 11). Used
    * to register the document so every posted figure can point back at it.
@@ -631,6 +647,7 @@ export async function proposeFromDocument(
   // --- supplier ------------------------------------------------------------
   let partyId: string | null = null;
   let partyName: string | null = null;
+  let registration: GstinRecord | null = null;
 
   if (seg.supplierGstin === null) {
     /*
@@ -675,6 +692,30 @@ export async function proposeFromDocument(
         `the supplier GSTIN read from this document, "${seg.supplierGstin}", ` +
         `is not valid — ${check.reason}`);
     } else {
+      /*
+       * What the portal says about this registration.
+       *
+       * The check digit above proves the number was typed correctly and
+       * nothing more. Whether the registration still exists, and whether this
+       * supplier may charge the tax printed on the invoice, decide whether the
+       * credit survives an assessment — and neither is on the document.
+       */
+      const record = await readRegistration(seg.supplierGstin, input.gstinLookup);
+      registration = record === 'unavailable' ? null : record;
+      for (const f of checkRegistration(record, {
+        date: dateRead.date ?? null,
+        chargesTax: profile.charged === 'yes' || tableChargesTax(table),
+        hasIrn: /\bIRN\b/i.test(seg.text),
+      })) {
+        (f.severity === 'blocker' ? blockers : warnings).push(f.message);
+      }
+      if (record === 'unavailable') {
+        warnings.push(
+          `the supplier's GST registration could not be checked — no lookup ` +
+          'was available. Nothing is wrong with the bill; we simply do not ' +
+          'know whether the registration is still live.');
+      }
+
       const found = await findSupplier(firmId, input.clientId, seg.supplierGstin);
       if (found) { partyId = found.id; partyName = found.name; }
       else {
@@ -992,11 +1033,7 @@ export async function proposeFromDocument(
    * matters is calling something a bill of supply when it charged tax, because
    * that silently destroys a credit the client is entitled to.
    */
-  const tableShowsTax = table.readable
-    && (['cgst', 'sgst', 'igst'] as const)
-      .some((k) => table.sums[k] !== undefined && paise(table.sums[k]!) > 0n);
-
-  if (profile.resolvedKind === 'unspecified' && tableShowsTax) {
+  if (profile.resolvedKind === 'unspecified' && tableChargesTax(table)) {
     /*
      * Drop the warning this supersedes. `taxProfileWarnings` said the credit
      * must not be claimed unread, which was right on the text alone and is
@@ -1048,7 +1085,7 @@ export async function proposeFromDocument(
   return {
     index: seg.index, pages: seg.pages,
     documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
-    fileHash, taxProfile: profile, table, partyId, partyName,
+    fileHash, taxProfile: profile, table, partyId, partyName, registration,
     blockers, warnings, confirmations, readBy, llmProvenance, crossChecked,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {

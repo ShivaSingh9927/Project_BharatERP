@@ -74,9 +74,11 @@ const doc = (supplier: string | null, number: string, taxLine: string,
     + `${taxLine}\nWhether tax is payable under reverse charge - No`)[0]!;
 
 const propose = (segment: ReturnType<typeof doc>, pages: WordPage[],
-                 llm?: LlmClient) =>
+                 llm?: LlmClient,
+                 extra: Partial<Parameters<typeof proposeFromDocument>[1]> = {}) =>
   proposeFromDocument(t.firmId,
-    { clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases, llm },
+    { clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases,
+      llm, ...extra },
     segment, pages, 'a'.repeat(64));
 
 beforeAll(async () => {
@@ -369,6 +371,91 @@ describe('questions a human has to answer', () => {
           'Invoice Date : 04.09.2026\nDigitally signed Date: 2026.09.03 22:21:45 UTC'),
       interStateTable('1000.00', '180.00', '1180.00'));
     expect(p.confirmations).toEqual([]);
+  });
+});
+
+describe('checking the supplier against the GST portal', () => {
+  /*
+   * `gstin_registry` is reference data shared across firms — the portal
+   * returns the same answer to everyone — so unlike every other table here it
+   * is NOT isolated per tenant and survives between runs. A row this file
+   * writes is therefore visible to the next run of any test using the same
+   * number, which is exactly how a stale "Cancelled" once leaked into a dozen
+   * unrelated cases. Each case below uses its own GSTIN, and the file clears
+   * them before it starts.
+   */
+  beforeAll(async () => {
+    await ownerPool.query(
+      `DELETE FROM gstin_registry WHERE gstin = ANY($1)`,
+      [[SAME_STATE, ...['AAACR0001R', 'AAACR0002R', 'AAACR0003R',
+                        'AAACR0004R', 'AAACR0005R'].map((p) => gstin('09', p))]]);
+  });
+
+  const lookup = (rec: Partial<import('../src/integrations/sandboxGst.ts').GstinRecord>
+                  | null | 'throw') => ({
+    source: 'test',
+    async find(gstin: string) {
+      if (rec === 'throw') throw new Error('the network is down');
+      if (rec === null) return null;
+      return {
+        gstin, status: 'Active', taxpayerType: 'Regular',
+        legalName: 'TEST SUPPLIER', tradeName: 'TEST SUPPLIER',
+        stateCode: gstin.slice(0, 2), registeredOn: '2020-01-01',
+        cancelledOn: null, einvoiceRequired: false, raw: {}, source: 'test',
+        ...rec,
+      };
+    },
+  });
+
+  /*
+   * A distinct GSTIN per case. `gstin_registry` is reference data shared
+   * across firms rather than a tenant's records — which is right, and means a
+   * record stored by one test is visible to the next, so reusing one number
+   * would make these order-dependent.
+   */
+  const withLookup = async (
+    l: ReturnType<typeof lookup>, num: string, pan: string,
+  ) => propose(doc(gstin('09', pan), num, 'IGST 18 %'),
+               interStateTable('1000.00', '180.00', '1180.00'),
+               undefined, { gstinLookup: l });
+
+  it('blocks a supplier whose registration is cancelled', async () => {
+    const p = await withLookup(
+      lookup({ status: 'Cancelled', cancelledOn: '2020-06-01' }), 'GR1', 'AAACR0001R');
+    expect(p.blockers.join(' ')).toMatch(/registration is cancelled/);
+  });
+
+  it('blocks a composition dealer that charged GST', async () => {
+    const p = await withLookup(lookup({ taxpayerType: 'Composition' }), 'GR2', 'AAACR0002R');
+    expect(p.blockers.join(' ')).toMatch(/composition scheme/);
+  });
+
+  it('records what the portal said, so the bill can show it', async () => {
+    const p = await withLookup(lookup({}), 'GR3', 'AAACR0003R');
+    expect(p.registration?.legalName).toBe('TEST SUPPLIER');
+    expect(p.registration?.status).toBe('Active');
+  });
+
+  it('posts the bill and says so when the portal cannot be reached', async () => {
+    /*
+     * A lookup failure is OUR gap, not a finding about the supplier. The bill
+     * is unaffected and the reviewer is told the check did not happen, rather
+     * than being left to assume it passed.
+     */
+    const p = await withLookup(lookup('throw'), 'GR4', 'AAACR0004R');
+    // Nothing is CONCLUDED about the registration. (The unrelated blocker is
+    // that this test GSTIN has no supplier party seeded.)
+    expect(p.blockers.join(' ')).not.toMatch(/registration|composition|no record/);
+    expect(p.warnings.join(' ')).toMatch(/could not be checked/);
+  });
+
+  it('says nothing about registration when no lookup is configured', async () => {
+    const p = await propose(doc(gstin('09', 'AAACR0005R'), 'GR5', 'IGST 18 %'),
+                            interStateTable('1000.00', '180.00', '1180.00'));
+    expect(p.blockers.join(' ')).not.toMatch(/registration|composition|no record/);
+    expect(p.registration).toBeNull();
+    // ...and it does not claim the registration was checked and found good.
+    expect(p.warnings.join(' ')).toMatch(/could not be checked/);
   });
 });
 
