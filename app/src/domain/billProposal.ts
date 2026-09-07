@@ -46,6 +46,7 @@
 import { withFirm } from '../db/pool.ts';
 import { validateGstin } from './gstin.ts';
 import { paise, money } from './tax.ts';
+import { parseAmount } from '../parse/values.ts';
 import { createBill, contentHash, type CreateBillInput, type BillLineInput,
          type CreatedBill } from './bills.ts';
 import { ValidationError } from './types.ts';
@@ -81,6 +82,12 @@ export interface BillProposal {
    */
   readBy: 'coordinates' | 'llm';
   llmProvenance?: { provider: string; model: string };
+  /**
+   * Whether a second, independent reader confirmed these figures.
+   * `unavailable` means it was asked and could not read the document — which
+   * is not the same as agreeing, and is recorded rather than glossed.
+   */
+  crossChecked: 'off' | 'agreed' | 'disagreed' | 'unavailable';
 }
 
 export interface ProposeInput {
@@ -109,13 +116,24 @@ export interface ProposeInput {
  * a DPDP decision belonging to the firm as data fiduciary, and a default that
  * exports documents would be making it for them.
  */
-export async function llmExtractionEnabled(firmId: string): Promise<boolean> {
+export interface LlmSettings { extraction: boolean; crossCheck: boolean }
+
+export async function llmSettings(firmId: string): Promise<LlmSettings> {
   return withFirm(firmId, async (c) => {
-    const r = await c.query<{ on: boolean }>(
-      'SELECT llm_extraction AS on FROM firm_ai_settings WHERE firm_id = $1',
-      [firmId]);
-    return r.rows[0]?.on === true;
+    const r = await c.query<{ extraction: boolean; cross_check: boolean }>(
+      `SELECT llm_extraction AS extraction, llm_cross_check AS cross_check
+         FROM firm_ai_settings WHERE firm_id = $1`, [firmId]);
+    const row = r.rows[0];
+    return {
+      extraction: row?.extraction === true,
+      crossCheck: row?.cross_check === true,
+    };
   });
+}
+
+/** Kept for callers that only care whether documents may leave at all. */
+export async function llmExtractionEnabled(firmId: string): Promise<boolean> {
+  return (await llmSettings(firmId)).extraction;
 }
 
 /**
@@ -127,18 +145,47 @@ export async function llmExtractionEnabled(firmId: string): Promise<boolean> {
  */
 export async function enableLlmExtraction(
   firmId: string,
-  opts: { provider: string; model: string; enabledBy: string },
+  opts: { provider: string; model: string; enabledBy: string;
+          crossCheck?: boolean },
 ): Promise<void> {
   await withFirm(firmId, async (c) => {
     await c.query(
       `INSERT INTO firm_ai_settings
-         (firm_id, llm_extraction, llm_provider, llm_model, enabled_by, enabled_at)
-       VALUES ($1, true, $2, $3, $4, now())
+         (firm_id, llm_extraction, llm_cross_check,
+          llm_provider, llm_model, enabled_by, enabled_at)
+       VALUES ($1, true, $2, $3, $4, $5, now())
        ON CONFLICT (firm_id) DO UPDATE SET
-         llm_extraction = true, llm_provider = $2, llm_model = $3,
-         enabled_by = $4, enabled_at = now()`,
-      [firmId, opts.provider, opts.model, opts.enabledBy]);
+         llm_extraction = true, llm_cross_check = $2,
+         llm_provider = $3, llm_model = $4,
+         enabled_by = $5, enabled_at = now()`,
+      [firmId, opts.crossCheck ?? false, opts.provider, opts.model, opts.enabledBy]);
   });
+}
+
+/** The money roles two readers must agree on before a bill may post. */
+const CROSS_CHECKED: Array<'taxable' | 'cgst' | 'sgst' | 'igst' | 'cess' | 'total'> =
+  ['taxable', 'cgst', 'sgst', 'igst', 'cess', 'total'];
+
+/**
+ * Compares two readings of the same document and names every figure that
+ * differs.
+ *
+ * A missing value on one side counts as a difference. That is the whole point:
+ * the truncation defect showed up as one reader finding 327.96 where the other
+ * found 50.00, and it would have shown up equally as one finding a CGST column
+ * the other missed entirely.
+ */
+export function compareReadings(
+  a: InvoiceTable, b: InvoiceTable,
+): string[] {
+  const out: string[] = [];
+  for (const role of CROSS_CHECKED) {
+    const x = a.sums[role], y = b.sums[role];
+    if (x === y) continue;
+    if (x === undefined && y === undefined) continue;
+    out.push(`${role}: ${x ?? 'not found'} vs ${y ?? 'not found'}`);
+  }
+  return out;
 }
 
 /**
@@ -161,6 +208,18 @@ export async function enableLlmExtraction(
  * question is not "what quotient is this" but "which SCHEDULED rate produces
  * this tax" — and the rate printed on the document, when it could be read, is
  * the first candidate tried.
+ *
+ * ── And the tax is rounded PER LINE, then summed ──────────────────────────
+ *
+ * A second real invoice made that unavoidable. Three fees at 18% —
+ * 50.00 -> 9.00, 109.32 -> 19.68, 168.64 -> 30.36 — sum to a taxable value of
+ * 327.96 and a tax of 59.04. But 327.96 x 18% is 59.0328, which rounds to
+ * 59.03. No rate on the schedule explains the aggregate, and the document is
+ * not wrong: each line was rounded in its own right before being added.
+ *
+ * So candidates are tested the way the invoice was computed — line by line,
+ * summed afterwards. Passing a single aggregate still works and is treated as
+ * a one-line document.
  *
  * Returns null when no candidate reproduces the tax to the exact paise, or
  * when more than one does and the document did not say which. `createBill`
@@ -198,20 +257,25 @@ function taxAt(taxableP: bigint, rate: string, intraState: boolean): bigint {
 }
 
 export function deriveGstRate(
-  taxable: string, tax: string, readRates: readonly string[] = [],
-  intraState = false,
+  taxable: string | readonly string[], tax: string,
+  readRates: readonly string[] = [], intraState = false,
 ): string | null {
-  const tv = paise(taxable);
-  if (tv === 0n) return null;
+  const lines = (Array.isArray(taxable) ? taxable : [taxable as string])
+    .map((v) => paise(v));
+  if (lines.length === 0 || lines.reduce((a, b) => a + b, 0n) === 0n) return null;
   const tx = paise(tax);
+
+  // Rounded per line, then summed — the way the vendor's system did it.
+  const totalAt = (rate: string): bigint =>
+    lines.reduce((sum, lineP) => sum + taxAt(lineP, rate, intraState), 0n);
 
   // The document's own word first: if it states a rate and that rate produces
   // the tax printed beside it, there is nothing to infer.
   for (const r of readRates) {
-    if (taxAt(tv, r, intraState) === tx) return r;
+    if (totalAt(r) === tx) return r;
   }
 
-  const fits = STATUTORY_RATES.filter((r) => taxAt(tv, r, intraState) === tx);
+  const fits = STATUTORY_RATES.filter((r) => totalAt(r) === tx);
   return fits.length === 1 ? fits[0]! : null;
 }
 
@@ -283,6 +347,7 @@ export async function proposeFromDocument(
   const warnings = taxProfileWarnings(seg, profile);
   let readBy: BillProposal['readBy'] = 'coordinates';
   let llmProvenance: { provider: string; model: string } | undefined;
+  let crossChecked: BillProposal['crossChecked'] = 'off';
 
   /*
    * The fallback, in that order: coordinates first, a model only if they
@@ -293,8 +358,10 @@ export async function proposeFromDocument(
    * the exact region a figure came from (PR-7). A model can do none of those,
    * so it earns its turn only where the cheaper answer is unavailable.
    */
-  if (!table.readable && input.llm && await llmExtractionEnabled(firmId)) {
-    const attempt = await readInvoiceTableFromLlm(seg.text, input.llm);
+  const ai = input.llm ? await llmSettings(firmId) : { extraction: false, crossCheck: false };
+
+  if (!table.readable && input.llm && ai.extraction) {
+    const attempt = await readInvoiceTableFromLlm(seg.text, input.llm!);
     if (attempt.table.readable) {
       table = attempt.table;
       readBy = 'llm';
@@ -304,6 +371,39 @@ export async function proposeFromDocument(
         `by ${attempt.provenance.provider}/${attempt.provenance.model}, not by ` +
         'this software. They passed the same arithmetic checks, but the ' +
         'document was sent to a third party to obtain them.');
+    }
+  } else if (table.readable && input.llm && ai.crossCheck) {
+    /*
+     * Cross-check: read it again, independently, and refuse to post if the two
+     * readings differ.
+     *
+     * A DISAGREEMENT BLOCKS, and that is not caution for its own sake. When
+     * this was measured, both readings of the two disputed documents tied
+     * arithmetically — 50.00 + 9.00 = 59.00 and 327.96 + 59.04 = 387.00 are
+     * each internally consistent — so there is no check available that can
+     * pick the right one. We know one of them is wrong and we cannot know
+     * which. Posting either would be a coin toss with a provenance trail.
+     *
+     * A model failing to read the document is NOT a disagreement. It refuses 6
+     * of 24 documents in the corpus including a mainstream Indian format, so
+     * treating silence as dissent would block bills we read correctly.
+     */
+    const second = await readInvoiceTableFromLlm(seg.text, input.llm!);
+    if (second.table.readable) {
+      const diffs = compareReadings(table, second.table);
+      if (diffs.length > 0) {
+        blockers.push(
+          `two independent readings of document ${seg.documentNumber ?? seg.index} ` +
+          `disagree — ${diffs.join('; ')}. Both may add up on their own, so no ` +
+          'arithmetic check can settle it. Read the document.');
+        crossChecked = 'disagreed';
+      } else {
+        crossChecked = 'agreed';
+      }
+      llmProvenance = second.provenance;
+    } else {
+      // Recorded, not treated as assent: nobody confirmed this reading.
+      crossChecked = 'unavailable';
     }
   }
 
@@ -390,8 +490,33 @@ export async function proposeFromDocument(
       + paise(table.sums.igst ?? '0'));
     // The document's own tax names say how it was computed: CGST+SGST means
     // two halves rounded separately, IGST means one charge.
-    const rate = deriveGstRate(taxable, tax, profile.rates,
-                               profile.taxKind === 'intra');
+    /*
+     * Per-line taxable values, excluding the document's own totals row — that
+     * row restates the sum and counting it would double everything.
+     */
+    const itemRows = table.rows.filter((r) => r !== table.totals);
+
+    /*
+     * Normalised through `parseAmount`, which is what the aggregate path got
+     * for free by going via `table.sums`.
+     *
+     * Without it the cells arrive exactly as printed — "₹66.00" — and every
+     * document with a rupee symbol in its taxable column threw
+     * `SI-7: not a valid decimal amount` out of the middle of the proposal.
+     * Four whole files failed to read at all, which is a louder failure than
+     * the aggregate rounding this change was fixing.
+     */
+    const lineTaxables = itemRows
+      .map((r) => {
+        const raw = r.by.taxable?.trim();
+        if (raw === undefined || raw === '') return undefined;
+        try { return parseAmount(raw).value; } catch { return undefined; }
+      })
+      .filter((v): v is string => v !== undefined);
+
+    const rate = deriveGstRate(
+      lineTaxables.length > 0 ? lineTaxables : taxable,
+      tax, profile.rates, profile.taxKind === 'intra');
 
     if (rate === null) {
       blockers.push(
@@ -404,23 +529,34 @@ export async function proposeFromDocument(
         'lines by hand.');
     } else {
       /*
-       * One line carrying the whole taxable value.
+       * One posted line per item row, each carrying that row's TAXABLE value
+       * as its unit price at quantity 1.
        *
-       * The per-item breakdown is read and kept on `table`, but it is not what
-       * gets posted, because quantity × unit price rarely reproduces the
-       * taxable value exactly once discounts are involved — and the taxable
-       * value is the figure input credit rests on. Posting a quantity that
-       * multiplies out to the wrong base would be worse than posting no
-       * quantity at all.
+       * Not the quantity and unit price printed on the document: those rarely
+       * multiply out to the taxable value once a discount is involved, and the
+       * taxable value is the figure input credit rests on.
+       *
+       * But not one aggregate line either, which is what this did first. The
+       * vendor rounds each line's tax before adding them, so a single line of
+       * 327.96 at 18% computes 59.03 where the document says 59.04 — and PB-4
+       * would then reject a bill that is perfectly correct. Posting the same
+       * number of lines the document has makes `createBill` round the same way
+       * the vendor did.
+       *
+       * A side benefit worth having: the description and HSN survive per line,
+       * which is what GSTR-2B reconciliation needs.
        */
-      lines.push({
-        description: seg.documentNumber
-          ? `Purchase per ${seg.documentNumber}` : 'Purchase',
-        unitPrice: taxable,
-        quantity: '1',
-        gstRate: rate,
-        expenseAccountId: input.expenseAccountId,
-      });
+      for (const [i, tv] of lineTaxables.entries()) {
+        lines.push({
+          description: itemRows[i]?.by.description?.trim()
+            || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
+          hsnSac: itemRows[i]?.by.hsn?.replace(/^\D+/, '').trim() || undefined,
+          unitPrice: tv,
+          quantity: '1',
+          gstRate: rate,
+          expenseAccountId: input.expenseAccountId,
+        });
+      }
     }
   }
 
@@ -436,7 +572,7 @@ export async function proposeFromDocument(
     index: seg.index, pages: seg.pages,
     documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName,
-    blockers, warnings, readBy, llmProvenance,
+    blockers, warnings, readBy, llmProvenance, crossChecked,
     input: ready ? {
       clientId: input.clientId,
       partyId: partyId!,

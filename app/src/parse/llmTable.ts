@@ -242,3 +242,21 @@ export function deepseekClient(
     },
   };
 }
+
+/**
+ * Builds a client from the environment, or returns null when no key is set.
+ *
+ * Returning null rather than throwing is deliberate: the absence of a key is a
+ * legitimate, and the default, state. A deployment with no key reads what it
+ * can with the deterministic paths and refuses the rest, which is exactly the
+ * behaviour that existed before any of this.
+ *
+ * A key being PRESENT still does not mean a model will be called — that is
+ * `firm_ai_settings`, per firm. Two independent conditions, because they answer
+ * two different questions: "can we" and "may we".
+ */
+export function llmClientFromEnv(env: NodeJS.ProcessEnv = process.env): LlmClient | null {
+  const key = env.DEEPSEEK_API;
+  if (!key) return null;
+  return deepseekClient(key, env.DEEPSEEK_MODEL ?? 'deepseek-chat');
+}

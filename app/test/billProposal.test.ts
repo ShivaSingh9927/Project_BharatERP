@@ -15,7 +15,8 @@ import { randomUUID } from 'node:crypto';
 import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { seedItcEligibility } from '../src/seed/tdsSections.ts';
 import { proposeFromDocument, postProposal, deriveGstRate,
-         llmExtractionEnabled, enableLlmExtraction } from '../src/domain/billProposal.ts';
+         llmExtractionEnabled, enableLlmExtraction, llmSettings,
+         compareReadings } from '../src/domain/billProposal.ts';
 import type { LlmClient } from '../src/parse/llmTable.ts';
 import { splitDocuments } from '../src/parse/documentSplit.ts';
 import { wordsToRows, type Word, type WordPage } from '../src/parse/pdfWords.ts';
@@ -120,6 +121,21 @@ describe('deriveGstRate', () => {
     expect(deriveGstRate('4.24', '0.76', ['18'])).toBe('18');
   });
 
+  it('tests candidates line by line, because the vendor rounds that way', () => {
+    /*
+     * A real Flipkart invoice with three fees at 18%: 50.00 -> 9.00,
+     * 109.32 -> 19.68, 168.64 -> 30.36. They sum to a taxable value of 327.96
+     * and a tax of 59.04 — but 327.96 x 18% is 59.0328, which rounds to 59.03.
+     *
+     * Derived from the aggregate, no scheduled rate explained the document and
+     * a perfectly correct bill was refused. Each line was rounded in its own
+     * right before being added, so candidates have to be tested the same way.
+     */
+    expect(deriveGstRate(['50.00', '109.32', '168.64'], '59.04')).toBe('18');
+    expect(deriveGstRate('327.96', '59.04')).toBeNull();      // the aggregate
+    expect(deriveGstRate('327.96', '59.03')).toBe('18');      // ...which is why
+  });
+
   it('computes an intra-state rate as two halves rounded separately', () => {
     /*
      * An intra-state supply is taxed at 9% for the centre and 9% for the
@@ -215,6 +231,52 @@ describe('what will not be posted', () => {
 
 // ---------------------------------------------------------------------------
 describe('posting a ready proposal', () => {
+  it('posts one line per item row, so the rounding matches the vendor', async () => {
+    /*
+     * Not one aggregate line. The vendor rounds each line's tax before adding,
+     * so a single line of 327.96 at 18% computes 59.03 where the document says
+     * 59.04 — and PB-4 would reject a bill that is entirely correct.
+     */
+    const threeFees = page([
+      w('Description', 40, 100), w('Taxable', 150, 100),
+      w('IGST', 230, 100), w('Total', 300, 100),
+      w('Credit Card Fee', 40, 130), w('50.00', 150, 130),
+      w('9.00', 230, 130), w('59.00', 300, 130),
+      w('Protect Promise Fee', 40, 145), w('109.32', 150, 145),
+      w('19.68', 230, 145), w('129.00', 300, 145),
+      w('Offer Handling Fee', 40, 160), w('168.64', 150, 160),
+      w('30.36', 230, 160), w('199.00', 300, 160),
+    ]);
+    const p = await propose(doc(SAME_STATE, 'P30', 'IGST 18 %'), threeFees);
+    expect(p.blockers).toEqual([]);
+    expect(p.input!.lines).toHaveLength(3);
+    expect(p.input!.lines.map((l) => l.unitPrice))
+      .toEqual(['50.00', '109.32', '168.64']);
+
+    const bill = await postProposal(t.firmId, p,
+      { billDate: '2026-07-01', approvedBy: t.userId });
+    expect(bill.taxableValue).toBe('327.96');
+    expect(bill.totalGst).toBe('59.04');       // not 59.03
+  });
+
+  it('normalises a printed rupee symbol out of a line amount', async () => {
+    /*
+     * The per-line change broke four whole files with
+     * `SI-7: "₹66.00" is not a valid decimal amount`. The aggregate path had
+     * been getting normalisation for free by going through `table.sums`; the
+     * per-line cells arrive exactly as printed.
+     */
+    const withSymbols = page([
+      w('Description', 40, 100), w('Taxable', 150, 100),
+      w('IGST', 230, 100), w('Total', 300, 100),
+      w('Example', 40, 130), w('₹100.00', 150, 130),
+      w('₹18.00', 230, 130), w('₹118.00', 300, 130),
+    ]);
+    const p = await propose(doc(SAME_STATE, 'P31', 'IGST 18 %'), withSymbols);
+    expect(p.blockers).toEqual([]);
+    expect(p.input!.lines[0]!.unitPrice).toBe('100.00');
+  });
+
   it('posts, and the figures match the document', async () => {
     const p = await propose(doc(SAME_STATE, 'P10', 'IGST 18 %'),
       interStateTable('1000.00', '180.00', '1180.00'));
@@ -404,5 +466,119 @@ describe('a model as extractor of last resort', () => {
     await expect(ownerPool.query(
       `INSERT INTO firm_ai_settings (firm_id, llm_extraction) VALUES ($1, true)`,
       [t.firmId])).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+/*
+ * Cross-check: ask two readers and refuse to post when they differ.
+ *
+ * Built because a model disagreed with two readings that gate 2 had passed, and
+ * on both the coordinate reader was wrong. A three-fee Flipkart invoice read a
+ * taxable value of 50.00 against a true 327.96, and one row's 50.00 + 9.00 =
+ * 59.00 ties perfectly on its own — so no internal check could have caught it.
+ */
+describe('cross-check', () => {
+  const readsAs = (taxable: string, igst: string, total: string): LlmClient => ({
+    provider: 'test', model: 'test-model',
+    async complete() {
+      return JSON.stringify({
+        header: ['Description', 'Taxable Value', 'IGST', 'Total'],
+        rows: [['Example', taxable, igst, total]],
+      });
+    },
+  });
+
+  const silent: LlmClient = {
+    provider: 'test', model: 'test-model',
+    async complete() { return JSON.stringify({ header: [], rows: [] }); },
+  };
+
+  it('is a separate switch from extraction', async () => {
+    // Extraction sends documents we could not read; cross-check sends ones we
+    // read perfectly well. Strictly more client data leaves the building, so
+    // consenting to the first must not enrol a firm in the second.
+    await enableLlmExtraction(t.firmId,
+      { provider: 'test', model: 'test-model', enabledBy: t.userId });
+    expect(await llmSettings(t.firmId))
+      .toEqual({ extraction: true, crossCheck: false });
+  });
+
+  it('cannot be switched on without extraction', async () => {
+    await expect(ownerPool.query(
+      `UPDATE firm_ai_settings SET llm_extraction = false, llm_cross_check = true
+       WHERE firm_id = $1`, [t.firmId])).rejects.toThrow();
+  });
+
+  it('confirms a reading both readers agree on', async () => {
+    await enableLlmExtraction(t.firmId, {
+      provider: 'test', model: 'test-model', enabledBy: t.userId, crossCheck: true });
+    const p = await propose(doc(SAME_STATE, 'X1', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'),
+      readsAs('1000.00', '180.00', '1180.00'));
+    expect(p.crossChecked).toBe('agreed');
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('BLOCKS when the two readings differ', async () => {
+    /*
+     * The disagreement blocks rather than warns. When this was measured, both
+     * readings tied arithmetically — 50.00 + 9.00 = 59.00 and 327.96 + 59.04 =
+     * 387.00 are each internally consistent — so nothing available can pick
+     * the right one. We know one is wrong and cannot know which; posting
+     * either would be a coin toss carrying a provenance trail.
+     */
+    const p = await propose(doc(SAME_STATE, 'X2', 'IGST 18 %'),
+      interStateTable('50.00', '9.00', '59.00'),
+      readsAs('327.96', '59.04', '387.00'));
+    expect(p.crossChecked).toBe('disagreed');
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/two independent readings.*disagree/);
+    expect(p.blockers.join(' ')).toMatch(/taxable: 50\.00 vs 327\.96/);
+  });
+
+  it('does not treat a model that cannot read as dissent', async () => {
+    // It refuses 6 of 24 documents in the corpus, including a mainstream
+    // Indian format. Silence as dissent would block bills we read correctly.
+    const p = await propose(doc(SAME_STATE, 'X3', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'), silent);
+    expect(p.crossChecked).toBe('unavailable');
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('records "unavailable" rather than calling it agreement', async () => {
+    // Nobody confirmed the figures. That is worth knowing and is not the same
+    // fact as a second reader having checked them.
+    const p = await propose(doc(SAME_STATE, 'X4', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'), silent);
+    expect(p.crossChecked).not.toBe('agreed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('compareReadings', () => {
+  const table = (sums: Record<string, string>) =>
+    ({ readable: true, roles: [], header: [], rows: [], totals: null, sums }) as never;
+
+  it('says nothing when every figure matches', () => {
+    expect(compareReadings(
+      table({ taxable: '100.00', total: '118.00' }),
+      table({ taxable: '100.00', total: '118.00' }))).toEqual([]);
+  });
+
+  it('names each figure that differs', () => {
+    expect(compareReadings(
+      table({ taxable: '50.00', total: '59.00' }),
+      table({ taxable: '327.96', total: '387.00' })))
+      .toEqual(['taxable: 50.00 vs 327.96', 'total: 59.00 vs 387.00']);
+  });
+
+  it('counts a column one reader missed entirely as a difference', () => {
+    // The truncation defect could equally have shown up this way — one reader
+    // finding a CGST column the other never saw.
+    expect(compareReadings(
+      table({ taxable: '100.00' }),
+      table({ taxable: '100.00', cgst: '9.00' })))
+      .toEqual(['cgst: not found vs 9.00']);
   });
 });
