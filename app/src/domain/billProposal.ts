@@ -54,6 +54,7 @@ import { extractPdfText } from '../parse/pdf.ts';
 import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts';
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
 import { readInvoiceTableFromWords, type InvoiceTable } from '../parse/invoiceTable.ts';
+import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
 export interface BillProposal {
   /** Position of this document within the file, in page order. */
@@ -74,6 +75,12 @@ export interface BillProposal {
   warnings: string[];
   /** Present only when `blockers` is empty. */
   input: CreateBillInput | null;
+  /**
+   * How the figures were read. `llm` means the document left the building, so
+   * it belongs on the record beside the figures rather than in a log file.
+   */
+  readBy: 'coordinates' | 'llm';
+  llmProvenance?: { provider: string; model: string };
 }
 
 export interface ProposeInput {
@@ -87,6 +94,51 @@ export interface ProposeInput {
    * a reviewer splitting a bill across accounts edits the proposal.
    */
   expenseAccountId: string;
+  /**
+   * Optional extractor of last resort, tried ONLY when the deterministic paths
+   * refuse and ONLY when the firm has switched it on. Passing a client is not
+   * consent — `firm_ai_settings` is.
+   */
+  llm?: LlmClient;
+}
+
+/**
+ * Has this firm agreed that documents may be sent to a third-party model?
+ *
+ * No row means no. The default has to be off: uploading a client's invoice is
+ * a DPDP decision belonging to the firm as data fiduciary, and a default that
+ * exports documents would be making it for them.
+ */
+export async function llmExtractionEnabled(firmId: string): Promise<boolean> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ on: boolean }>(
+      'SELECT llm_extraction AS on FROM firm_ai_settings WHERE firm_id = $1',
+      [firmId]);
+    return r.rows[0]?.on === true;
+  });
+}
+
+/**
+ * Switches it on, naming who decided.
+ *
+ * The CHECK on `firm_ai_settings` makes the attribution mandatory rather than
+ * customary — an unattributed decision to export client documents is exactly
+ * what that table exists to prevent.
+ */
+export async function enableLlmExtraction(
+  firmId: string,
+  opts: { provider: string; model: string; enabledBy: string },
+): Promise<void> {
+  await withFirm(firmId, async (c) => {
+    await c.query(
+      `INSERT INTO firm_ai_settings
+         (firm_id, llm_extraction, llm_provider, llm_model, enabled_by, enabled_at)
+       VALUES ($1, true, $2, $3, $4, now())
+       ON CONFLICT (firm_id) DO UPDATE SET
+         llm_extraction = true, llm_provider = $2, llm_model = $3,
+         enabled_by = $4, enabled_at = now()`,
+      [firmId, opts.provider, opts.model, opts.enabledBy]);
+  });
 }
 
 /**
@@ -224,11 +276,36 @@ export async function proposeFromDocument(
   seg: DocumentSegment, pages: WordPage[], fileHash: string,
 ): Promise<BillProposal> {
   const profile = extractTaxProfile(seg);
-  const table = readInvoiceTableFromWords(
+  let table = readInvoiceTableFromWords(
     pages.filter((p) => seg.pages.includes(p.number)));
 
   const blockers: string[] = [];
   const warnings = taxProfileWarnings(seg, profile);
+  let readBy: BillProposal['readBy'] = 'coordinates';
+  let llmProvenance: { provider: string; model: string } | undefined;
+
+  /*
+   * The fallback, in that order: coordinates first, a model only if they
+   * failed AND the firm has agreed.
+   *
+   * Tried second rather than first on purpose. The coordinate path is
+   * deterministic, free, leaves the document in the building, and can point at
+   * the exact region a figure came from (PR-7). A model can do none of those,
+   * so it earns its turn only where the cheaper answer is unavailable.
+   */
+  if (!table.readable && input.llm && await llmExtractionEnabled(firmId)) {
+    const attempt = await readInvoiceTableFromLlm(seg.text, input.llm);
+    if (attempt.table.readable) {
+      table = attempt.table;
+      readBy = 'llm';
+      llmProvenance = attempt.provenance;
+      warnings.push(
+        `the figures on document ${seg.documentNumber ?? seg.index} were read ` +
+        `by ${attempt.provenance.provider}/${attempt.provenance.model}, not by ` +
+        'this software. They passed the same arithmetic checks, but the ' +
+        'document was sent to a third party to obtain them.');
+    }
+  }
 
   // --- supplier ------------------------------------------------------------
   let partyId: string | null = null;
@@ -359,7 +436,7 @@ export async function proposeFromDocument(
     index: seg.index, pages: seg.pages,
     documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName,
-    blockers, warnings,
+    blockers, warnings, readBy, llmProvenance,
     input: ready ? {
       clientId: input.clientId,
       partyId: partyId!,

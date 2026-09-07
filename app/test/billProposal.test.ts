@@ -14,7 +14,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { seedItcEligibility } from '../src/seed/tdsSections.ts';
-import { proposeFromDocument, postProposal, deriveGstRate } from '../src/domain/billProposal.ts';
+import { proposeFromDocument, postProposal, deriveGstRate,
+         llmExtractionEnabled, enableLlmExtraction } from '../src/domain/billProposal.ts';
+import type { LlmClient } from '../src/parse/llmTable.ts';
 import { splitDocuments } from '../src/parse/documentSplit.ts';
 import { wordsToRows, type Word, type WordPage } from '../src/parse/pdfWords.ts';
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
@@ -59,9 +61,10 @@ const doc = (supplier: string | null, number: string, taxLine: string) =>
     + (supplier ? `GSTIN - ${supplier}\n` : '')
     + `${taxLine}\nWhether tax is payable under reverse charge - No`)[0]!;
 
-const propose = (segment: ReturnType<typeof doc>, pages: WordPage[]) =>
+const propose = (segment: ReturnType<typeof doc>, pages: WordPage[],
+                 llm?: LlmClient) =>
   proposeFromDocument(t.firmId,
-    { clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases },
+    { clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases, llm },
     segment, pages, 'a'.repeat(64));
 
 beforeAll(async () => {
@@ -286,5 +289,120 @@ describe('the tax split is warned about, not blocked', () => {
     const p = await propose(
       doc(SAME_STATE, 'P21', 'Item CGST 9 % SGST 9 %'), intraStateTable());
     expect(p.warnings.join(' ')).not.toMatch(/place of supply/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/*
+ * The model is a fallback, and it is off until a firm says otherwise.
+ *
+ * Uploading a client's invoice is a DPDP decision belonging to the firm as data
+ * fiduciary. A default that exported documents would be making that decision
+ * for them, so no row means no.
+ */
+describe('a model as extractor of last resort', () => {
+  /** Returns a table that ties, and records whether it was asked at all. */
+  const spyLlm = (): LlmClient & { calls: number } => {
+    const c = {
+      provider: 'test', model: 'test-model', calls: 0,
+      async complete() {
+        c.calls++;
+        return JSON.stringify({
+          header: ['Description', 'Taxable Value', 'IGST', 'Total'],
+          rows: [['Example', '1000.00', '180.00', '1180.00']],
+        });
+      },
+    };
+    return c;
+  };
+
+  /** A table geometry the coordinate path cannot read: two amounts in a cell. */
+  const unreadable = () => page([
+    w('Qty', 40, 100), w('Taxable', 90, 100), w('Total', 220, 100),
+    w('1', 40, 130), w('1000.00 180.00', 90, 130), w('1180.00', 220, 130),
+  ]);
+
+  it('is off for a firm that has not switched it on', async () => {
+    expect(await llmExtractionEnabled(t.firmId)).toBe(false);
+  });
+
+  it('is not called when the firm has not consented', async () => {
+    // The check that must not fail open. Passing a client is not consent.
+    const llm = spyLlm();
+    const p = await propose(doc(SAME_STATE, 'L1', 'IGST 18 %'), unreadable(), llm);
+    expect(llm.calls).toBe(0);
+    expect(p.input).toBeNull();
+    expect(p.readBy).toBe('coordinates');
+  });
+
+  it('is not called when the coordinates already read the table', async () => {
+    /*
+     * Order matters. The coordinate path is deterministic, free, keeps the
+     * document in the building and can point at the region a figure came from
+     * (PR-7). A model can do none of those, so it only gets a turn where the
+     * cheaper answer is unavailable.
+     */
+    await enableLlmExtraction(t.firmId,
+      { provider: 'test', model: 'test-model', enabledBy: t.userId });
+    const llm = spyLlm();
+    const p = await propose(doc(SAME_STATE, 'L2', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'), llm);
+    expect(llm.calls).toBe(0);
+    expect(p.readBy).toBe('coordinates');
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('reads a document the coordinates refused, once consent exists', async () => {
+    const llm = spyLlm();
+    const p = await propose(doc(SAME_STATE, 'L3', 'IGST 18 %'), unreadable(), llm);
+    expect(llm.calls).toBe(1);
+    expect(p.readBy).toBe('llm');
+    expect(p.blockers).toEqual([]);
+    expect(p.table.sums.taxable).toBe('1000.00');
+  });
+
+  it('says on the record that the document left the building', async () => {
+    const p = await propose(doc(SAME_STATE, 'L4', 'IGST 18 %'), unreadable(), spyLlm());
+    expect(p.llmProvenance).toEqual({ provider: 'test', model: 'test-model' });
+    expect(p.warnings.join(' ')).toMatch(/sent to a third party/);
+  });
+
+  it('posts what the model read, through the same gates', async () => {
+    const p = await propose(doc(SAME_STATE, 'L5', 'IGST 18 %'), unreadable(), spyLlm());
+    const bill = await postProposal(t.firmId, p,
+      { billDate: '2026-07-01', approvedBy: t.userId });
+    expect(bill.taxableValue).toBe('1000.00');
+    expect(bill.totalGst).toBe('180.00');
+  });
+
+  it('stays blocked when the model returns figures that do not tie', async () => {
+    const liar: LlmClient = {
+      provider: 'test', model: 'test-model',
+      async complete() {
+        return JSON.stringify({
+          header: ['Description', 'Taxable Value', 'IGST', 'Total'],
+          rows: [['Example', '1000.00', '180.00', '9999.00']],
+        });
+      },
+    };
+    const p = await propose(doc(SAME_STATE, 'L6', 'IGST 18 %'), unreadable(), liar);
+    expect(p.input).toBeNull();
+    expect(p.readBy).toBe('coordinates');   // the attempt did not replace it
+  });
+
+  it('records who switched it on, because the CHECK demands it', async () => {
+    const r = await ownerPool.query<{ enabled_by: string; provider: string }>(
+      `SELECT enabled_by, llm_provider AS provider FROM firm_ai_settings
+       WHERE firm_id = $1`, [t.firmId]);
+    expect(r.rows[0]!.enabled_by).toBe(t.userId);
+    expect(r.rows[0]!.provider).toBe('test');
+  });
+
+  it('cannot be switched on anonymously', async () => {
+    // `llm_extraction_is_attributed` — an unattributed decision to export
+    // client documents is what the table exists to prevent.
+    await expect(ownerPool.query(
+      `INSERT INTO firm_ai_settings (firm_id, llm_extraction) VALUES ($1, true)`,
+      [t.firmId])).rejects.toThrow();
   });
 });
