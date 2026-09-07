@@ -166,9 +166,21 @@ export async function createBill(
       throw new ValidationError(`invalid place of supply "${placeOfSupply}"`, 'PB-6');
     }
 
+    /*
+     * A supplier outside India is ALWAYS an inter-state supply — IGST s.7(4).
+     *
+     * The fallback here was `true`, treating every supplier without a GSTIN as
+     * local. That is right for an unregistered Indian vendor and wrong for an
+     * import of service, which would have posted CGST and SGST on a liability
+     * the law puts entirely under IGST — the figures correct, the heads wrong,
+     * and the return wrong with them.
+     *
+     * `gst_category` has carried an 'overseas' value since the parties table
+     * was written and nothing had ever read it.
+     */
     const intraState = sup.gstin
       ? isIntraState(sup.gstin, placeOfSupply)
-      : true;   // unregistered supplier — treat as local
+      : sup.gst_category !== 'overseas';
 
     // --- ITC eligibility, per line (§6.2) -----------------------------------
     /*
@@ -331,6 +343,7 @@ export async function createBill(
       // The vendor's own total decides the rounding, for the same reason their
       // tax decides the tax: this is their document, not our computation.
       input.claimedTotals?.grandTotal,
+      !(input.isReverseCharge ?? false),
     );
 
     /*

@@ -89,6 +89,27 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.pdf'))) {
   }
 }
 
+/*
+ * Suppliers outside India, which have no GSTIN to be found by.
+ *
+ * `billProposal` matches these by looking for a party's NAME in the document,
+ * so the names here are the ones actually printed on the four foreign invoices
+ * in the corpus. They are created with gst_category 'overseas', which is what
+ * makes the tax post to IGST rather than being split as a local supply.
+ *
+ * Hardcoded, and only defensible because this tenant is disposable: a real
+ * onboarding names its own foreign vendors.
+ */
+const OVERSEAS = ['Anomaly', 'Lietparkas', 'Hetzner Online GmbH', 'Kamatera'];
+for (const name of OVERSEAS) {
+  await ownerPool.query(
+    `INSERT INTO parties (firm_id, client_id, party_type, name,
+                          gst_category, ledger_account_id, created_by)
+     VALUES ($1,$2,'supplier',$3,'overseas',$4,$5)
+     ON CONFLICT DO NOTHING`,
+    [t.firmId, t.clientId, name, creditors, t.userId]);
+}
+
 console.log(`firm      ${t.firmId}`);
 console.log(`client    ${t.clientId}`);
 console.log(`purchases ${purchases}`);

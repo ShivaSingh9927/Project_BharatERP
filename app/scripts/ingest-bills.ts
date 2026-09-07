@@ -30,6 +30,21 @@ import { closePools } from '../src/db/pool.ts';
 
 const [firmId, clientId, expenseAccountId, dir] = process.argv.slice(2);
 const post = process.argv.includes('--post');
+
+/*
+ * Treat documents with no GSTIN as imports of service, taxed at this rate.
+ *
+ * Deliberately a flag rather than a default. Supplying it is the filer saying
+ * these suppliers are outside India and the tax is owed here — a decision with
+ * money attached, which no amount of reading the paper can make.
+ *
+ *   --rcm-rate=18 --fx=USD:88.20,EUR:96.50
+ */
+const flag = (n: string) =>
+  process.argv.find((a) => a.startsWith(`--${n}=`))?.split('=').slice(1).join('=');
+const rcmRate = flag('rcm-rate');
+const fx = new Map((flag('fx') ?? '').split(',').filter(Boolean)
+  .map((p) => p.split(':') as [string, string]));
 const approvedBy = process.env.APPROVED_BY;
 
 if (!firmId || !clientId || !expenseAccountId || !dir) {
@@ -68,7 +83,34 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
       clientId, file: readFileSync(join(dir, file)),
       createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
       expenseAccountId, llm, sourceUri: `file://${join(dir, file)}`,
+      ...(rcmRate === undefined ? {} : { reverseCharge: { rate: rcmRate } }),
     });
+
+    /*
+     * A second pass once the currency is known.
+     *
+     * The exchange rate needed depends on what the document is written in, and
+     * that is only known after reading it — so the first pass reports the
+     * currency and this one supplies the rate for it. Cheap: everything is
+     * already parsed, and only documents actually blocked for want of a rate
+     * come back through.
+     */
+    if (rcmRate !== undefined && fx.size > 0) {
+      const needs = proposals.some((p) =>
+        p.blockers.some((b) => /no exchange rate was given/.test(b)));
+      if (needs) {
+        const cur = [...fx.keys()].find((c) =>
+          proposals.some((p) => p.blockers.some((b) => b.includes(`in ${c} `))));
+        if (cur !== undefined) {
+          proposals = await proposeBills(firmId, {
+            clientId, file: readFileSync(join(dir, file)),
+            createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
+            expenseAccountId, llm, sourceUri: `file://${join(dir, file)}`,
+            reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! },
+          });
+        }
+      }
+    }
   } catch (e) {
     console.log(`  could not read the file: ${(e as Error).message}\n`);
     continue;

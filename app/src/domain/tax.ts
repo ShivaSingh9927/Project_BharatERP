@@ -232,6 +232,17 @@ export function computeInvoice(
    * below — see `resolveRounding`.
    */
   statedGrandTotal?: string,
+  /**
+   * False for a reverse-charge bill, where nothing is rounded.
+   *
+   * Under RCM the supplier is owed the taxable value and the tax goes to the
+   * government, so there is no single payable figure to round to a rupee —
+   * and `buildEntries` deliberately posts no round-off there, because both
+   * legs use unrounded values and a round-off would unbalance the voucher.
+   * Rounding anyway stored a grand total of 1096.00 on a bill whose entries
+   * came to 1096.22: a header disagreeing with its own lines.
+   */
+  round = true,
 ): ComputedInvoice {
   if (lines.length === 0) {
     throw new ValidationError('invoice has no line items', 'SI-7');
@@ -249,7 +260,7 @@ export function computeInvoice(
 
   const beforeRounding = taxableValue + totalCgst + totalSgst + totalIgst + totalCess;
 
-  const roundOff = resolveRounding(beforeRounding, statedGrandTotal);
+  const roundOff = round ? resolveRounding(beforeRounding, statedGrandTotal) : 0n;
 
   return {
     lines: computed,

@@ -57,6 +57,7 @@ import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse
 import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
 import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
+import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
 
 export interface BillProposal {
@@ -117,6 +118,24 @@ export interface ProposeInput {
    * to register the document so every posted figure can point back at it.
    */
   sourceUri?: string;
+  /**
+   * The filer's decision that this file is an import of service, and the
+   * figures that decision needs.
+   *
+   * Absent, a document with no GSTIN is reported and blocked. Nothing here can
+   * be read off the paper: an imported service charges no GST, so the document
+   * never states the rate its supply attracts, and a foreign invoice never
+   * states a rupee value. Both are the filer's to supply, and supplying them
+   * IS the classification — see `importOfService.ts`.
+   */
+  reverseCharge?: {
+    /** The rate the supply attracts in India, e.g. '18'. */
+    rate: string;
+    /** Rupees per unit of the document's currency. Not needed for a rupee bill. */
+    exchangeRate?: string;
+    /** When the supplier was paid, if known — it can move the time of supply. */
+    paymentDate?: string;
+  };
 }
 
 /**
@@ -392,6 +411,39 @@ async function findSupplier(
   });
 }
 
+/**
+ * Finds which supplier on file a foreign document is from, by looking for
+ * their names IN it.
+ *
+ * The inversion matters. Reading a supplier's name off an invoice is guesswork
+ * — the largest text on the page is as often a logo, a product or the buyer —
+ * whereas checking a known list of names against the text is a decision with
+ * an answer. Only parties with no GSTIN are considered, because a registered
+ * supplier is found by their GSTIN and would not be here.
+ *
+ * Silence beats a guess in both directions: no match blocks, and so does more
+ * than one.
+ */
+async function findOverseasSupplier(
+  firmId: string, clientId: string, text: string,
+): Promise<{ id: string; name: string } | 'none' | 'ambiguous'> {
+  const haystack = text.toLowerCase();
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ id: string; name: string }>(
+      `SELECT id, name FROM parties
+        WHERE client_id = $1 AND party_type = 'supplier'
+          AND gstin IS NULL AND is_active`,
+      [clientId]);
+
+    const hits = r.rows.filter((p) =>
+      p.name.trim().length >= 3 && haystack.includes(p.name.trim().toLowerCase()));
+
+    if (hits.length === 0) return 'none';
+    if (hits.length > 1) return 'ambiguous';
+    return hits[0]!;
+  });
+}
+
 /** Reads a file and proposes one bill per document it contains. */
 export async function proposeBills(
   firmId: string, input: ProposeInput,
@@ -423,10 +475,15 @@ export async function proposeFromDocument(
 ): Promise<BillProposal> {
   const profile = extractTaxProfile(seg);
   let table = readInvoiceTableFromWords(
-    pages.filter((p) => seg.pages.includes(p.number)));
+    pages.filter((p) => seg.pages.includes(p.number)), profile.charged);
 
   const blockers: string[] = [];
   const warnings = taxProfileWarnings(seg, profile);
+  const currency = tableCurrency(table);
+  const pageText = pages
+    .filter((p) => seg.pages.includes(p.number))
+    .flatMap((p) => p.rows.map((r) => r.words.map((w) => w.text).join(' ')))
+    .join('\n');
   let readBy: BillProposal['readBy'] = 'coordinates';
   let llmProvenance: { provider: string; model: string } | undefined;
   let crossChecked: BillProposal['crossChecked'] = 'off';
@@ -443,7 +500,7 @@ export async function proposeFromDocument(
   const ai = input.llm ? await llmSettings(firmId) : { extraction: false, crossCheck: false };
 
   if (!table.readable && input.llm && ai.extraction) {
-    const attempt = await readInvoiceTableFromLlm(seg.text, input.llm!);
+    const attempt = await readInvoiceTableFromLlm(seg.text, input.llm, profile.charged);
     if (attempt.table.readable) {
       table = attempt.table;
       readBy = 'llm';
@@ -470,7 +527,7 @@ export async function proposeFromDocument(
      * of 24 documents in the corpus including a mainstream Indian format, so
      * treating silence as dissent would block bills we read correctly.
      */
-    const second = await readInvoiceTableFromLlm(seg.text, input.llm!);
+    const second = await readInvoiceTableFromLlm(seg.text, input.llm, profile.charged);
     if (second.table.readable) {
       const diffs = compareReadings(table, second.table);
       if (diffs.length > 0) {
@@ -503,21 +560,62 @@ export async function proposeFromDocument(
     blockers.push(`the invoice date could not be read — ${dateRead.reason}`);
   }
 
+  /*
+   * A bill needs the supplier's own invoice number, and `input.billNumber` has
+   * been asserting one exists with a `!` that was not true.
+   *
+   * A Lithuanian invoice heads itself "Invoice PC-699272" rather than
+   * "Invoice No: ...", so no number was read, nothing blocked it, and
+   * `createBill` was handed a null straight into a NOT NULL column. Refusing
+   * here says why; the constraint only said what.
+   *
+   * Not worth guessing at. GSTR-2B matches on this number, and an invented one
+   * reconciles against nothing.
+   */
+  if (seg.documentNumber === null) {
+    blockers.push(
+      'no invoice number could be read from this document. GSTR-2B matches on ' +
+      "the supplier's own number, so it cannot be left out or made up.");
+  }
+
   // --- supplier ------------------------------------------------------------
   let partyId: string | null = null;
   let partyName: string | null = null;
 
   if (seg.supplierGstin === null) {
     /*
-     * A foreign supplier: no GSTIN, no GST. These are imports of service and
-     * belong on the reverse-charge path — a valid bill, but one whose supplier
-     * cannot be found by GSTIN and whose tax the recipient owes. Blocked here
-     * rather than treated as an error.
+     * No GSTIN. Either a supplier outside India — an import of service, on
+     * which the recipient owes the tax — or an unregistered Indian one, on
+     * which usually nothing is owed. The document cannot tell them apart and
+     * neither can this code, so the caller decides by supplying the rate.
      */
-    blockers.push(
-      'no supplier GSTIN appears on this document. If the supplier is outside ' +
-      'India this is an import of service and the tax falls on the recipient ' +
-      'under reverse charge — choose the supplier by hand.');
+    if (input.reverseCharge === undefined) {
+      blockers.push(
+        'no supplier GSTIN appears on this document. If the supplier is ' +
+        'outside India this is an import of service, and the GST is owed by ' +
+        'the recipient under reverse charge — at a rate the document cannot ' +
+        'state, because it charges none' +
+        (currency.currency !== null && currency.currency !== 'INR'
+          ? `. Its figures are in ${currency.currency}, so a rupee value needs ` +
+            'an exchange rate as well'
+          : '') +
+        '. Supply the rate to treat it as an import; otherwise post it by hand.');
+    } else {
+      const found = await findOverseasSupplier(firmId, input.clientId, pageText);
+      if (found === 'none') {
+        blockers.push(
+          'no supplier is on file for this document. Add the vendor first, ' +
+          "with gst_category 'overseas' so the tax posts to IGST — creating " +
+          'one from a PDF would leave an unreviewed master record behind ' +
+          'every future bill from them.');
+      } else if (found === 'ambiguous') {
+        blockers.push(
+          'more than one supplier on file is named on this document, so which ' +
+          'one it is from cannot be settled from the paper. Post it by hand.');
+      } else {
+        partyId = found.id; partyName = found.name;
+      }
+    }
   } else {
     const check = validateGstin(seg.supplierGstin);
     if (!check.valid) {
@@ -592,8 +690,54 @@ export async function proposeFromDocument(
    */
   if (table.warnings) warnings.push(...table.warnings);
 
+  /*
+   * This document is being treated as an import of service: no GSTIN on it,
+   * and the caller has named the rate its supply attracts.
+   */
+  const rcm = seg.supplierGstin === null && input.reverseCharge !== undefined;
+  let fxRate: string | null = 'skip';
+
+  if (rcm) {
+    if (currency.mixed.length > 0) {
+      blockers.push(
+        `the figures on this document are in more than one currency ` +
+        `(${currency.mixed.join(', ')}), so they cannot be added together or ` +
+        'converted. Either the columns were misread or this is not one ' +
+        'invoice — a human has to look.');
+      fxRate = null;
+    } else if (currency.currency === 'INR' || currency.currency === null) {
+      // Billed in rupees, as one US supplier in the corpus does. Nothing to
+      // convert, and converting anyway would be the error.
+      fxRate = '1';
+      if (currency.currency === null) {
+        warnings.push(
+          'no currency mark appears on this document\'s figures, so they are ' +
+          'taken as rupees. Check that before approving — a foreign supplier ' +
+          'billing without a symbol would post at a fraction of its value.');
+      }
+    } else if (input.reverseCharge!.exchangeRate === undefined) {
+      blockers.push(
+        `this document is in ${currency.currency} and no exchange rate was ` +
+        'given. Rule 34(2) fixes the rate as the one applicable under GAAP on ' +
+        'the date of the time of supply, which is the filer\'s evidence to ' +
+        'produce — nothing on the document supplies it and this software will ' +
+        'not invent one.');
+      fxRate = null;
+    } else {
+      fxRate = input.reverseCharge!.exchangeRate;
+      warnings.push(
+        `the rupee figures on this bill were converted from ${currency.currency} ` +
+        `at ${fxRate}, a rate supplied by the filer and not read from the ` +
+        'document (Rule 34(2)). The evidence for it belongs in the file.' +
+        (currency.assumed
+          ? ' The currency itself was taken from a bare "$", which several ' +
+            'countries use — confirm it is US dollars.'
+          : ''));
+    }
+  }
+
   const lines: BillLineInput[] = [];
-  if (table.readable) {
+  if (table.readable && fxRate !== null) {
     const taxable = table.sums.taxable!;
     const tax = money(
       paise(table.sums.cgst ?? '0') + paise(table.sums.sgst ?? '0')
@@ -626,16 +770,37 @@ export async function proposeFromDocument(
      * were plausible and the arithmetic only ever looked at the figures.
      */
     const items = itemRows.flatMap((r) => {
-      const raw = r.by.taxable?.trim();
+      /*
+       * On a document that charges no tax there is no taxable COLUMN — the
+       * total is the taxable value, which `gradeTable` records in the sums but
+       * cannot invent per row. Reading only `by.taxable` here found nothing on
+       * all four foreign invoices, so every one of them proposed a bill with
+       * no lines at all and `createBill` refused it as empty.
+       */
+      const raw = (table.taxableFromTotal ? r.by.total : r.by.taxable)?.trim();
       if (raw === undefined || raw === '') return [];
       try { return [{ row: r, taxable: parseAmount(raw).value }]; }
       catch { return []; }
     });
     const lineTaxables = items.map((it) => it.taxable);
 
-    const rate = deriveGstRate(
-      lineTaxables.length > 0 ? lineTaxables : taxable,
-      tax, profile.rates, profile.taxKind === 'intra');
+    /*
+     * An import of service is taxed at a rate the document does not state,
+     * because it charges no tax at all. Deriving one would return 0% — true of
+     * what the supplier charged and false of what is owed.
+     */
+    const rate = rcm
+      ? input.reverseCharge!.rate
+      : deriveGstRate(
+          lineTaxables.length > 0 ? lineTaxables : taxable,
+          tax, profile.rates, profile.taxKind === 'intra');
+
+    if (rcm && !STATUTORY_RATES.includes(rate as never)) {
+      blockers.push(
+        `"${rate}" is not a GST rate. An import of service is taxed at the ` +
+        'rate its supply would attract in India — one of ' +
+        `${STATUTORY_RATES.join('%, ')}%.`);
+    }
 
     if (rate === null) {
       blockers.push(
@@ -695,7 +860,7 @@ export async function proposeFromDocument(
           description: row.by.description?.trim()
             || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
           hsnSac: row.by.hsn?.replace(/^\D+/, '').trim() || undefined,
-          unitPrice: tv,
+          unitPrice: rcm ? toRupees(tv, fxRate!) : tv,
           quantity: '1',
           gstRate: rate,
           expenseAccountId: input.expenseAccountId,
@@ -707,7 +872,13 @@ export async function proposeFromDocument(
            * means the document did not break the tax down that far, and
            * passing '' or 0 would assert the supplier charged nothing.
            */
-          chargedTax: chargedOn(row),
+          /*
+           * Nothing to defer to on an import: the supplier charged no tax, so
+           * the figure here is one this software owes and computes, not one it
+           * read. That is the opposite of every other bill and is exactly why
+           * reverse charge is the case people get wrong.
+           */
+          chargedTax: rcm ? undefined : chargedOn(row),
         });
       }
     }
@@ -718,6 +889,30 @@ export async function proposeFromDocument(
       'the document does not say whether it is a tax invoice or a bill of ' +
       'supply, and its rates could not be read — input credit must not be ' +
       'claimed on it unread.');
+  }
+
+  /*
+   * When the tax actually falls due — IGST s.13(3), and NOT the invoice date.
+   *
+   * Worth stating on every one of these, because the liability is the
+   * recipient's and nobody sends a reminder: it is the earlier of payment and
+   * the sixtieth day after the supplier's invoice, it is payable in cash
+   * rather than out of credit, and the credit comes back only once it is paid.
+   */
+  if (rcm && dateRead.date) {
+    const paid = input.reverseCharge!.paymentDate;
+    const tos = paid === undefined
+      ? timeOfSupply(dateRead.date)
+      : timeOfSupply(dateRead.date, paid);
+    warnings.push(
+      `reverse charge: the GST on this bill is owed by the recipient, not the ` +
+      `supplier. It falls due on ${tos.date} — ${tos.basis} — must be paid in ` +
+      'cash rather than set off against credit, and is claimable back only ' +
+      'after that payment.');
+    warnings.push(
+      'section 31(3)(f) requires the recipient to raise a self-invoice for a ' +
+      'supply taxed this way. This bill records the supplier\'s document; the ' +
+      'self-invoice is not generated yet and has to be raised separately.');
   }
 
   const ready = blockers.length === 0;
@@ -732,7 +927,7 @@ export async function proposeFromDocument(
       partyId: partyId!,
       billNumber: seg.documentNumber!,
       billDate: dateRead.date!,          // a blocker above if it could not be read
-      isReverseCharge: profile.reverseCharge === true,
+      isReverseCharge: profile.reverseCharge === true || rcm,
       lines,
       createdBy: input.createdBy,
       createdVia: 'ai_proposal',
@@ -742,7 +937,13 @@ export async function proposeFromDocument(
       // schema is what makes that true rather than this comment.
       // The document's own printed figures, so PB-4 recomputes and compares
       // rather than trusting what this module derived.
-      claimedTotals: {
+      /*
+       * Nothing to cross-check on an import. PB-4 compares the figures we
+       * computed against the ones the vendor printed, and this vendor printed
+       * no tax and no rupee total — passing its foreign total as a grand total
+       * would compare a dollar figure to a rupee one and refuse a correct bill.
+       */
+      claimedTotals: rcm ? undefined : {
         cgst: table.sums.cgst, sgst: table.sums.sgst, igst: table.sums.igst,
         grandTotal: table.sums.total,
       },

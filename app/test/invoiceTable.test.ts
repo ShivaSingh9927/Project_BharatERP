@@ -360,6 +360,26 @@ describe('a document with no tax at all', () => {
     expect(statedTotalsInText('Traffic routing; #532846  1  $9.00')).toEqual([]);
   });
 
+  it('does not apply when the document says it charges tax, whatever the columns say', () => {
+    /*
+     * The case the cross-check caught. Amazon separates its numeric columns by
+     * a single space, so the coordinate reader recovers no tax column from it
+     * — and judged on columns alone the document looked untaxed, so its net
+     * amount of 2626.27 became the whole bill and 472.73 of IGST on the paper
+     * disappeared. It posted, and was noticed only because the model read the
+     * same page and disagreed.
+     *
+     * "No tax column was found" is not "this document charges no tax".
+     */
+    const header = ['Description', 'Qty', 'Amount'];
+    const rows = [['Example Item', '1', '2626.27']];
+    expect(gradeTable(header, rows, ['2626.27'], 'no').readable).toBe(true);
+    expect(gradeTable(header, rows, ['2626.27'], 'yes').readable).toBe(false);
+    // Nor does an undetermined answer unlock it: that is the document not to
+    // assume about.
+    expect(gradeTable(header, rows, ['2626.27'], 'unreadable').readable).toBe(false);
+  });
+
   it('does not apply where the document does charge tax', () => {
     /*
      * The relaxation is only safe because there is no tax to check against.

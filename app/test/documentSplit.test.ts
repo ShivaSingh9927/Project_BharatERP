@@ -435,3 +435,27 @@ describe('a heading that sits below the letterhead', () => {
     expect(segs[0]!.kind).toBe('tax_invoice');
   });
 });
+
+describe('an invoice number with no label at all', () => {
+  it('reads a line that is nothing but "Invoice" and the number', () => {
+    /*
+     * A Lithuanian supplier heads its page this way. Nothing read the number,
+     * nothing blocked the bill, and `createBill` was handed a null straight
+     * into a NOT NULL column — the constraint said what, not why.
+     */
+    const [d] = splitDocuments('Invoice PC-699272\nSeptember 05, 2026\n');
+    expect(d!.documentNumber).toBe('PC-699272');
+  });
+
+  it('does not mistake a label or a heading for a number', () => {
+    // The token must carry a digit and stand alone on its line.
+    expect(splitDocuments('Invoice Date: 05/09/2026\n')[0]!.documentNumber).toBeNull();
+    expect(splitDocuments('Invoice to Shiva Singh\n')[0]!.documentNumber).toBeNull();
+    expect(splitDocuments('Invoice\n')[0]!.documentNumber).toBeNull();
+  });
+
+  it('still prefers a labelled number when the document has one', () => {
+    const [d] = splitDocuments('Invoice XYZ-1\nInvoice Number : T9\n');
+    expect(d!.documentNumber).toBe('T9');
+  });
+});

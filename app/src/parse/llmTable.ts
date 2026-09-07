@@ -38,6 +38,7 @@
  */
 
 import { gradeTable, type InvoiceTable } from './invoiceTable.ts';
+import type { Charged } from './invoiceTax.ts';
 
 /**
  * The transport, kept behind an interface for two reasons: the tests must run
@@ -161,6 +162,8 @@ const FENCE_CLOSE = 'DOCUMENT>>>';
  */
 export async function readInvoiceTableFromLlm(
   documentText: string, client: LlmClient,
+  /** Whether the document charges tax — see `gradeTable`. Same gate, same rule. */
+  chargedByDocument: Charged = 'no',
 ): Promise<LlmReadResult> {
   const provenance = { provider: client.provider, model: client.model };
   const unreadable = (reason: string): LlmReadResult => ({
@@ -199,7 +202,10 @@ export async function readInvoiceTableFromLlm(
     return unreadable(`${client.model} found no line-item table in this document`);
   }
 
-  return { table: gradeTable(shaped.header, shaped.rows), provenance };
+  return {
+    table: gradeTable(shaped.header, shaped.rows, [], chargedByDocument),
+    provenance,
+  };
 }
 
 /**

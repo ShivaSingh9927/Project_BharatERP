@@ -58,6 +58,7 @@ import type { WordPage } from './pdfWords.ts';
 import { parseAmount } from './values.ts';
 import { paise, money } from '../domain/tax.ts';
 import type { DocumentSegment } from './documentSplit.ts';
+import type { Charged } from './invoiceTax.ts';
 
 /** What a column holds. Only the money roles take part in the arithmetic. */
 export type ColumnRole =
@@ -120,6 +121,12 @@ export interface InvoiceTable {
    * strict enough to name, not fatal enough to refuse.
    */
   warnings?: string[];
+  /**
+   * True when this document charges no tax and its total column IS its taxable
+   * value. Callers reading figures PER ROW need to know: the sums say taxable,
+   * and no column does.
+   */
+  taxableFromTotal?: boolean;
   /**
    * The difference the vendor rounded away, when the parts and the stated
    * total differ by less than a rupee. Signed as the document sees it:
@@ -317,7 +324,9 @@ export function readInvoiceTable(segment: DocumentSegment): InvoiceTable {
  * columns should prove itself against the same exam, not against a looser one
  * written to suit it.
  */
-export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
+export function readInvoiceTableFromWords(
+  pages: WordPage[], chargedByDocument: Charged = 'no',
+): InvoiceTable {
   const allRows = pages.flatMap((p) => p.rows);
   const t = tableFromRows(allRows);
   // The page as text, so a total floated outside the table can still check it.
@@ -329,7 +338,8 @@ export function readInvoiceTableFromWords(pages: WordPage[]): InvoiceTable {
       reason: 'no row of words looks like a table header',
     };
   }
-  const graded = gradeTable(t.header, t.rows, statedTotalsInText(text));
+  const graded = gradeTable(
+    t.header, t.rows, statedTotalsInText(text), chargedByDocument);
 
   /*
    * The bands were computed and discarded until now, which made a documented
@@ -427,6 +437,14 @@ export function gradeTable(
   header: string[], dataRows: string[][],
   /** Figures the surrounding text calls a total — see `statedTotalsInText`. */
   statedTotals: readonly string[] = [],
+  /**
+   * Whether the DOCUMENT charges tax, read from its running text by
+   * `invoiceTax.ts` — which does not depend on the columns being found.
+   *
+   * Only 'no' unlocks the untaxed path below, and the distinction is one this
+   * code got wrong. See the note there.
+   */
+  chargedByDocument: Charged = 'no',
 ): InvoiceTable {
   const roles = header.map(roleOf);
   resolveBareAmount(header, roles);
@@ -530,7 +548,24 @@ export function gradeTable(
    * established that above, and without a totals row there is no check and the
    * figure stays refused.
    */
-  const untaxed = !roles.some((r) =>
+  /*
+   * "No tax column was found" is NOT "this document charges no tax", and
+   * conflating them cost a real invoice.
+   *
+   * An Amazon invoice separates its numeric columns by a single space, below
+   * what a gutter can detect, so the coordinate reader recovers no tax column
+   * from it — a known limitation, and the reason the model exists as a
+   * fallback. Judged on its columns alone that document looked untaxed, so its
+   * net amount of 2626.27 was taken as the whole bill and the 472.73 of IGST
+   * on the paper vanished. It was caught only because the model read the same
+   * page and disagreed.
+   *
+   * The document's own text settles it. `invoiceTax` reads the tax NAMES from
+   * running text, which works whether or not the columns can be found, and
+   * only an explicit 'no' unlocks this. 'unreadable' does not: a document
+   * whose tax could not be determined is exactly the one not to assume about.
+   */
+  const untaxed = chargedByDocument === 'no' && !roles.some((r) =>
     (['cgst', 'sgst', 'igst', 'cess', 'tax_amount'] as ColumnRole[]).includes(r));
   if (untaxed && table.sums.total !== undefined
       && table.sums.taxable === undefined) {
@@ -567,6 +602,7 @@ export function gradeTable(
     }
 
     table.sums.taxable = table.sums.total;
+    table.taxableFromTotal = true;
     table.warnings = [
       ...(table.warnings ?? []),
       'this document charges no tax, so its total is taken as the taxable ' +

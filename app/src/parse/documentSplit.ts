@@ -143,6 +143,18 @@ const NUMBER_LABELS = [
   /\bbill\s+of\s+supply\s+number\b\s*[#:]?\s*(\S+)/i,
   /\binvoice\s+(?:number|no)\b\.?\s*[#:]?\s*(\S+)/i,
   /\binvoice\s*#\s*(\S+)/i,
+  /*
+   * A line that is nothing but "Invoice" and the number.
+   *
+   * A Lithuanian supplier heads its page "Invoice PC-699272" with no label at
+   * all, so no number was read and the bill reached `createBill` with a null
+   * straight into a NOT NULL column.
+   *
+   * Anchored to a whole line, and the token must carry a digit and no spaces,
+   * which is what keeps "Invoice Date", "Invoice to" and a heading followed by
+   * prose out of it. Last in the list, so any labelled form still wins.
+   */
+  /^[ \t]*invoice[ \t]+([^\s:]*\d[^\s:]*)[ \t]*$/im,
 ];
 
 /**
