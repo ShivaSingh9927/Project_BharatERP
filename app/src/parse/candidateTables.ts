@@ -69,7 +69,7 @@ export interface ParserResult {
 }
 
 export interface ParserClient {
-  read(pdf: Buffer, opts?: { ocr?: 'auto' | 'on' | 'off' }): Promise<ParserResult>;
+  read(file: Buffer, opts?: { ocr?: 'auto' | 'on' | 'off' }): Promise<ParserResult>;
 }
 
 /**
@@ -223,14 +223,14 @@ const DEFAULT_URL = 'http://127.0.0.1:8423';
 
 export function parserHttpClient(baseUrl = DEFAULT_URL): ParserClient {
   return {
-    async read(pdf, opts) {
+    async read(file, opts) {
       const r = await fetch(`${baseUrl}/extract`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/pdf',
           'X-OCR': opts?.ocr ?? 'auto',
         },
-        body: new Uint8Array(pdf),
+        body: new Uint8Array(file),
       });
       if (!r.ok) {
         throw new Error(

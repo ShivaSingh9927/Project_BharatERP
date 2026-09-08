@@ -85,7 +85,10 @@ let posted = 0, ready = 0, blocked = 0, needsAnswer = 0;
 const tally = { coordinates: 0, candidates: 0, summary: 0, charges: 0, docling: 0, llm: 0 };
 const checks = { off: 0, not_needed: 0, agreed: 0, disagreed: 0, unavailable: 0 };
 
-for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
+// Photographs too: an SMB sends an invoice as a picture more often than as a
+// PDF, and the pipeline reads one by OCR through the structure sidecar.
+const READABLE = /\.(?:pdf|jpe?g|png|webp|tiff?|bmp)$/i;
+for (const file of readdirSync(dir).filter((f) => READABLE.test(f)).sort()) {
   console.log(`### ${file}`);
   let proposals;
   try {

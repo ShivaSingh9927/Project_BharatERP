@@ -225,7 +225,82 @@ def _ocr_pages(data: bytes) -> tuple:
     return "\n".join(text_parts), tables
 
 
+# Magic bytes. Sniffed rather than trusted from a filename or a content type,
+# because both are supplied by whoever is uploading.
+IMAGE_MAGIC = (
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"GIF87a", "gif"), (b"GIF89a", "gif"),
+    (b"BM", "bmp"),
+    (b"II*\x00", "tiff"), (b"MM\x00*", "tiff"),
+)
+
+
+def _is_pdf(data: bytes) -> bool:
+    return data[:5] == b"%PDF-"
+
+
+def _image_kind(data: bytes):
+    for magic, kind in IMAGE_MAGIC:
+        if data.startswith(magic):
+            return kind
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _ocr_image(data: bytes) -> dict:
+    """
+    A photograph of an invoice — the WhatsApp channel, and the one with no text
+    layer to fall back on.
+
+    Read exactly like a scanned page: OCR to words, words to rows, rows offered
+    as a candidate table for the same gates. Coordinates are kept, in the
+    image's own pixels, so a figure can still be pointed at on the picture.
+    """
+    import io as _io
+    import numpy as np
+    from PIL import Image
+    from rapidocr_onnxruntime import RapidOCR
+
+    img = Image.open(_io.BytesIO(data))
+    img = img.convert("RGB")
+    res, _ = RapidOCR()(np.array(img))
+    if not res:
+        return {"pages": 1, "route": "ocr", "text": "", "tables": []}
+
+    items = []
+    for box, txt, conf in res:
+        x0 = min(p[0] for p in box); y0 = min(p[1] for p in box)
+        x1 = max(p[0] for p in box); y1 = max(p[1] for p in box)
+        items.append((y0, x0, x1, y1, txt))
+    items.sort()
+
+    buckets: dict = {}
+    for y0, x0, x1, y1, txt in items:
+        buckets.setdefault(round(y0 / max(img.height / 200.0, 1.0)), []).append((x0, x1, y1, txt))
+    rows, boxes = [], []
+    for k in sorted(buckets):
+        ws = sorted(buckets[k])
+        rows.append([w[3] for w in ws])
+        boxes.append([[w[0], k, w[1], w[2]] for w in ws])
+
+    text = "\n".join(" ".join(r) for r in rows)
+    tables = [{"page": 1, "method": "ocr-words", "cells": rows, "boxes": boxes,
+               "pageWidth": float(img.width), "pageHeight": float(img.height)}] if rows else []
+    return {"pages": 1, "route": "ocr", "text": text, "tables": tables}
+
+
 def extract(data: bytes, ocr_mode: str = "auto") -> dict:
+    if not _is_pdf(data):
+        kind = _image_kind(data)
+        if kind is None:
+            raise ValueError("not a PDF and not an image this reader recognises")
+        if ocr_mode == "off":
+            return {"pages": 1, "route": "digital", "text": "", "tables": []}
+        log.info("image (%s), reading by OCR", kind)
+        return _ocr_image(data)
+
     tables, text_parts = [], []
     pages = 0
     with pdfplumber.open(io.BytesIO(data)) as pdf:

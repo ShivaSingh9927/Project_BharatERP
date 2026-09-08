@@ -135,13 +135,28 @@ const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/;
  * Document-number labels seen on the corpus. The value is whatever follows,
  * up to whitespace — no invoice number on any of them contains a space.
  *
+ * The space between the words is optional and the colon may be full-width.
+ * Both are OCR artefacts rather than vendor style: read from a photograph the
+ * same label arrives as "InvoiceNo. ：92102915", and requiring a plain space
+ * and a plain colon lost the number on every photographed bill.
+ *
  * `#` and `:` are both optional and both appear: Flipkart writes
  * "Invoice Number # FBF0326005974791", the seller's own system writes
  * "Invoice No: FACOEY2600014257", Hetzner writes "Invoice no.: 083001108949".
  */
 const NUMBER_LABELS = [
   /\bbill\s+of\s+supply\s+number\b\s*[#:]?\s*(\S+)/i,
-  /\binvoice\s+(?:number|no)\b\.?\s*[#:]?\s*(\S+)/i,
+  /*
+   * Not "E-Invoice No.", which is a different field.
+   *
+   * The IRN acknowledgement number sits beside the invoice number on every
+   * e-invoiced document, and `\binvoice\s+no\b` matches happily inside it.
+   * On the PDF the real label came first and won by luck; read by OCR the
+   * lines arrive in another order and a bill was numbered 132111168290959 —
+   * the government's acknowledgement, not the supplier's number, and not what
+   * GSTR-2B matches on.
+   */
+  /(?<![\w-])(?<!\be[\s-])invoice\s*(?:number|no)\b\.?\s*[#:：]?\s*(\S+)/i,
   /\binvoice\s*#\s*(\S+)/i,
   /*
    * The abbreviated form. A Delhi travel agent heads its invoices "Inv No.

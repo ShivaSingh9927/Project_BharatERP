@@ -243,6 +243,41 @@ Example Subscription                 1   Rs 929.00    Rs 929.00`,
     expect(segs[0]!.documentNumber).toBe('ABC-1');
   });
 
+  it('does not read an E-Invoice acknowledgement as the invoice number', () => {
+    /*
+     * The IRN acknowledgement sits beside the invoice number on every
+     * e-invoiced document, and "invoice no" matches happily inside "E-Invoice
+     * No". On the PDF the real label happened to come first and won by luck;
+     * read by OCR the lines arrive in another order, and a bill was numbered
+     * with the government's acknowledgement instead of the supplier's number —
+     * which is what GSTR-2B matches on, so reconciliation would fail silently.
+     */
+    const segs = splitDocuments(
+      'Tax Invoice\nE-Invoice No. : 132111168290959\nInvoice No. : 92102915\n');
+    expect(segs[0]!.documentNumber).toBe('92102915');
+  });
+
+  it('reads no number at all when only an E-Invoice acknowledgement is present', () => {
+    const segs = splitDocuments('Tax Invoice\nE-Invoice No. : 132111168290959\n');
+    expect(segs[0]!.documentNumber).toBeNull();
+  });
+
+  it('is not confused by a heading ending in "e"', () => {
+    // The first attempt at the rule above rejected any "Invoice No" preceded
+    // by a word ending in e — including "Tax Invoice" on the line before.
+    const segs = splitDocuments('Tax Invoice\nInvoice No. : 92102915\n');
+    expect(segs[0]!.documentNumber).toBe('92102915');
+  });
+
+  it('reads the label as OCR renders it — glued, with a full-width colon', () => {
+    // A photographed bill comes back as "InvoiceNo. ：92102915". Requiring a
+    // plain space and a plain colon lost the number on every photograph.
+    expect(splitDocuments('Tax Invoice\nInvoiceNo. ：92102915\n')[0]!.documentNumber)
+      .toBe('92102915');
+    expect(splitDocuments('Tax Invoice\nInvoiceNo.：92102915\n')[0]!.documentNumber)
+      .toBe('92102915');
+  });
+
   it('types an unqualified heading as a plain invoice, not a tax invoice', () => {
     // The distinction decides whether input credit can rest on it.
     expect(splitDocuments(FOREIGN)[0]!.kind).toBe('invoice');

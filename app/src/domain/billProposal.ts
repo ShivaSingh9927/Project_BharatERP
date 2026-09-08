@@ -597,13 +597,57 @@ async function findOverseasSupplier(
 const NOTIFIED_RCM_SERVICE =
   /\b(?:advocate|advocates|legal\s+(?:service|fee|consultanc)|goods\s+transport|\bGTA\b|transport\s+agency|sponsorship|arbitral|security\s+service|director(?:'?s)?\s+(?:fee|remuneration|sitting)|recovery\s+agent|insurance\s+agent)/i;
 
+/** A PDF, by its own first bytes rather than by what the upload claimed. */
+function isPdf(file: Buffer): boolean {
+  return file.subarray(0, 5).toString('latin1') === '%PDF-';
+}
+
+/**
+ * A photographed invoice — the WhatsApp channel, and the one an SMB actually
+ * uses.
+ *
+ * There is no text layer to read, so the structure sidecar OCRs the picture
+ * and returns word rows with their pixel coordinates. Everything downstream is
+ * unchanged: the rows are candidate tables, they face the same two gates, and
+ * a figure still carries a region it can be pointed at on the image.
+ *
+ * OCR reads PIXELS. Nothing it produces is a figure the vendor published, and
+ * the arithmetic is the only thing standing between a misread digit and the
+ * ledger — which is exactly the arrangement every other reader is under.
+ */
+async function readPhotograph(
+  input: ProposeInput,
+): Promise<{ text: string; tables: CandidateTable[] }> {
+  if (!input.parser) {
+    throw new ValidationError(
+      'this file is an image, not a PDF, and reading it needs the structure ' +
+      'reader with OCR — which is not running. Start it, or send the invoice ' +
+      'as a PDF.', 'BR-3');
+  }
+  const r = await input.parser.read(input.file, { ocr: 'on' });
+  if (r.text.trim() === '') {
+    throw new ValidationError(
+      'no text could be read from this image at all. It may be too small, too ' +
+      'dark, or not an invoice.', 'BR-3');
+  }
+  return { text: r.text, tables: r.tables };
+}
+
 /** Reads a file and proposes one bill per document it contains. */
 export async function proposeBills(
   firmId: string, input: ProposeInput,
 ): Promise<BillProposal[]> {
   const fileHash = contentHash(input.file);
-  const pages = extractPdfWords(input.file, input.password);
-  const text = extractPdfText(input.file, input.password);
+  const photo = isPdf(input.file) ? null : await readPhotograph(input);
+
+  /*
+   * A photograph has no word geometry of the kind `extractPdfWords` returns,
+   * so the coordinate reader is handed nothing and declines — and the
+   * candidate search, which is where the OCR rows arrive, takes over. That is
+   * the ordinary fallback working, not a special case.
+   */
+  const pages = photo ? [] : extractPdfWords(input.file, input.password);
+  const text = photo ? photo.text : extractPdfText(input.file, input.password);
   const segments = splitDocuments(text);
 
   /*
@@ -613,14 +657,14 @@ export async function proposeBills(
    * reach the sidecar is not fatal: the pipeline falls through to the model,
    * exactly as before Docling existed.
    */
-  let candidateTables: CandidateTable[] | undefined;
-  if (input.parser) {
+  let candidateTables: CandidateTable[] | undefined = photo?.tables;
+  if (photo === null && input.parser) {
     try { candidateTables = (await input.parser.read(input.file)).tables; }
     catch { candidateTables = undefined; }
   }
 
   let doclingTables: DoclingTable[] | undefined;
-  if (input.docling) {
+  if (photo === null && input.docling) {
     try { doclingTables = await input.docling.read(input.file); }
     catch { doclingTables = undefined; }
   }

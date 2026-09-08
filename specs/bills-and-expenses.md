@@ -370,6 +370,50 @@ document:
   "Reimbursement Amount" beside it is then not a rival, and a column of prose
   cannot be promoted and then fail gate 1.
 
+**BE-28 — A photograph is an invoice too, and it enters by the same door.**
+
+An SMB sends a picture more often than a PDF — it is the WhatsApp channel in
+§4, and the pipeline refused it outright as "not a PDF".
+
+An image is sniffed by its magic bytes, never by filename or content type,
+since both are supplied by whoever is uploading. It is OCR'd to word rows with
+their **pixel coordinates**, and those rows become candidate tables facing the
+same two gates as every other reader. Nothing downstream is special-cased: the
+coordinate reader is handed no geometry and declines, and the candidate search
+takes over, which is the ordinary fallback working.
+
+Coordinates are the reason OCR leads and a vision model does not. Measured, the
+vision model read 424.24 for 428.24, 15390.00 for 15396.00 and turned an "I"
+into a "1" — the gate caught the money errors, but it returns **no bounding
+boxes at all**, and a figure a CA cannot point at on the picture is a figure
+they cannot check (PR-3).
+
+Where OCR rows cannot be reassembled into a grid — a two-line header survives
+OCR as two unrelated rows, and that information is simply gone — the model
+reads the **OCR TEXT**, not the image. Cheaper than image tokens, keeps the
+coordinates OCR already found, and the picture never leaves the building.
+
+OCR reads pixels: nothing it produces is a figure the vendor published, so the
+arithmetic is the only thing between a misread digit and the ledger — which is
+the arrangement every other reader is already under.
+
+**BE-29 — "E-Invoice No." is not "Invoice No.", and OCR does not type neatly.**
+
+The IRN acknowledgement sits beside the invoice number on every e-invoiced
+document and `invoice no` matches happily inside it. On the PDF the real label
+happened to come first and won by luck; read by OCR the lines arrive in another
+order, and a bill was numbered with the government's acknowledgement instead of
+the supplier's number — which is what GSTR-2B matches on, so reconciliation
+would have failed silently.
+
+Two further OCR artefacts, not vendor style: the space between the words
+disappears and the colon comes back full-width, so the label arrives as
+"InvoiceNo. ：92102915". Both are now accepted.
+
+(The first attempt at the E-Invoice guard rejected any "Invoice No" preceded by
+a word ending in "e" — including the "Tax Invoice" heading on the line above.
+A negative lookbehind needs its own word boundary.)
+
 ---
 
 ## 5. Extraction — the AI pipeline
