@@ -214,6 +214,7 @@ export function renderShell(a: {
     ${link('/cash', 'cash', 'Cash')}
     ${link('/gstr2b', 'gstr2b', 'GSTR-2B')}
     ${link('/gstr1', 'gstr1', 'GSTR-1')}
+    ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -1451,4 +1452,62 @@ ${empty ? '<p class="empty">No sales invoices in this period.</p>' : `
 
 ${b2bBlock}${b2csBlock}${b2cl}${exp}${cdnr}${hsn}
 `}`;
+}
+
+// ---------------------------------------------------------------------------
+// GSTR-3B — the net return. Leads with the cash to pay, then shows the working:
+// output owed, credit available, and the set-off between them.
+
+interface Gstr3bV {
+  period: string;
+  outwardTaxable: string; rcmTaxable: string;
+  output: { igst: string; cgst: string; sgst: string; cess: string };
+  itc: { igst: string; cgst: string; sgst: string; cess: string };
+  setOff: {
+    cash: { igst: string; cgst: string; sgst: string; cess: string };
+    carryForward: { igst: string; cgst: string; sgst: string; cess: string };
+  };
+  netCash: string; carryForward: string;
+  periods: string[];
+}
+
+export function renderGstr3b(a: Gstr3bV): string {
+  const picker = `
+    <form method="get" action="/gstr3b" class="row">
+      <label>Return period
+        <select name="period" onchange="this.form.submit()">
+          ${(a.periods.length ? a.periods : [a.period]).map((p) =>
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </label>
+    </form>`;
+
+  const heads = (h: { igst: string; cgst: string; sgst: string; cess: string }) =>
+    `<td class="num">${inr(h.igst)}</td><td class="num">${inr(h.cgst)}</td>
+     <td class="num">${inr(h.sgst)}</td><td class="num">${inr(h.cess)}</td>`;
+
+  return `<h1>GSTR-3B</h1>
+<p class="sub">The net: output tax owed, less the input credit available, is the
+cash to pay. Credit is set off in the order the law fixes (Rule 88A).</p>
+
+${picker}
+
+<div class="tiles">
+  <a class="tile" href="/gstr1"><b>${inr(a.outwardTaxable)}</b><span>outward supplies (3.1a)</span></a>
+  <a class="tile" href="/gstr2b"><b>${inr(a.rcmTaxable)}</b><span>reverse-charge inward (3.1d)</span></a>
+  <div class="tile"><b class="bad">${inr(a.netCash)}</b><span>net cash payable</span></div>
+  <div class="tile"><b class="${a.carryForward === '0.00' ? '' : 'good'}">${inr(a.carryForward)}</b><span>credit carried forward</span></div>
+</div>
+
+<h2 class="mt">The working</h2>
+<div class="panel" style="padding:0"><table>
+  <tr><th></th><th class="num">IGST</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">Cess</th></tr>
+  <tr><td>Output tax owed</td>${heads(a.output)}</tr>
+  <tr><td>Input credit available</td>${heads(a.itc)}</tr>
+  <tr><td><b>Cash payable</b></td>${heads(a.setOff.cash)}</tr>
+  <tr><td class="muted">Credit carried forward</td>${heads(a.setOff.carryForward)}</tr>
+</table></div>
+
+<p class="sub">This is the return, not the filing — the figure owed is settled in
+cash; lodging it with the portal is a separate step.</p>`;
 }

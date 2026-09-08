@@ -33,6 +33,8 @@ import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, 
 import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
+import { renderGstr3b } from './views.ts';
+import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -311,6 +313,17 @@ async function handle(
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }
+  }
+
+  if (req.method === 'GET' && path === '/gstr3b') {
+    const periods = await taxPeriods(session.firmId, session.clientId);
+    const period = url.searchParams.get('period') ?? periods[0]
+      ?? new Date().toISOString().slice(0, 7);
+    const g = await generateGstr3b(session.firmId, session.clientId, period);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'gstr3b',
+      body: renderGstr3b({ ...g, periods }),
+    }));
   }
 
   if (req.method === 'GET' && path === '/gstr1') {
