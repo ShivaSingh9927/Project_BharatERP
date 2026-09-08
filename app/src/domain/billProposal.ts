@@ -61,6 +61,8 @@ import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
 import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
 import { readChargeBlock } from '../parse/chargeBlock.ts';
+import { gradeCandidates, type ParserClient, type CandidateTable }
+  from '../parse/candidateTables.ts';
 import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
@@ -116,17 +118,53 @@ export interface BillProposal {
    * should be able to see was used. `charges` means the same for a document
    * that wrote its charges out in words instead of ruling them into a table.
    */
-  readBy: 'coordinates' | 'docling' | 'llm' | 'summary' | 'charges';
+  readBy: 'coordinates' | 'candidates' | 'docling' | 'llm' | 'summary' | 'charges';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
+   *
    * `unavailable` means it was asked and could not read the document — which
    * is not the same as agreeing, and is recorded rather than glossed.
+   * `not_needed` means the firm has cross-checking on but this reading claimed
+   * nothing it had to infer, so no second opinion was bought. Distinct from
+   * `off`, which is the firm declining the feature: one is our judgement, the
+   * other is theirs, and a reviewer should be able to tell them apart.
    */
-  crossChecked: 'off' | 'agreed' | 'disagreed' | 'unavailable';
+  crossChecked: 'off' | 'not_needed' | 'agreed' | 'disagreed' | 'unavailable';
   /** The date read off the document, and how it was settled (PR-7). */
   billDate?: string;
   billDateBasis?: string;
+}
+
+/**
+ * What this reading had to INFER rather than read, or null if nothing.
+ *
+ * The trigger for buying a second opinion. Running a model on every bill was
+ * the first design and it is the wrong trade: measured, the model is dearest
+ * on exactly the long many-line documents the deterministic readers handle
+ * best, and cheapest on the short awkward ones where they fail. Fallback puts
+ * the money where the value is.
+ *
+ * But pure fallback never re-reads a document we THINK we read, and that is
+ * where a real error hid: a Zepto invoice whose per-line totals are each
+ * rounded to the rupee sums to a whole-rupee figure, while the invoice's own
+ * "Invoice Value" states two paise more. The reader took the column sum for
+ * the stated total, invented a round-off, and posted a total the document does
+ * not print. It tied, so no gate objected.
+ *
+ * What saved it was that the reader SAID SO — "inferred from the figures, not
+ * read". So the trigger is our own admission of uncertainty, which costs
+ * nothing to check and fires rarely.
+ *
+ * One entry today. Expect it to grow; every future inference belongs here
+ * rather than in a comment promising a human will notice.
+ */
+function inferred(t: InvoiceTable): string | null {
+  if (t.roundOff !== undefined) {
+    return `a round-off of ${t.roundOff} was inferred from the figures rather ` +
+           'than read from a round-off line';
+  }
+  return null;
 }
 
 /** True when the table itself shows GST was charged. */
@@ -171,9 +209,16 @@ export interface ProposeInput {
    * leaving the building, so it needs no `firm_ai_settings` consent the way the
    * model does.
    */
+  /**
+   * The structure sidecar: reads the PDF several ways and returns every table
+   * any strategy can see. It ranks nothing — `gradeCandidates` decides.
+   */
+  parser?: ParserClient;
   docling?: DoclingClient;
   /** The Docling reading of the whole file, extracted once in `proposeBills`. */
   doclingTables?: DoclingTable[];
+  /** Candidate tables for this file, fetched once per file. */
+  candidateTables?: CandidateTable[];
   /**
    * Checks a supplier GSTIN against the GST portal, through a licensed
    * provider. Optional: without it the bill still posts, and says that the
@@ -551,6 +596,12 @@ export async function proposeBills(
    * reach the sidecar is not fatal: the pipeline falls through to the model,
    * exactly as before Docling existed.
    */
+  let candidateTables: CandidateTable[] | undefined;
+  if (input.parser) {
+    try { candidateTables = (await input.parser.read(input.file)).tables; }
+    catch { candidateTables = undefined; }
+  }
+
   let doclingTables: DoclingTable[] | undefined;
   if (input.docling) {
     try { doclingTables = await input.docling.read(input.file); }
@@ -560,7 +611,7 @@ export async function proposeBills(
   const out: BillProposal[] = [];
   for (const seg of segments) {
     out.push(await proposeFromDocument(
-      firmId, { ...input, doclingTables }, seg, pages, fileHash, text));
+      firmId, { ...input, doclingTables, candidateTables }, seg, pages, fileHash, text));
   }
   return out;
 }
@@ -615,6 +666,39 @@ export async function proposeFromDocument(
    * same gates: `readInvoiceTableFromDocling` grades every table it found and
    * keeps one only if it ties.
    */
+  /*
+   * The candidate search, first among the fallbacks.
+   *
+   * The sidecar reads the page several ways — from the rules the vendor drew,
+   * from text alignment, from word positions, from OCR on a scan — and every
+   * table any strategy saw is graded here by the same two gates. Nothing
+   * prefers one strategy: if two readings both tie with DIFFERENT figures the
+   * document is refused, because no arithmetic available can choose between
+   * them.
+   *
+   * Placed after the coordinate reader only because that reader is measurably
+   * better today on the documents it does read, and it costs nothing. There is
+   * no principled reason it must stay first, and if the search overtakes it
+   * the order should change.
+   */
+  if (!table.readable && input.candidateTables) {
+    const verdict = gradeCandidates(
+      input.candidateTables, seg.pages, profile.charged, seg.text);
+    if (verdict?.table.readable) {
+      table = verdict.table;
+      readBy = 'candidates';
+      warnings.push(
+        `the figures were read by the ${verdict.method} strategy after the ` +
+        'coordinate reader could not, and they passed the same arithmetic ' +
+        'checks.');
+    } else if (verdict !== null && verdict.survivors > 1) {
+      // Two readings that each tie. A real refusal, and a better one than the
+      // coordinate reader's, so it replaces that reader's complaint.
+      table = verdict.table;
+      readBy = 'candidates';
+    }
+  }
+
   /*
    * Before any fallback reader: does the document say it HAS no line items?
    *
@@ -676,7 +760,7 @@ export async function proposeFromDocument(
         'this software. They passed the same arithmetic checks, but the ' +
         'document was sent to a third party to obtain them.');
     }
-  } else if (table.readable && input.llm && ai.crossCheck) {
+  } else if (table.readable && input.llm && ai.crossCheck && inferred(table) !== null) {
     /*
      * Cross-check: read it again, independently, and refuse to post if the two
      * readings differ.
@@ -709,6 +793,8 @@ export async function proposeFromDocument(
       // Recorded, not treated as assent: nobody confirmed this reading.
       crossChecked = 'unavailable';
     }
+  } else if (table.readable && input.llm && ai.crossCheck) {
+    crossChecked = 'not_needed';
   }
 
   /*

@@ -6,9 +6,10 @@
  * WRONG, and a real one cannot be asked to do that on demand.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   readInvoiceTableFromLlm, extractJson, validateShape, SYSTEM_PROMPT,
+  deepseekClient,
   type LlmClient,
 } from '../src/parse/llmTable.ts';
 
@@ -208,5 +209,57 @@ describe('shape validation in isolation', () => {
   it('rejects a non-string header entry', () => {
     const v = validateShape({ header: [7], rows: [] });
     expect(v).toHaveProperty('error');
+  });
+});
+
+/**
+ * The transport, and the two ways a reply can be nothing.
+ *
+ * These paths run rarely and matter when they do: measured on the corpus the
+ * API returns empty content about once in twenty calls, and a `max_tokens`
+ * budget smaller than the model's own reasoning returns nothing every time.
+ * Both had to be told apart from "the model could not read this document",
+ * which is a statement about the invoice rather than about us.
+ */
+describe('the DeepSeek transport', () => {
+  const original = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = original; });
+
+  const reply = (content: string, finish = 'stop') => new Response(
+    JSON.stringify({ choices: [{ message: { content }, finish_reason: finish }] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  it('retries once when the reply is empty, and uses the second answer', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return calls === 1 ? reply('') : reply('{"header":[],"rows":[]}');
+    }) as typeof fetch;
+    const c = deepseekClient('k', 'deepseek-v4-flash');
+    await expect(c.complete('s', 'u')).resolves.toBe('{"header":[],"rows":[]}');
+    expect(calls).toBe(2);
+  });
+
+  it('gives up after one retry rather than re-rolling until it likes the answer', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => { calls += 1; return reply(''); }) as typeof fetch;
+    await expect(deepseekClient('k').complete('s', 'u')).rejects.toThrow(/empty/);
+    expect(calls).toBe(2);
+  });
+
+  it('blames the token budget, not the document, when the reply is truncated', async () => {
+    globalThis.fetch = (async () => reply('', 'length')) as typeof fetch;
+    await expect(deepseekClient('k').complete('s', 'u'))
+      .rejects.toThrow(/limit on our side, not a judgement about the document/);
+  });
+
+  it('does not retry a real refusal — that is evidence, not a glitch', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response('nope', { status: 500 });
+    }) as typeof fetch;
+    await expect(deepseekClient('k').complete('s', 'u')).rejects.toThrow(/HTTP 500/);
+    expect(calls).toBe(1);
   });
 });

@@ -178,6 +178,99 @@ neighbouring rates to both fit, so the `fits.length === 1` uniqueness test that
 protects that branch collapses. Forgiving a vendor's rounding of a rate they
 told us is a different act from guessing a rate out of a rounded figure.
 
+**BE-21 — Do not recognise layouts. Search over them, and let the arithmetic
+choose.**
+
+Each reader before this one recognised a SHAPE — a ruled grid, an annexure-only
+invoice, charges written in prose — so every vendor layout fitting none of them
+needed a new module. That count grows with the number of vendors, and for
+Indian invoices that number is unbounded. Three readers in, all three ended
+with the identical line: `gradeTable(header, rows, stated, charged)`.
+
+So the structure layer reads a PDF several ways — from the rules the vendor
+DREW, from text alignment, from word positions, from OCR on a scan — and
+returns every table any strategy saw, **ranked by nothing**. Each is graded by
+the same two gates. Rules:
+
+- **No strategy is preferred.** The ruling-line reader is usually right and the
+  word-row reconstruction usually is not, but ranking them reintroduces exactly
+  the judgement this removes: if the arithmetic cannot separate two readings,
+  neither can a preference order.
+- **Survivors are compared by their financial signature** — taxable, each tax
+  head, total. Two strategies finding the same grid is not disagreement.
+- **Two survivors with different figures is a refusal.** Both tie, so nothing
+  available can choose, and picking one is a coin toss with a provenance trail.
+  The same discipline `deriveGstRate` applies when more than one scheduled rate
+  fits.
+- **Header rows are found by content, not position.** A ruled invoice is one
+  big outer box, so row 0 is the letterhead and the captions sit further down.
+- **Cell bounding boxes travel with every candidate** (PR-3, PR-6). This is why
+  the structure layer reads geometry rather than asking a table model: a model
+  returns cells, and a cell a CA cannot point at is a cell they cannot check.
+
+A wrong candidate is therefore not a defect. Too few candidates is.
+
+**BE-22 — Repair the pre-Unicode rupee fonts before reading anything.**
+
+"Rupee Foradian" and its relatives draw ₹ on the backtick codepoint, are not
+embedded and carry no ToUnicode map, so every extractor faithfully yields "`"
+where the page shows ₹. The gate then refuses a money cell holding a
+non-number. The character was always a currency mark; only the encoding lied.
+Detect the font on the page and repair the character — do not teach the gate to
+tolerate stray glyphs.
+
+**BE-23 — A model is a fallback, and a second opinion is bought only where we
+admit we guessed.**
+
+Running a model on every bill was the first design and it is the wrong trade.
+Measured: the model is dearest on exactly the long, many-line documents the
+deterministic readers handle best (14,983 reasoning tokens for an eight-line
+grocery invoice; 20,447 for a five-page order) and cheapest on the short
+awkward ones where they fail. Fallback puts the money where the value is.
+
+But pure fallback never re-reads a document we THINK we read, and that is where
+a real error hid — see the Zepto round-off below. So the model is also called
+when the reading itself admits an inference:
+
+1. the deterministic readers failed, **or**
+2. they succeeded but had to INFER something — today, a round-off derived from
+   the figures rather than read from a round-off line
+
+`crossChecked` therefore has a `not_needed` state, distinct from `off`: one is
+our judgement that no second opinion was warranted, the other is the firm
+declining the feature. A reviewer must be able to tell them apart.
+
+Configuration, all measured rather than chosen:
+
+- **`deepseek-v4-flash`, not the pro tier.** Identical results on every
+  document in the corpus.
+- **JSON mode on.** 22% fewer tokens, half the wall-clock, a quarter the empty
+  replies — the gain is in constraining the reasoning, not the parsing.
+- **`max_tokens: 32000`.** These are reasoning models and their thinking counts
+  against the budget; at 8192 a long invoice spends the lot thinking and
+  returns nothing at all.
+- **Five-minute timeout.** Ninety seconds turned long documents into
+  "unavailable", and those are the ones most worth a second opinion.
+- **Text, never images, where a text layer exists.** The vision model makes
+  digit errors the text path cannot — it read 424.24 for 428.24 and turned an
+  "I" into a "1" — because characters already in the file cannot be misread.
+  For scans, OCR then text beats vision.
+- **One retry, only on an empty reply.** A refusal or a disagreement is
+  evidence; re-rolling until a model says something we like is how a second
+  reader stops being a check.
+
+**BE-24 — An unreachable model is never recorded as a model that disagreed, or
+as one that read the document and found nothing.**
+
+Three distinct facts, three distinct records: `disagreed` blocks the bill,
+`unavailable` means nobody confirmed the figures, and a transport failure names
+its own cause. Diagnosing this cost real time — every call failed as
+`UND_ERR_CONNECT_TIMEOUT` because one machine's resolver hung on IPv6 lookups
+for twenty seconds against Node's ten-second connect budget, while curl was
+unaffected. The API looked healthy and the software looked broken. Error text
+that says only "fetch failed" sends the next person hunting for a fault that is
+not in the code.
+
 ---
 
 ## 5. Extraction — the AI pipeline

@@ -169,7 +169,8 @@ function stashFile(file: Buffer): string {
   return token;
 }
 
-let readers: ReviewReaders = { llm: undefined, docling: undefined, gstinLookup: undefined };
+let readers: ReviewReaders = {
+  llm: undefined, docling: undefined, parser: undefined, gstinLookup: undefined };
 
 /** The last preview rendered for a client, so a reload can show it again. */
 type PreviewCard = ReturnType<typeof proposalView> & { token: string };

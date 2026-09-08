@@ -184,7 +184,21 @@ export async function readInvoiceTableFromLlm(
     reply = await client.complete(
       SYSTEM_PROMPT, `${FENCE_OPEN}\n${fenced}\n${FENCE_CLOSE}`);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    /*
+     * Node buries the useful part. `fetch failed` on its own sends a reader
+     * hunting through our code for a fault that is not there: measured on one
+     * developer machine, every call died as UND_ERR_CONNECT_TIMEOUT because
+     * the host's resolver hangs on IPv6 (AAAA) lookups for about twenty
+     * seconds, well past Node's ten-second connect budget. curl was
+     * unaffected, so the API looked fine and the software looked broken.
+     *
+     * The cause code names the real culprit, and this is worth the two lines:
+     * an unreachable model must never be mistaken for a model that read the
+     * document and disagreed.
+     */
+    const cause = (e as { cause?: { code?: string } })?.cause?.code;
+    const msg = (e instanceof Error ? e.message : String(e))
+      + (cause ? ` (${cause})` : '');
     return {
       ...unreadable(`${client.provider} could not be reached: ${msg}`),
       transportError: msg,
@@ -223,6 +237,32 @@ export function deepseekClient(
     provider: 'deepseek',
     model,
     async complete(system, user) {
+      /*
+       * One retry, and only for an empty or truncated reply.
+       *
+       * The API documents that it "may occasionally return empty content", and
+       * measured over the corpus it does: once in twenty with JSON mode on,
+       * four times in twenty with it off. An empty reply carries no
+       * information about the document — retrying it is not asking for a
+       * second opinion, it is asking the first one again.
+       *
+       * Nothing else is retried. A refusal, a malformed shape or a
+       * disagreement are all evidence, and re-rolling until a model says
+       * something we like is how a reader stops being a check.
+       */
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await once(system, user);
+        } catch (e) {
+          const blank = e instanceof Error
+            && /reply was empty|cut off by the token budget/.test(e.message);
+          if (!blank || attempt >= 1) throw e;
+        }
+      }
+    },
+  };
+
+  async function once(system: string, user: string): Promise<string> {
       const r = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -232,25 +272,78 @@ export function deepseekClient(
         body: JSON.stringify({
           model,
           temperature: 0,
+          /*
+           * Generous and explicit, and sized from measurement rather than
+           * taste. The reasoning models count their own thinking against this,
+           * so a budget sized to the ANSWER starves them and returns nothing
+           * at all.
+           *
+           * Measured on an eight-line grocery invoice: at 8192 the model spent
+           * every token reasoning and returned an empty reply; at 32000 it
+           * used 14,983 reasoning tokens and answered correctly. A ceiling is
+           * not a reservation — an easy document still costs a few hundred —
+           * so the only thing a low cap buys is silent failure on exactly the
+           * long documents that need the most reading.
+           */
+          max_tokens: 32_000,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user },
           ],
         }),
-        signal: AbortSignal.timeout(90_000),
+        /*
+         * Five minutes, not ninety seconds. A reasoning model spends most of
+         * its time thinking before it emits anything, and that time scales
+         * with the document: measured, an eight-line grocery invoice used
+         * 14,983 reasoning tokens and a five-page Flipkart file 20,447.
+         *
+         * The old ninety seconds turned that into `transportError: aborted`,
+         * which the pipeline records as "a second reader was unavailable" —
+         * indistinguishable, on the record, from a model that read the
+         * document and had nothing to say. It was the long documents that
+         * timed out, and those are the ones most worth a second opinion.
+         *
+         * This runs during ingestion, not while anyone waits on a screen.
+         */
+        signal: AbortSignal.timeout(300_000),
       });
       if (!r.ok) {
         // The body may carry the key back in an error echo on some gateways,
         // so only the status is surfaced.
         throw new Error(`HTTP ${r.status} from ${baseUrl}`);
       }
-      const body = await r.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const text = body.choices?.[0]?.message?.content;
+      const body = await r.json() as {
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+      };
+      const choice = body.choices?.[0];
+      const text = choice?.message?.content;
+
+      /*
+       * A truncated reply is a TRANSPORT failure, not the model declining.
+       *
+       * DeepSeek's reasoning models spend `max_tokens` on reasoning before
+       * emitting any content, so a budget that is merely small returns
+       * `finish_reason: "length"` with content of "". Measured: at
+       * max_tokens 800 a one-line invoice burned all 800 on reasoning and
+       * returned nothing; at 4000 the same document answered using 242.
+       *
+       * That is exactly the "occasionally returns empty content" the API
+       * documentation warns about, and it must not be reported as "the model
+       * could not read this document" — one is a budget we set wrongly, the
+       * other is evidence about the document. Confusing them would have us
+       * quietly blame the invoice for our own configuration.
+       */
+      if (choice?.finish_reason === 'length') {
+        throw new Error(
+          'the reply was cut off by the token budget before any content was ' +
+          'produced. This is a limit on our side, not a judgement about the ' +
+          'document.');
+      }
       if (typeof text !== 'string') throw new Error('reply had no message content');
+      if (text.trim() === '') throw new Error('the reply was empty');
       return text;
-    },
-  };
+  }
 }
 
 /**

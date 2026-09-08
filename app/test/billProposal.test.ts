@@ -864,13 +864,31 @@ describe('cross-check', () => {
        WHERE firm_id = $1`, [t.firmId])).rejects.toThrow();
   });
 
+  /*
+   * These fixtures all carry a ROUNDING difference — 1000.30 + 180.05 sums to
+   * 1180.35 against a stated 1180.00 — because that is what now buys a second
+   * opinion. A reading that claims nothing it had to infer is not re-read; see
+   * `inferred`. Using a document that ties exactly would silently test
+   * nothing.
+   */
   it('confirms a reading both readers agree on', async () => {
     await enableLlmExtraction(t.firmId, {
       provider: 'test', model: 'test-model', enabledBy: t.userId, crossCheck: true });
     const p = await propose(doc(SAME_STATE, 'X1', 'IGST 18 %'),
-      interStateTable('1000.00', '180.00', '1180.00'),
-      readsAs('1000.00', '180.00', '1180.00'));
+      interStateTable('1000.30', '180.05', '1180.00'),
+      readsAs('1000.30', '180.05', '1180.00'));
     expect(p.crossChecked).toBe('agreed');
+    expect(p.blockers).toEqual([]);
+  });
+
+  it('buys no second opinion when the reading inferred nothing', async () => {
+    // The trade the fallback design turns on: the model is dearest on exactly
+    // the documents the deterministic readers handle best. `not_needed` is our
+    // judgement and is deliberately distinct from `off`, which is the firm's.
+    const p = await propose(doc(SAME_STATE, 'X1B', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'),
+      readsAs('9999.99', '0.01', '10000.00'));
+    expect(p.crossChecked).toBe('not_needed');
     expect(p.blockers).toEqual([]);
   });
 
@@ -883,19 +901,19 @@ describe('cross-check', () => {
      * either would be a coin toss carrying a provenance trail.
      */
     const p = await propose(doc(SAME_STATE, 'X2', 'IGST 18 %'),
-      interStateTable('50.00', '9.00', '59.00'),
+      interStateTable('50.20', '9.04', '59.00'),
       readsAs('327.96', '59.04', '387.00'));
     expect(p.crossChecked).toBe('disagreed');
     expect(p.input).toBeNull();
     expect(p.blockers.join(' ')).toMatch(/two independent readings.*disagree/);
-    expect(p.blockers.join(' ')).toMatch(/taxable: 50\.00 vs 327\.96/);
+    expect(p.blockers.join(' ')).toMatch(/taxable: 50\.20 vs 327\.96/);
   });
 
   it('does not treat a model that cannot read as dissent', async () => {
     // It refuses 6 of 24 documents in the corpus, including a mainstream
     // Indian format. Silence as dissent would block bills we read correctly.
     const p = await propose(doc(SAME_STATE, 'X3', 'IGST 18 %'),
-      interStateTable('1000.00', '180.00', '1180.00'), silent);
+      interStateTable('1000.30', '180.05', '1180.00'), silent);
     expect(p.crossChecked).toBe('unavailable');
     expect(p.blockers).toEqual([]);
   });
@@ -904,7 +922,7 @@ describe('cross-check', () => {
     // Nobody confirmed the figures. That is worth knowing and is not the same
     // fact as a second reader having checked them.
     const p = await propose(doc(SAME_STATE, 'X4', 'IGST 18 %'),
-      interStateTable('1000.00', '180.00', '1180.00'), silent);
+      interStateTable('1000.30', '180.05', '1180.00'), silent);
     expect(p.crossChecked).not.toBe('agreed');
   });
 });
