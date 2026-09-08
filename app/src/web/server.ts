@@ -227,7 +227,8 @@ async function handle(
       const bill = await postReviewedBill(
         session.firmId, session.clientId, expenseAccountId,
         stashed.file, body.index, body.confirm ?? {}, session.userId, readers,
-        { expenseAccountId: body.expenseAccountId, blockItc: body.blockItc === true });
+        { lineAccounts: body.lineAccounts, expenseAccountId: body.expenseAccountId,
+          blockItc: body.blockItc === true });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });

@@ -16,7 +16,11 @@ const base = (over: Partial<BillProposal> = {}): BillProposal => ({
   table: { readable: true, roles: [], header: [], rows: [], totals: null,
     sums: { taxable: '100.00', igst: '18.00', total: '118.00' } } as never,
   partyId: 'p', partyName: 'ACME', registration: { status: 'Active' } as never,
-  blockers: [], warnings: [], confirmations: [], input: {} as never,
+  blockers: [], warnings: [], confirmations: [],
+  input: { lines: [
+    { description: 'Item A', unitPrice: '60.00', hsnSac: '1234', expenseAccountId: 'x' },
+    { description: 'Item B', unitPrice: '40.00', expenseAccountId: 'x' },
+  ] } as never,
   readBy: 'coordinates', billDate: '2026-08-01', billDateBasis: 'read',
   llmProvenance: undefined, crossChecked: 'off',
   ...over,
@@ -37,6 +41,20 @@ describe('deriving the card status', () => {
       blockers: ['no GSTIN'],
       confirmations: [{ field: 'billDate', chose: 'a', instead: 'b', question: 'q' }] }));
     expect(p.status).toBe('blocked');
+  });
+});
+
+describe('the per-line detail for classification', () => {
+  it('exposes one entry per posting line', () => {
+    // What the per-line account picker renders a row for.
+    const v = proposalView(base());
+    expect(v.lines).toHaveLength(2);
+    expect(v.lines[0]).toEqual({ description: 'Item A', amount: '60.00', hsn: '1234' });
+    expect(v.lines[1]!.hsn).toBeNull();
+  });
+  it('has no lines on a blocked proposal, which has nothing to post', () => {
+    expect(proposalView(base({ blockers: ['no GSTIN'], input: null }))
+      .lines).toEqual([]);
   });
 });
 

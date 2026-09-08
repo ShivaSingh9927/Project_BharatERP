@@ -152,6 +152,13 @@ tr.done { opacity: .5; }
   background: var(--panel); color: var(--ink); border: 1px solid var(--line);
   border-radius: 6px; }
 .billctl .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.lines { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.lines table { width: 100%; }
+.lines th { font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .04em; text-align: left; padding-bottom: 4px; }
+.lines td { padding: 4px 8px 4px 0; vertical-align: middle; }
+.lines select { font-family: inherit; padding: 3px 6px; background: var(--panel);
+  color: var(--ink); border: 1px solid var(--line); border-radius: 6px; max-width: 260px; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -791,6 +798,7 @@ interface ProposalViewV {
   tax: string | null;
   total: string | null;
   registrationStatus: string | null;
+  lines: Array<{ description: string; amount: string; hsn: string | null }>;
   warnings: string[];
   blockers: string[];
   confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
@@ -830,17 +838,31 @@ function proposalCard(
 
   const canPost = p.status !== 'blocked';
 
-  // The classification controls — where the spend posts, and whether to claim
-  // credit. Offered only on a postable card; a blocked one has nothing to post.
+  // The classification controls — an expense head per line, and whether to
+  // claim credit at all. Offered only on a postable card; a blocked one has
+  // nothing to post. Each line carries its own account: a hotel bill splits
+  // room (Professional Fees) from food (blocked), a hardware run splits capital
+  // from consumable — the CA's judgement, one row at a time.
+  const opt = (sel: string) => accounts.map((ac) =>
+    `<option value="${esc(ac.id)}" ${ac.id === sel ? 'selected' : ''}>${esc(ac.name)}${
+      ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('');
+
+  const lineRows = p.lines.map((l, i) => `
+    <tr>
+      <td>${esc(l.description || 'Line ' + (i + 1))}${
+        l.hsn ? ` <span class="muted">HSN ${esc(l.hsn)}</span>` : ''}</td>
+      <td class="num">${inr(l.amount)}</td>
+      <td><select class="lineacct" data-line="${i}">${opt(defaultAccountId ?? '')}</select></td>
+    </tr>`).join('');
+
   const controls = !canPost ? '' : `
+    <div class="lines">
+      <table>
+        <tr><th>Line</th><th class="num">Taxable</th><th>Post to account</th></tr>
+        ${lineRows}
+      </table>
+    </div>
     <div class="billctl">
-      <label>Post to
-        <select class="acct">
-          ${accounts.map((ac) => `<option value="${esc(ac.id)}"
-            ${ac.id === defaultAccountId ? 'selected' : ''}>${esc(ac.name)}${
-              ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('')}
-        </select>
-      </label>
       <label class="chk"><input type="checkbox" class="noitc"> Do not claim input credit</label>
     </div>`;
 
@@ -963,12 +985,15 @@ document.querySelectorAll('button.post').forEach((btn) => {
       const sel = c.querySelector('input[type=radio]:checked');
       if (sel) confirm[field] = sel.value;
     });
-    const acct = card.querySelector('.acct');
+    const lineAccounts = [];
+    card.querySelectorAll('.lineacct').forEach((s) => {
+      lineAccounts[Number(s.dataset.line)] = s.value;
+    });
     const noitc = card.querySelector('.noitc');
     btn.disabled = true; btn.textContent = 'Posting…';
     const r = await post('/api/bills/post', {
       token: btn.dataset.token, index: Number(btn.dataset.index), confirm,
-      expenseAccountId: acct ? acct.value : undefined,
+      lineAccounts,
       blockItc: noitc ? noitc.checked : false,
     });
     if (r.ok) {

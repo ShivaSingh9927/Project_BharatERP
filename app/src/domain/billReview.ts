@@ -118,7 +118,10 @@ export async function postReviewedBill(
   firmId: string, clientId: string, defaultAccountId: string,
   file: Buffer, index: number, confirm: Record<string, string>,
   approvedBy: string, readers: ReviewReaders,
-  overrides: { expenseAccountId?: string; blockItc?: boolean } = {},
+  overrides: {
+    expenseAccountId?: string; lineAccounts?: Array<string | null>;
+    blockItc?: boolean;
+  } = {},
 ): Promise<CreatedBill> {
   // Proposed with the default account — the account changes no figure and no
   // confirmation, so this reproduces exactly the proposal the reviewer saw.
@@ -132,11 +135,14 @@ export async function postReviewedBill(
   // The reviewer's classification: post every line to the account they chose,
   // and honour their decision to withhold credit. Applied to the freshly
   // re-run proposal, never to a stored one.
-  if (overrides.expenseAccountId) {
-    for (const line of proposal.input.lines) {
-      line.expenseAccountId = overrides.expenseAccountId;
-    }
-  }
+  // Per line first — each line to the head the reviewer chose for it — then a
+  // whole-bill account as the fallback for any line left unset. The re-run is
+  // deterministic, so lineAccounts[i] lines up with the line the reviewer saw.
+  proposal.input.lines.forEach((line, i) => {
+    const perLine = overrides.lineAccounts?.[i];
+    if (perLine) line.expenseAccountId = perLine;
+    else if (overrides.expenseAccountId) line.expenseAccountId = overrides.expenseAccountId;
+  });
   if (overrides.blockItc) proposal.input.forceBlockItc = true;
 
   return postProposal(firmId, proposal, {
@@ -157,6 +163,9 @@ export interface ProposalView {
   tax: string | null;
   total: string | null;
   registrationStatus: string | null;
+  /** One entry per posting line, so the reviewer can classify each. Empty on a
+   *  blocked proposal, which has no lines to post. */
+  lines: Array<{ description: string; amount: string; hsn: string | null }>;
   warnings: string[];
   blockers: string[];
   confirmations: BillProposal['confirmations'];
@@ -181,6 +190,9 @@ export function proposalView(p: BillProposal): ProposalView {
     tax,
     total: p.table.sums.total ?? null,
     registrationStatus: p.registration?.status ?? null,
+    lines: (p.input?.lines ?? []).map((l) => ({
+      description: l.description, amount: l.unitPrice, hsn: l.hsnSac ?? null,
+    })),
     warnings: p.warnings, blockers: p.blockers, confirmations: p.confirmations,
   };
 }
