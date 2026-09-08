@@ -29,6 +29,7 @@ import { llmClientFromEnv } from '../src/parse/llmTable.ts';
 import { sandboxLookupFromEnv } from '../src/integrations/sandboxGst.ts';
 import { doclingClientFromEnv } from '../src/parse/doclingTable.ts';
 import { parserClientFromEnv } from '../src/parse/candidateTables.ts';
+import { glmOcrClientFromEnv } from '../src/parse/glmOcr.ts';
 import { closePools } from '../src/db/pool.ts';
 
 const [firmId, clientId, expenseAccountId, dir] = process.argv.slice(2);
@@ -67,6 +68,7 @@ const llm = llmClientFromEnv() ?? undefined;
 const gstinLookup = sandboxLookupFromEnv() ?? undefined;
 const docling = (await doclingClientFromEnv()) ?? undefined;
 const parser = (await parserClientFromEnv()) ?? undefined;
+const glmOcr = glmOcrClientFromEnv() ?? undefined;
 const settings = await llmSettings(firmId);
 
 console.log(`model available : ${llm ? `${llm.provider}/${llm.model}` : 'no key set'}`);
@@ -74,6 +76,7 @@ console.log(`firm allows it  : extraction=${settings.extraction} cross-check=${s
 console.log(`GSTIN lookup    : ${gstinLookup ? gstinLookup.source : 'no key set'}`);
 console.log(`Docling reader  : ${docling ? 'up' : 'not running'}`);
 console.log(`Structure reader: ${parser ? 'up' : 'not running'}`);
+console.log(`Layout model    : ${glmOcr ? 'key set' : 'no key set'}`);
 console.log(`mode            : ${post ? 'POSTING' : 'dry run'}\n`);
 
 if (llm && !settings.extraction) {
@@ -95,7 +98,7 @@ for (const file of readdirSync(dir).filter((f) => READABLE.test(f)).sort()) {
     proposals = await proposeBills(firmId, {
       clientId, file: readFileSync(join(dir, file)),
       createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-      expenseAccountId, llm, gstinLookup, docling, parser,
+      expenseAccountId, llm, gstinLookup, docling, parser, glmOcr,
       sourceUri: `file://${join(dir, file)}`,
       ...(rcmRate === undefined ? {} : { reverseCharge: { rate: rcmRate } }),
     });
@@ -119,7 +122,7 @@ for (const file of readdirSync(dir).filter((f) => READABLE.test(f)).sort()) {
           proposals = await proposeBills(firmId, {
             clientId, file: readFileSync(join(dir, file)),
             createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-            expenseAccountId, llm, gstinLookup, docling, parser,
+            expenseAccountId, llm, gstinLookup, docling, parser, glmOcr,
             sourceUri: `file://${join(dir, file)}`,
             reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! },
           });

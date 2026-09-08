@@ -145,7 +145,7 @@ const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b/;
  * "Invoice No: FACOEY2600014257", Hetzner writes "Invoice no.: 083001108949".
  */
 const NUMBER_LABELS = [
-  /\bbill\s+of\s+supply\s+number\b\s*[#:]?\s*(\S+)/i,
+  /\bbill\s+of\s+supply\s+number\b\s*[#:：]?\s*([^\n]*)/i,
   /*
    * Not "E-Invoice No.", which is a different field.
    *
@@ -156,8 +156,8 @@ const NUMBER_LABELS = [
    * the government's acknowledgement, not the supplier's number, and not what
    * GSTR-2B matches on.
    */
-  /(?<![\w-])(?<!\be[\s-])invoice\s*(?:number|no)\b\.?\s*[#:：]?\s*(\S+)/i,
-  /\binvoice\s*#\s*(\S+)/i,
+  /(?<![\w-])(?<!\be[\s-])invoice\s*(?:number|no)\b\.?\s*[#:：]?\s*([^\n]*)/i,
+  /\binvoice\s*#\s*([^\n]*)/i,
   /*
    * The abbreviated form. A Delhi travel agent heads its invoices "Inv No.
    * I3027535" and the number went unread — reported as "no invoice number
@@ -166,7 +166,7 @@ const NUMBER_LABELS = [
    * `\binv\b` cannot swallow the start of "Invoice": the pattern needs "no"
    * immediately after, and "Invoice No" offers "oice" there.
    */
-  /\binv\.?\s*(?:no|number)\b\.?\s*[#:]?\s*(\S+)/i,
+  /\binv\.?\s*(?:no|number)\b\.?\s*[#:：]?\s*([^\n]*)/i,
   /*
    * "Ref No." — how a professional-fees bill numbers itself.
    *
@@ -176,7 +176,7 @@ const NUMBER_LABELS = [
    * registered. Last of the labelled forms, so any explicit invoice number
    * still wins.
    */
-  /\bref(?:erence)?\s*no\b\.?\s*[#:]?\s*(\S+)/i,
+  /\bref(?:erence)?\s*no\b\.?\s*[#:：]?\s*([^\n]*)/i,
   /*
    * A line that is nothing but "Invoice" and the number.
    *
@@ -224,10 +224,36 @@ function headingOf(page: string): DocumentKind | null {
   return null;
 }
 
+/**
+ * A single character is OCR noise, not an invoice number.
+ *
+ * Read from a photograph the label came back as "InvoiceNo. ：9 92102915" —
+ * the stray 9 is part of a misread colon glyph — and taking the first token
+ * after the separator numbered the bill "9". No vendor issues a one-character
+ * invoice number, and losing one if they did is cheaper than posting noise as
+ * the identifier GSTR-2B matches on.
+ */
+const MIN_NUMBER_LENGTH = 2;
+
 function documentNumberOf(page: string): string | null {
   for (const re of NUMBER_LABELS) {
-    const m = page.match(re);
-    if (m?.[1]) return m[1].replace(/[,;]+$/, '');
+    /*
+     * Every occurrence, not just the first: where the label is followed by
+     * noise the real number is usually the next token along, and stopping at
+     * the first match threw the document away over a stray character.
+     */
+    const all = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+    for (const m of page.matchAll(all)) {
+      /*
+       * The label captures the REST OF THE LINE, and the number is the first
+       * token on it worth having. Capturing only the next token lost the
+       * document whenever a stray character sat between the two.
+       */
+      for (const token of (m[1] ?? '').trim().split(/\s+/)) {
+        const candidate = token.replace(/[,;]+$/, '');
+        if (candidate.length >= MIN_NUMBER_LENGTH) return candidate;
+      }
+    }
   }
   return null;
 }

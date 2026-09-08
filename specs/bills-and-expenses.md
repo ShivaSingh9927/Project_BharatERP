@@ -414,6 +414,45 @@ disappears and the colon comes back full-width, so the label arrives as
 a word ending in "e" — including the "Tax Invoice" heading on the line above.
 A negative lookbehind needs its own word boundary.)
 
+**BE-30 — A layout model is another candidate generator, not an authority.**
+
+Every local reader works from something the PDF already contains: glyph
+positions, ruling lines, a text layer. A photograph has none of those, and the
+OCR fallback loses the one thing a table needs — a two-line header survives OCR
+as two unrelated rows, and no re-bucketing puts it back.
+
+GLM-OCR returns tables as HTML. Measured, from a JPEG of an invoice the
+coordinate reader cannot touch: the split header correctly reassembled, every
+figure right, in four seconds — and an invoice number a vision model dropped a
+digit from on the same image. On the four-page scan, the multi-line grocery
+bill and the five-page multi-invoice file it read the item tables and the
+stated totals.
+
+It is added to the candidate pile and preferred over nothing. Its tables face
+the same two gates, and where it and a local reader both tie with DIFFERENT
+figures the document is refused rather than one being chosen.
+
+- **Behind the firm's consent.** The document leaves the building, which is the
+  same question the language model path answers, answered the same way — per
+  firm, defaulting to off. A key is capability, never permission.
+- **No `columnSources` are claimed.** Its boxes are per ELEMENT — "this table,
+  this region" — not per cell. A provenance record pointing at the wrong place
+  is worse than one that admits it has nothing (PR-3).
+- **Cost is not the constraint.** At $0.03/M tokens a document runs about ₹0.01
+  to ₹0.04, and a firm doing four thousand bills a month spends around a
+  dollar. Fallback ordering here is about provenance and privacy, not price.
+
+**BE-31 — An invoice number is read from the whole line, and one character is
+not a number.**
+
+Read from a photograph the label came back as "InvoiceNo. ：9 92102915": the
+stray 9 is part of a misread colon glyph. Taking the first token after the
+separator numbered the bill "9", and stopping at the first match then lost the
+document entirely. So the label captures the rest of the line and the number is
+the first token on it of at least two characters. No vendor issues a
+one-character invoice number, and losing one if they did is cheaper than
+posting noise as the identifier GSTR-2B matches on.
+
 ---
 
 ## 5. Extraction — the AI pipeline

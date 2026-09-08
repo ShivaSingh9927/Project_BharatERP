@@ -23,6 +23,7 @@ import type { CreatedBill } from './bills.ts';
 import { llmClientFromEnv } from '../parse/llmTable.ts';
 import { doclingClientFromEnv } from '../parse/doclingTable.ts';
 import { parserClientFromEnv } from '../parse/candidateTables.ts';
+import { glmOcrClientFromEnv } from '../parse/glmOcr.ts';
 import { sandboxLookupFromEnv } from '../integrations/sandboxGst.ts';
 
 /** The readers a firm has switched on, resolved once at boot. */
@@ -30,6 +31,7 @@ export interface ReviewReaders {
   llm: ProposeInput['llm'];
   docling: ProposeInput['docling'];
   parser: ProposeInput['parser'];
+  glmOcr: ProposeInput['glmOcr'];
   gstinLookup: ProposeInput['gstinLookup'];
 }
 
@@ -46,6 +48,7 @@ export async function resolveReaders(): Promise<ReviewReaders> {
     llm: llmClientFromEnv() ?? undefined,
     docling: (await doclingClientFromEnv()) ?? undefined,
     parser: (await parserClientFromEnv()) ?? undefined,
+    glmOcr: glmOcrClientFromEnv() ?? undefined,
     gstinLookup: sandboxLookupFromEnv() ?? undefined,
   };
 }
@@ -147,6 +150,7 @@ function assembleInput(
   return {
     clientId, expenseAccountId, createdBy, file,
     llm: readers.llm, docling: readers.docling, parser: readers.parser,
+    glmOcr: readers.glmOcr,
     gstinLookup: readers.gstinLookup,
     sourceUri: 'review-upload',
   };

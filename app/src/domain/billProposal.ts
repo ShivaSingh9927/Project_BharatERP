@@ -63,6 +63,7 @@ import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
 import { readChargeBlock } from '../parse/chargeBlock.ts';
 import { gradeCandidates, type ParserClient, type CandidateTable }
   from '../parse/candidateTables.ts';
+import type { GlmOcrClient } from '../parse/glmOcr.ts';
 import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
@@ -214,6 +215,13 @@ export interface ProposeInput {
    * any strategy can see. It ranks nothing — `gradeCandidates` decides.
    */
   parser?: ParserClient;
+  /**
+   * A layout model that returns real tables from a photograph, where OCR rows
+   * cannot be reassembled into one. Sends the document to a third party, so it
+   * is gated by `firm_ai_settings` exactly as the language model is — a key is
+   * capability, never permission.
+   */
+  glmOcr?: GlmOcrClient;
   docling?: DoclingClient;
   /** The Docling reading of the whole file, extracted once in `proposeBills`. */
   doclingTables?: DoclingTable[];
@@ -661,6 +669,26 @@ export async function proposeBills(
   if (photo === null && input.parser) {
     try { candidateTables = (await input.parser.read(input.file)).tables; }
     catch { candidateTables = undefined; }
+  }
+
+  /*
+   * The layout model, added to the pile rather than preferred over it.
+   *
+   * It is very good at exactly what the local readers cannot do — a
+   * photograph, or a header split across two lines — and it costs a fraction
+   * of a paisa a page. Neither is a reason to trust it: its tables face the
+   * same two gates, and if it and a local reader both tie with DIFFERENT
+   * figures `gradeCandidates` refuses the document rather than choosing.
+   *
+   * Behind the firm's consent because the document leaves the building. A
+   * failure here is never fatal — the pipeline reads what it can locally, as
+   * it did before this existed.
+   */
+  if (input.glmOcr && (await llmSettings(firmId)).extraction) {
+    try {
+      const extra = await input.glmOcr.read(input.file);
+      if (extra.length > 0) candidateTables = [...(candidateTables ?? []), ...extra];
+    } catch { /* read what we have */ }
   }
 
   let doclingTables: DoclingTable[] | undefined;
