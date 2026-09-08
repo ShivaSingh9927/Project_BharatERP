@@ -345,7 +345,18 @@ document:
 
 - **`15,000/-`** — rupees and no paise. Universal on Word-template and
   hand-written bills; rejected outright, so such a document had no readable
-  amount anywhere and no total to check against.
+  amount anywhere and no total to check against. The dash is not always a
+  hyphen: **Word autocorrects `/-` to an en dash** as you type, so a bill
+  written in Word carries `15,000/–` (U+2013). The older `/=` form and a
+  trailing full stop are accepted too.
+- **`15000 Rupees`, `15,000 Rupees Only`, `15,000 Only`** — the word is written
+  out at least as often as abbreviated, and "Only" closes the figure on most
+  Indian bills and receipts. `Rupees` also counts as an INR marker. A cell of
+  nothing but the word parses as **blank, not zero**: a blank cell is "no
+  figure here", a zero is a figure read off the page, and collapsing the two
+  would let a stray word satisfy a money column that should have been empty.
+  An amount written entirely in words is still refused — converting those to a
+  number is a different job and not one to guess at.
 - **`Ref No.`** — how a professional-fees bill numbers itself. A consultant's
   bill rarely says "Invoice No".
 - **A totals row captioned `Total (Fifteen Thousand Rupees Only)`** — requiring

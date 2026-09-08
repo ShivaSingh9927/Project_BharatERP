@@ -112,7 +112,7 @@ export type Currency = 'INR' | 'USD' | 'EUR' | 'GBP';
  * is wrong by a fifth, not by a rounding.
  */
 const SYMBOLS: ReadonlyArray<readonly [RegExp, Currency, boolean]> = [
-  [/[₹]|\bRs\.?\b|\bINR\b/i, 'INR', false],
+  [/[₹]|\bRs\.?\b|\bINR\b|\brupees?\b/i, 'INR', false],
   [/\bUSD\b/i,                   'USD', false],
   [/\bEUR\b/i,                   'EUR', false],
   [/\bGBP\b/i,                   'GBP', false],
@@ -142,7 +142,7 @@ export function currencyWasAssumed(raw: string): boolean {
  * refused as having no header.
  */
 export const AMOUNT_SHAPE =
-  /^(?:[₹$€£]|Rs\.?|INR|USD|EUR|GBP)?\s*\(?-?[\d,]+(?:\.\d+)?\)?\s*(?:INR|USD|EUR|GBP)?%?$/i;
+  /^(?:[₹$€£]|Rs\.?|INR|USD|EUR|GBP|rupees?)?\s*\(?-?[\d,]+(?:\.\d+)?\)?\s*(?:\/\s*[-\u2010-\u2015=]\s*\.?)?\s*(?:INR|USD|EUR|GBP|rupees?)?\s*(?:only\.?)?%?$/iu;
 
 /**
  * Parse an Indian statement amount.
@@ -196,12 +196,31 @@ export function parseAmount(raw: string): ParsedAmount {
    * document whose every figure was written that way had no readable amount
    * at all and no total to check against.
    *
+   * The dash is not always a hyphen. Word autocorrects "/-" to an en dash as
+   * you type, so a bill written in Word and exported to PDF — which is how the
+   * one that prompted this arrived — carries 15,000/– with U+2013. The whole
+   * hyphen block is accepted, along with the older "/=" bookkeeping form and a
+   * trailing full stop.
+   *
    * Stripped before the currency scan, not after: "Rs. 15,000/-" carries both.
    */
-  body = body.replace(/\s*\/\s*-\s*$/, '');
+  body = body.replace(/\s*\/\s*[-\u2010-\u2015=]\s*\.?\s*$/u, '');
 
   const currency = currencyOf(body);
   body = body
+    /*
+     * "15,000 Rupees Only", "Rupees 15,000", "15000 Only".
+     *
+     * The word is written out at least as often as it is abbreviated, and
+     * "Only" closes the figure on most Indian bills and receipts. Neither is
+     * part of the number; both made the cell unreadable, and an unreadable
+     * cell fails gate 1 and takes the whole table with it.
+     *
+     * Order matters: "Rupees" must go before the bare "Rs" rule, which would
+     * otherwise leave "upees" behind.
+     */
+    .replace(/\brupees?\b\.?/gi, '')
+    .replace(/\bonly\b\.?/gi, '')
     .replace(/\b(?:INR|USD|EUR|GBP|Rs)\b\.?/gi, '')
     .replace(/[₹$€£\s]/g, '')
     .replace(/,/g, '');
