@@ -11,6 +11,8 @@
 import { withFirm } from '../db/pool.ts';
 import { reconcile, type LedgerBill, type Gstr2bInvoice, type ReconLine }
   from './gstr2b.ts';
+import { parseGstr2b } from '../integrations/gstr2bJson.ts';
+import type { Gstr2bFetcher } from '../integrations/sandboxGstr2b.ts';
 import { money, paise } from './tax.ts';
 
 /**
@@ -92,4 +94,26 @@ export async function runReconciliation(
   });
 
   return lines;
+}
+
+/**
+ * Fetches 2B live and reconciles it in one step, once the taxpayer session is
+ * established.
+ *
+ * The verification is the client's act — they received the OTP and chose to
+ * relay it — so it happens here, immediately before the fetch that needs it,
+ * and the code is used and discarded. What comes back is the same records the
+ * downloaded-JSON path produces, so the reconciliation is identical; only the
+ * `source` on the stored statement differs, recording that this one came over
+ * the wire rather than by hand.
+ */
+export async function fetchAndReconcile(
+  firmId: string, clientId: string, period: string,
+  gstin: string, username: string, otp: string,
+  fetcher: Gstr2bFetcher,
+): Promise<ReconLine[]> {
+  await fetcher.verifyOtp(gstin, username, otp);
+  const raw = await fetcher.fetch(gstin, period);
+  const filed = parseGstr2b(raw);
+  return runReconciliation(firmId, clientId, period, filed, raw, 'sandbox');
 }
