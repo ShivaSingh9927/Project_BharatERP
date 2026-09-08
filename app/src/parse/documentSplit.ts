@@ -144,6 +144,15 @@ const NUMBER_LABELS = [
   /\binvoice\s+(?:number|no)\b\.?\s*[#:]?\s*(\S+)/i,
   /\binvoice\s*#\s*(\S+)/i,
   /*
+   * The abbreviated form. A Delhi travel agent heads its invoices "Inv No.
+   * I3027535" and the number went unread — reported as "no invoice number
+   * could be read from this document" while the number sat on the page.
+   *
+   * `\binv\b` cannot swallow the start of "Invoice": the pattern needs "no"
+   * immediately after, and "Invoice No" offers "oice" there.
+   */
+  /\binv\.?\s*(?:no|number)\b\.?\s*[#:]?\s*(\S+)/i,
+  /*
    * A line that is nothing but "Invoice" and the number.
    *
    * A Lithuanian supplier heads its page "Invoice PC-699272" with no label at

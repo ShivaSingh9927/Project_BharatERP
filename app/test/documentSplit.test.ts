@@ -231,6 +231,18 @@ Example Subscription                 1   Rs 929.00    Rs 929.00`,
     expect(segs[0]!.documentNumber).toBe('000000000001');
   });
 
+  it('reads the abbreviated "Inv No." form', () => {
+    // A Delhi travel agent heads its invoices this way. The number was on the
+    // page and the proposal reported that none could be read.
+    const segs = splitDocuments('SOME TRAVELS PVT LTD\n\nInv No.    I3027535\n');
+    expect(segs[0]!.documentNumber).toBe('I3027535');
+  });
+
+  it('does not let "Inv" swallow the start of "Invoice No"', () => {
+    const segs = splitDocuments('Vendor\n\nInvoice No : ABC-1\n');
+    expect(segs[0]!.documentNumber).toBe('ABC-1');
+  });
+
   it('types an unqualified heading as a plain invoice, not a tax invoice', () => {
     // The distinction decides whether input credit can rest on it.
     expect(splitDocuments(FOREIGN)[0]!.kind).toBe('invoice');

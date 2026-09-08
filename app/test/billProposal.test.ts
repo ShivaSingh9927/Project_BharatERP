@@ -134,6 +134,34 @@ describe('deriveGstRate', () => {
     expect(deriveGstRate('4.24', '0.76', ['18'])).toBe('18');
   });
 
+  it('accepts tax the vendor rounded to the whole rupee, as s.170 requires', () => {
+    // 18% of 1,10,925 is 19,966.50. Section 170 of the CGST Act rounds tax to
+    // the nearest rupee, so 19,967.00 is the statute being obeyed. This was
+    // refused as "matching no scheduled rate exactly".
+    expect(deriveGstRate('110925.00', '19967.00', ['18'])).toBe('18');
+  });
+
+  it('does not forgive a near-miss that is not a whole rupee', () => {
+    // 19,966.90 is 40 paise out and is not a rounded figure. That is a
+    // misreading, and the rule is exact rather than a window.
+    expect(deriveGstRate('110925.00', '19966.90', ['18'])).toBeNull();
+  });
+
+  it('will not round its way to a rate the document never printed', () => {
+    /*
+     * The same figures the previous test accepts, minus the printed rate. The
+     * rounding licence forgives a vendor's statutory rounding of a rate they
+     * TOLD us; it is not a licence to guess a rate out of a rounded figure.
+     *
+     * Scoped this way after measuring the alternative: allowed into the
+     * inferred search it newly blocked five documents that had been posting,
+     * because a half-rupee window is wide enough for neighbouring rates to
+     * both fit, so `fits.length === 1` stops being true and the uniqueness
+     * test that protects that branch collapses.
+     */
+    expect(deriveGstRate('110925.00', '19967.00')).toBeNull();
+  });
+
   it('tests candidates line by line, because the vendor rounds that way', () => {
     /*
      * A real Flipkart invoice with three fees at 18%: 50.00 -> 9.00,

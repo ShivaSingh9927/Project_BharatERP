@@ -79,7 +79,7 @@ if (llm && !settings.extraction) {
 }
 
 let posted = 0, ready = 0, blocked = 0, needsAnswer = 0;
-const tally = { coordinates: 0, summary: 0, docling: 0, llm: 0 };
+const tally = { coordinates: 0, summary: 0, charges: 0, docling: 0, llm: 0 };
 const checks = { off: 0, agreed: 0, disagreed: 0, unavailable: 0 };
 
 for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
@@ -190,7 +190,8 @@ console.log('=== summary ===');
 console.log(`ready ${ready}, needing an answer ${needsAnswer}, ` +
             `blocked ${blocked}${post ? `, posted ${posted}` : ''}`);
 console.log(`read by coordinates ${tally.coordinates}, ` +
-            `by stated totals ${tally.summary}, by Docling ${tally.docling}, ` +
+            `by stated totals ${tally.summary}, by charge block ${tally.charges}, ` +
+            `by Docling ${tally.docling}, ` +
             `by model ${tally.llm}`);
 if (settings.crossCheck) {
   console.log(`cross-check: agreed ${checks.agreed}, disagreed ${checks.disagreed}, ` +

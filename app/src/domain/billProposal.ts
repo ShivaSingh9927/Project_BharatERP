@@ -60,6 +60,7 @@ import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
 import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
+import { readChargeBlock } from '../parse/chargeBlock.ts';
 import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
@@ -112,9 +113,10 @@ export interface BillProposal {
    * belongs on the record beside the figures rather than in a log file.
    * `summary` means the document had no line items on its face and its own
    * stated totals were graded instead — a narrower reading, and one a reviewer
-   * should be able to see was used.
+   * should be able to see was used. `charges` means the same for a document
+   * that wrote its charges out in words instead of ruling them into a table.
    */
-  readBy: 'coordinates' | 'docling' | 'llm' | 'summary';
+  readBy: 'coordinates' | 'docling' | 'llm' | 'summary' | 'charges';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
@@ -391,16 +393,40 @@ export function deriveGstRate(
    * which is the correct answer and a tighter one than exactness gave.
    */
   const slack = BigInt(lines.length) * (intraState ? 2n : 1n);
+
+  /**
+   * The rate explains the tax if it lands within the paisa-level slack above,
+   * OR if the document rounded the tax to the whole rupee.
+   *
+   * That second case is not a wider tolerance — it is s.170 of the CGST Act,
+   * which says tax payable "shall be rounded off to the nearest rupee". A
+   * travel agent charging 18% on 1,10,925 owes 19,966.50 and prints 19,967.00,
+   * which is the statute being obeyed, not a vendor being careless.
+   *
+   * Written as an exact rule rather than a ±1 window, the same way
+   * `asRoundOff` is: the stated tax must BE a whole number of rupees AND be
+   * the nearest rupee to what the rate produces. A figure 40 paise out that is
+   * not a whole rupee is still a misreading and is still refused.
+   *
+   * And it is allowed ONLY for a rate the document printed — never for the
+   * inferred search below. Measured: applied to the statutory search it
+   * newly blocked five documents that had been posting. A half-rupee window is
+   * wide enough that neighbouring rates both fit on a small line, `fits.length
+   * === 1` stops being true, and the uniqueness test that protects the
+   * inferred branch collapses. Forgiving a vendor's rounding of a rate they
+   * told us is a different act from guessing a rate out of a rounded figure.
+   */
+  const withinSlack = (at: bigint): boolean =>
+    (at > tx ? at - tx : tx - at) <= slack;
+  const roundsToTheRupee = (at: bigint): boolean =>
+    tx % 100n === 0n && ((at + 50n) / 100n) * 100n === tx;
+
   for (const r of readRates) {
     const at = totalAt(r);
-    const diff = at > tx ? at - tx : tx - at;
-    if (diff <= slack) return r;
+    if (withinSlack(at) || roundsToTheRupee(at)) return r;
   }
 
-  const fits = STATUTORY_RATES.filter((r) => {
-    const at = totalAt(r);
-    return (at > tx ? at - tx : tx - at) <= slack;
-  });
+  const fits = STATUTORY_RATES.filter((r) => withinSlack(totalAt(r)));
   return fits.length === 1 ? fits[0]! : null;
 }
 
@@ -611,6 +637,21 @@ export async function proposeFromDocument(
     if (summary !== null) {
       table = summary.table;
       readBy = 'summary';
+    }
+  }
+
+  /*
+   * Charges written out in words rather than ruled into a grid — a travel
+   * agent's "Add: IGST@18%" over a "Total Payable". Same reasoning as above:
+   * the shape is declared by the document, and the figures face the same
+   * gates. `readChargeBlock` returns null unless the layout is actually this
+   * one, and its own arithmetic refuses anything it swept up by mistake.
+   */
+  if (!table.readable) {
+    const charges = readChargeBlock(pageText, profile.charged);
+    if (charges !== null) {
+      table = charges.table;
+      readBy = 'charges';
     }
   }
 

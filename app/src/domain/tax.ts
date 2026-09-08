@@ -204,7 +204,20 @@ function preferCharged(
     if (printed === undefined || printed === '') continue;
     const p = paise(printed);
     const diff = p > derived[k] ? p - derived[k] : derived[k] - p;
-    if (diff > CHARGED_TAX_SLACK) {
+    /*
+     * Beyond a paisa, one further difference is legitimate: the supplier
+     * rounding the tax to the whole rupee, which s.170 of the CGST Act does
+     * not merely permit but requires — "the amount of tax ... shall be rounded
+     * off to the nearest rupee". A travel agent charging 18% on 1,10,925 owes
+     * 19,966.50 and prints 19,967.00.
+     *
+     * Exact, not a window: the printed figure must BE a whole number of rupees
+     * AND be the nearest rupee to the computed one. A figure 40 paise out that
+     * is not a round rupee remains a misreading and is still refused below.
+     */
+    const roundedToRupee =
+      p % 100n === 0n && ((derived[k] + 50n) / 100n) * 100n === p;
+    if (diff > CHARGED_TAX_SLACK && !roundedToRupee) {
       throw new ValidationError(
         `the document charges ${k.toUpperCase()} of ${printed} on a taxable ` +
         `value of ${money(derived.taxableValue)}, but the rate on it produces ` +

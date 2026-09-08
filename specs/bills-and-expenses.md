@@ -134,6 +134,50 @@ elsewhere. The declaration is therefore the gate, and it is checked **first**:
   seen, and records `read_by = summary`, so no reviewer mistakes it for an
   itemised reading.
 
+**BE-19 — An invoice may state its charges in words instead of a table, and
+the arithmetic is the only thing that makes reading it safe.**
+
+A travel agent, a consultant, a contractor writes:
+
+```
+Ms. A Traveller     HOTEL BOOKING              20,000.00
+                        Add: Service Charge         0.00
+                        Add: IGST@18%           3,600.00
+                        Total Payable :        23,600.00
+```
+
+Same three facts every invoice states, laid out down the page instead of
+across it. Read as follows:
+
+- Every line between the charge caption and the first addition that carries
+  **exactly one** amount is a charge. Deliberately unselective — anything swept
+  in that does not belong makes the sum wrong, and a wrong sum is refused. The
+  gate is not a formality here; it is the entire safeguard.
+- A non-tax addition (service charge, handling fee) is part of the
+  consideration and joins the taxable value.
+- The tax must follow the rate printed beside it, and there must **be** such a
+  rate; without one this is not the shape being read and the reader declines.
+- A genuine item grid cannot slip through: its rows carry several amounts each,
+  so none is counted, the base comes to nothing, and it fails. This must never
+  become a way past a table that exists but read badly.
+
+**BE-20 — Tax rounded to the whole rupee is the statute, not a vendor error.**
+
+Section 170 of the CGST Act: the amount of tax "shall be rounded off to the
+nearest rupee". 18% of ₹1,10,925 is ₹19,966.50 and the invoice prints
+₹19,967.00. Both `deriveGstRate` and the PB-4 recomputation must accept it.
+
+Written as an **exact** rule, never a ±1 window: the printed figure must BE a
+whole number of rupees AND be the nearest rupee to the computed one. A figure
+40 paise out that is not a round rupee is still a misreading.
+
+Allowed **only** for a rate the document actually printed — never for the
+inferred rate search. Measured: admitted there, it newly blocked five documents
+that had been posting, because a half-rupee window is wide enough for
+neighbouring rates to both fit, so the `fits.length === 1` uniqueness test that
+protects that branch collapses. Forgiving a vendor's rounding of a rate they
+told us is a different act from guessing a rate out of a rounded figure.
+
 ---
 
 ## 5. Extraction — the AI pipeline

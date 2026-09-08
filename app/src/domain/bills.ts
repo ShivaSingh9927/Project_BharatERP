@@ -373,9 +373,10 @@ export async function createBill(
     if (totals.taxAsCharged) {
       warnings.push(
         'the tax on this bill is the tax the supplier printed, which differs ' +
-        'by up to a paisa a line from what its rate computes. The supplier\'s ' +
-        'figure is the one recorded: it is what input credit is claimed on and ' +
-        'what GSTR-2B will show.');
+        'from what its rate computes — by a paisa where the supplier rounded ' +
+        'at a different point, or to the nearest rupee where they rounded the ' +
+        'tax as s.170 requires. The supplier\'s figure is the one recorded: it ' +
+        'is what input credit is claimed on and what GSTR-2B will show.');
     }
 
     /*
