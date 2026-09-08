@@ -1052,6 +1052,9 @@ interface DashboardV {
   creditAtRisk: string | null;
   creditSupported: string | null;
   openReconItems: number;
+  totalPayable: string;
+  overduePayable: string;
+  overdueCount: number;
   recentBills: Array<{ number: string; party: string; date: string; total: string }>;
   registrationIssues: Array<{ party: string; gstin: string; status: string }>;
   hasRecon: boolean;
@@ -1109,6 +1112,10 @@ ${picker}
          a.openReconItems ? 'warn' : '', '/gstr2b')}
   ${tile(String(a.billsPosted), 'bills posted this period', '', '/bills')}
   ${tile(inr(a.purchaseValue), 'purchase value', '')}
+  ${tile(inr(a.totalPayable), 'owed to suppliers', '', '/payables')}
+  ${tile(inr(a.overduePayable),
+         a.overdueCount ? a.overdueCount + ' bill(s) overdue' : 'nothing overdue',
+         a.overduePayable === '0.00' ? 'good' : 'bad', '/payables')}
 </div>
 
 ${issues}

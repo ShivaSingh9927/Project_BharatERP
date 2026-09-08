@@ -16,6 +16,7 @@
 
 import { withFirm } from '../db/pool.ts';
 import { latestReconForPeriod } from './gstr2bStore.ts';
+import { outstandingBills } from './payables.ts';
 import { paise, money } from './tax.ts';
 
 export interface Dashboard {
@@ -29,6 +30,10 @@ export interface Dashboard {
   creditAtRisk: string | null;
   creditSupported: string | null;
   openReconItems: number;
+  /** Client-wide, not period-scoped: the whole payable and the overdue slice. */
+  totalPayable: string;
+  overduePayable: string;
+  overdueCount: number;
   recentBills: Array<{ number: string; party: string; date: string; total: string }>;
   registrationIssues: Array<{ party: string; gstin: string; status: string }>;
   hasRecon: boolean;
@@ -83,6 +88,15 @@ export async function loadDashboard(
     }),
   ]);
 
+  // Payables are a running position, not this period's — computed across all
+  // open bills, with the overdue slice called out.
+  const payable = await outstandingBills(firmId, clientId);
+  let totalPayable = 0n, overdue = 0n, overdueCount = 0;
+  for (const b of payable) {
+    totalPayable += paise(b.outstanding);
+    if (b.daysOverdue > 0) { overdue += paise(b.outstanding); overdueCount += 1; }
+  }
+
   const reconLines = await latestReconForPeriod(firmId, clientId, period);
   const hasRecon = reconLines.length > 0;
   let supported = 0n, atRisk = 0n, open = 0;
@@ -100,6 +114,9 @@ export async function loadDashboard(
     creditAtRisk: hasRecon ? money(atRisk) : null,
     creditSupported: hasRecon ? money(supported) : null,
     openReconItems: open,
+    totalPayable: money(totalPayable),
+    overduePayable: money(overdue),
+    overdueCount,
     recentBills: recent,
     registrationIssues: issues,
     hasRecon,

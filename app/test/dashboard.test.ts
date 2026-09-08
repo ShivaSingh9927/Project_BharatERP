@@ -13,6 +13,7 @@ const base = {
   period: '2026-03', periods: ['2026-03', '2026-02'],
   billsPosted: 4, purchaseValue: '10721.00', creditClaimed: '1234.00',
   creditAtRisk: '1455.08', creditSupported: '19.98', openReconItems: 3,
+  totalPayable: '73583.20', overduePayable: '47575.00', overdueCount: 5,
   recentBills: [{ number: 'INV-1', party: 'ACME', date: '2026-03-01', total: '100.00' }],
   registrationIssues: [],
   hasRecon: true,
@@ -31,6 +32,20 @@ describe('the credit-at-risk headline', () => {
     expect(h).toMatch(/run a 2B reconciliation/);
     // Falls back to claimed credit rather than showing a 2B figure it lacks.
     expect(h).toMatch(/input credit claimed/);
+  });
+});
+
+describe('the payables tiles', () => {
+  it('shows the total owed and the overdue slice', () => {
+    const h = renderDashboard(base);
+    expect(h).toMatch(/73,583\.20/);
+    expect(h).toMatch(/owed to suppliers/);
+    expect(h).toMatch(/47,575\.00/);
+    expect(h).toMatch(/5 bill\(s\) overdue/);
+  });
+  it('reads calm when nothing is overdue', () => {
+    const h = renderDashboard({ ...base, overduePayable: '0.00', overdueCount: 0 });
+    expect(h).toMatch(/nothing overdue/);
   });
 });
 
