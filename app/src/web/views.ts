@@ -162,6 +162,14 @@ tr.done { opacity: .5; }
 .learned { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
   color: var(--accent); border: 1px solid var(--accent); border-radius: 4px;
   padding: 0 4px; margin-left: 6px; vertical-align: middle; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin: 16px 0; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 16px; display: flex; flex-direction: column; gap: 4px; text-decoration: none;
+  color: inherit; }
+a.tile:hover { border-color: var(--accent); }
+.tile b { font-size: 24px; font-variant-numeric: tabular-nums; font-family: var(--mono); }
+.tile span { font-size: 12px; color: var(--muted); }
 `;
 
 // ---------------------------------------------------------------------------
@@ -187,6 +195,7 @@ export function renderShell(a: {
   <b>BharatERP</b>
   <span class="client">${esc(a.session.clientName)}</span>
   <nav>
+    ${link('/', 'home', 'Home')}
     ${link('/accounts', 'accounts', 'Accounts')}
     ${link('/bills', 'bills', 'Bills')}
     ${link('/import', 'import', 'Import')}
@@ -1017,4 +1026,84 @@ document.querySelectorAll('button.post').forEach((btn) => {
   };
 });
 </script>`;
+}
+
+// ---------------------------------------------------------------------------
+// The dashboard — the client on one screen.
+//
+// Leads with the number that costs money: credit booked that no supplier has
+// filed, unclaimable until they do. Everything else is context around it.
+
+interface DashboardV {
+  period: string;
+  periods: string[];
+  billsPosted: number;
+  purchaseValue: string;
+  creditClaimed: string;
+  creditAtRisk: string | null;
+  creditSupported: string | null;
+  openReconItems: number;
+  recentBills: Array<{ number: string; party: string; date: string; total: string }>;
+  registrationIssues: Array<{ party: string; gstin: string; status: string }>;
+  hasRecon: boolean;
+}
+
+export function renderDashboard(a: DashboardV): string {
+  const picker = `
+    <form method="get" action="/" class="row">
+      <label>Period
+        <select name="period" onchange="this.form.submit()">
+          ${a.periods.map((p) =>
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </label>
+    </form>`;
+
+  const tile = (value: string, label: string, cls = '', href = ''): string => {
+    const inner = `<b class="${cls}">${esc(value)}</b><span>${esc(label)}</span>`;
+    return href
+      ? `<a class="tile" href="${href}">${inner}</a>`
+      : `<div class="tile">${inner}</div>`;
+  };
+
+  const risk = a.creditAtRisk === null
+    ? tile('—', 'run a 2B reconciliation', 'muted', '/gstr2b')
+    : tile(inr(a.creditAtRisk), 'credit booked, not yet filed',
+           a.creditAtRisk === '0.00' ? 'good' : 'bad', '/gstr2b');
+
+  const issues = a.registrationIssues.length === 0 ? '' : `
+    <div class="msg bad"><b>${a.registrationIssues.length} supplier(s) with a
+    registration that is not active.</b> Credit on their invoices needs a look.
+    <ul class="warns">${a.registrationIssues.map((r) =>
+      `<li>${esc(r.party)} — ${esc(r.gstin)} — <b>${esc(r.status)}</b></li>`).join('')}</ul>
+    </div>`;
+
+  const recent = a.recentBills.length === 0
+    ? '<p class="empty">No bills posted yet. <a href="/bills">Upload some invoices.</a></p>'
+    : `<div class="panel" style="padding:0"><table>
+        <tr><th>Invoice</th><th>Supplier</th><th>Date</th><th class="num">Total</th></tr>
+        ${a.recentBills.map((b) => `<tr>
+          <td class="mono">${esc(b.number)}</td><td>${esc(b.party)}</td>
+          <td>${esc(b.date)}</td><td class="num">${inr(b.total)}</td></tr>`).join('')}
+      </table></div>`;
+
+  return `<h1>Overview</h1>
+<p class="sub">Where the client stands this period — and what still needs you.</p>
+
+${picker}
+
+<div class="tiles">
+  ${risk}
+  ${tile(a.creditSupported !== null ? inr(a.creditSupported) : inr(a.creditClaimed),
+         a.creditSupported !== null ? 'credit 2B supports' : 'input credit claimed', 'good')}
+  ${tile(String(a.openReconItems), 'reconciliation items open',
+         a.openReconItems ? 'warn' : '', '/gstr2b')}
+  ${tile(String(a.billsPosted), 'bills posted this period', '', '/bills')}
+  ${tile(inr(a.purchaseValue), 'purchase value', '')}
+</div>
+
+${issues}
+
+<h2 class="mt">Recently posted</h2>
+${recent}`;
 }

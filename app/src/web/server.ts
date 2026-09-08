@@ -27,7 +27,8 @@ import { parseGstr2b } from '../parse/../integrations/gstr2bJson.ts';
 import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
 import { paise, money } from '../domain/tax.ts';
-import { renderBillReview } from './views.ts';
+import { loadDashboard } from '../domain/dashboard.ts';
+import { renderBillReview, renderDashboard } from './views.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -173,7 +174,15 @@ async function handle(
 
   // ---- pages --------------------------------------------------------------
 
-  if (req.method === 'GET' && (path === '/' || path === '/accounts')) {
+  if (req.method === 'GET' && path === '/') {
+    const dash = await loadDashboard(session.firmId, session.clientId,
+      url.searchParams.get('period') ?? undefined);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'home', body: renderDashboard(dash),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/accounts') {
     return html(res, 200, renderShell({
       session, accounts, active: 'accounts',
       body: renderAccounts(accounts),
