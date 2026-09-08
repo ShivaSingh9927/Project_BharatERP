@@ -213,6 +213,7 @@ export function renderShell(a: {
     ${link(`/brs${q}`, 'brs', 'BRS')}
     ${link('/cash', 'cash', 'Cash')}
     ${link('/gstr2b', 'gstr2b', 'GSTR-2B')}
+    ${link('/gstr1', 'gstr1', 'GSTR-1')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -1351,4 +1352,103 @@ ${s.bills.length === 0
 
 ${payRows}
 ${learnedBlock}`;
+}
+
+// ---------------------------------------------------------------------------
+// GSTR-1 — the outward-supplies return, as a summary the CA reviews before it
+// is filed. Leads with the liability, then each section that carries anything.
+
+interface Gstr1V {
+  period: string;
+  b2b: Array<{ ctin: string; name: string; invoices: Array<{ invoiceNumber: string;
+    invoiceDate: string; grandTotal: string; taxable: string }> }>;
+  b2cl: Array<{ invoiceNumber: string; placeOfSupply: string; grandTotal: string }>;
+  b2cs: Array<{ pos: string; rate: string; taxable: string; igst: string;
+    cgst: string; sgst: string; cess: string }>;
+  exp: Array<{ invoiceNumber: string; grandTotal: string }>;
+  cdnr: Array<{ invoiceNumber: string; customerName: string; grandTotal: string }>;
+  hsn: Array<{ hsn: string; description: string; quantity: string; rate: string;
+    taxable: string; igst: string; cgst: string; sgst: string; cess: string }>;
+  summary: { documents: number; taxable: string; igst: string; cgst: string;
+    sgst: string; cess: string; totalTax: string };
+  periods: string[];
+}
+
+export function renderGstr1(a: Gstr1V): string {
+  const picker = `
+    <form method="get" action="/gstr1" class="row">
+      <label>Return period
+        <select name="period" onchange="this.form.submit()">
+          ${(a.periods.length ? a.periods : [a.period]).map((p) =>
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </label>
+    </form>`;
+
+  const empty = a.summary.documents === 0;
+
+  const b2bBlock = a.b2b.length === 0 ? '' : `
+    <h2 class="mt">B2B — registered customers (${a.b2b.length})</h2>
+    <div class="panel" style="padding:0"><table>
+      <tr><th>Customer</th><th>GSTIN</th><th class="num">Invoices</th><th class="num">Taxable</th></tr>
+      ${a.b2b.map((cst) => {
+        const tx = cst.invoices.reduce((s, i) => s + Number(i.taxable), 0).toFixed(2);
+        return `<tr><td>${esc(cst.name)}</td><td class="mono">${esc(cst.ctin)}</td>
+          <td class="num">${cst.invoices.length}</td><td class="num">${inr(tx)}</td></tr>`;
+      }).join('')}
+    </table></div>`;
+
+  const b2csBlock = a.b2cs.length === 0 ? '' : `
+    <h2 class="mt">B2CS — consumer sales, summarised</h2>
+    <div class="panel" style="padding:0"><table>
+      <tr><th>Place of supply</th><th class="num">Rate</th><th class="num">Taxable</th>
+          <th class="num">IGST</th><th class="num">CGST</th><th class="num">SGST</th></tr>
+      ${a.b2cs.map((r) => `<tr><td>${esc(r.pos)}</td><td class="num">${esc(r.rate)}%</td>
+        <td class="num">${inr(r.taxable)}</td><td class="num">${inr(r.igst)}</td>
+        <td class="num">${inr(r.cgst)}</td><td class="num">${inr(r.sgst)}</td></tr>`).join('')}
+    </table></div>`;
+
+  const section = (title: string, rows: string, cols: string) => rows === '' ? '' : `
+    <h2 class="mt">${title}</h2>
+    <div class="panel" style="padding:0"><table>${cols}${rows}</table></div>`;
+
+  const b2cl = section('B2CL — large inter-state consumer sales',
+    a.b2cl.map((r) => `<tr><td class="mono">${esc(r.invoiceNumber)}</td>
+      <td>${esc(r.placeOfSupply)}</td><td class="num">${inr(r.grandTotal)}</td></tr>`).join(''),
+    '<tr><th>Invoice</th><th>POS</th><th class="num">Value</th></tr>');
+
+  const exp = section('Exports',
+    a.exp.map((r) => `<tr><td class="mono">${esc(r.invoiceNumber)}</td>
+      <td class="num">${inr(r.grandTotal)}</td></tr>`).join(''),
+    '<tr><th>Invoice</th><th class="num">Value</th></tr>');
+
+  const cdnr = section('Credit / debit notes',
+    a.cdnr.map((r) => `<tr><td class="mono">${esc(r.invoiceNumber)}</td>
+      <td>${esc(r.customerName)}</td><td class="num">${inr(r.grandTotal)}</td></tr>`).join(''),
+    '<tr><th>Note</th><th>Customer</th><th class="num">Value</th></tr>');
+
+  const hsn = section('HSN summary',
+    a.hsn.map((r) => `<tr><td class="mono">${esc(r.hsn)}</td><td>${esc(r.description)}</td>
+      <td class="num">${esc(r.quantity)}</td><td class="num">${esc(r.rate)}%</td>
+      <td class="num">${inr(r.taxable)}</td></tr>`).join(''),
+    '<tr><th>HSN</th><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Taxable</th></tr>');
+
+  return `<h1>GSTR-1</h1>
+<p class="sub">Outward supplies for the period — what the client sold, sorted
+into the boxes the return files. The tax total below is the liability declared.</p>
+
+${picker}
+
+${empty ? '<p class="empty">No sales invoices in this period.</p>' : `
+<div class="panel strip">
+  <div class="stat"><b>${a.summary.documents}</b><span>documents</span></div>
+  <div class="stat"><b>${inr(a.summary.taxable)}</b><span>taxable value</span></div>
+  <div class="stat"><b>${inr(a.summary.igst)}</b><span>IGST</span></div>
+  <div class="stat"><b>${inr(a.summary.cgst)}</b><span>CGST</span></div>
+  <div class="stat"><b>${inr(a.summary.sgst)}</b><span>SGST</span></div>
+  <div class="stat"><b class="bad">${inr(a.summary.totalTax)}</b><span>tax declared</span></div>
+</div>
+
+${b2bBlock}${b2csBlock}${b2cl}${exp}${cdnr}${hsn}
+`}`;
 }
