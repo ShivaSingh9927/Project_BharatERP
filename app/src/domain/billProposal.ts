@@ -59,6 +59,7 @@ import { recordProvenance } from './provenance.ts';
 import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
+import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
 import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
@@ -109,8 +110,11 @@ export interface BillProposal {
    * How the figures were read. `docling` is a machine-learned reader that
    * stays on the premises; `llm` means the document left the building, so it
    * belongs on the record beside the figures rather than in a log file.
+   * `summary` means the document had no line items on its face and its own
+   * stated totals were graded instead — a narrower reading, and one a reviewer
+   * should be able to see was used.
    */
-  readBy: 'coordinates' | 'docling' | 'llm';
+  readBy: 'coordinates' | 'docling' | 'llm' | 'summary';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
@@ -585,6 +589,31 @@ export async function proposeFromDocument(
    * same gates: `readInvoiceTableFromDocling` grades every table it found and
    * keeps one only if it ties.
    */
+  /*
+   * Before any fallback reader: does the document say it HAS no line items?
+   *
+   * Tried first because it is not a guess at difficult geometry — it is the
+   * paper telling us its own shape. A large supplier billing against a
+   * schedule prints "Detail as per Annexure Attached" and states the tax as
+   * labelled lines, and no amount of column detection will find a table that
+   * was never printed. `readSummaryInvoice` returns null unless the document
+   * makes that declaration itself, so this cannot become a way to skip a
+   * broken table by trusting its total.
+   */
+  if (!table.readable) {
+    const summary = readSummaryInvoice(pageText, profile.charged);
+    /*
+     * Adopted whether or not it ties. A non-null result means this IS a
+     * summary invoice, so its verdict is the one about this document —
+     * including the refusal. Leaving the grid reader's "the table does not add
+     * up" in place would blame a table that was never printed.
+     */
+    if (summary !== null) {
+      table = summary.table;
+      readBy = 'summary';
+    }
+  }
+
   if (!table.readable && input.docling && input.doclingTables) {
     const dt = readInvoiceTableFromDocling(
       input.doclingTables, seg.pages, profile.charged, seg.text);

@@ -97,6 +97,43 @@ arrives twice: emailed by the vendor and photographed by the employee. Match on
 influence classification. This is a live prompt-injection surface; the
 extraction prompt must treat document content strictly as content.
 
+**BE-18 — An invoice with no line items on its face may be read from its own
+stated totals, but only when it says so itself.**
+
+Most invoices print a table of items. Some do not. A large supplier billing
+against a schedule prints "Detail as per Annexure Attached" against every item
+field and then states the tax as labelled lines:
+
+```
+Total Taxable Value : 12,34,567.00
+IGST                : 2,22,222.06
+Total Invoice Amount: 14,56,789.06
+```
+
+That is a complete, self-checking tax statement. Refusing it because it is not
+a grid rejects a correct document for the shape of its page.
+
+This does **not** relax the standing rule that *a tied total proves the rows
+shown were consistent, never that all rows were read*. It changes the premise:
+there are no rows to have missed, because the document declares its detail is
+elsewhere. The declaration is therefore the gate, and it is checked **first**:
+
+- The document must use annexure language **and** answer at least two item
+  fields (item code, quantity, HSN, UoM, description) with it. Either signal
+  alone is too easy to trip — an annexure named in the terms does not qualify.
+- This path must **never** be reachable as a fallback for a table that exists
+  but read badly. That would be a way to skip a broken grid by trusting the
+  total beneath it — precisely the failure the standing rule prevents.
+- The figures face the **same** gates as every other reader, run by the same
+  code: one amount per cell, and taxable + cgst + sgst + igst + cess = total.
+- Where the document states a figure twice — "Total Basic Amount" and "Total
+  Taxable Value", or a "Total (GST)" beside its components — the restatements
+  must agree. A disagreement means a label was misread and the bill is refused,
+  even if the grand total still happens to tie.
+- The posted bill carries a warning naming the annexure this software has not
+  seen, and records `read_by = summary`, so no reviewer mistakes it for an
+  itemised reading.
+
 ---
 
 ## 5. Extraction — the AI pipeline
