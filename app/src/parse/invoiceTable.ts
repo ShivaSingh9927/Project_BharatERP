@@ -207,7 +207,19 @@ const HEADER_HINTS = [
 ];
 
 /** A totals row announces itself. */
-const TOTAL_ROW = /^\s*(?:grand\s+)?total\b\s*:?\s*$/i;
+/*
+ * A totals row's caption, which may carry the amount in words after it.
+ *
+ * A professional-fees bill writes "Total (Fifteen Thousand Rupees Only )" in
+ * the particulars cell. Requiring the cell to be nothing but "Total" left that
+ * row counted as a second ITEM, so a 15,000 bill summed to 30,000 and was
+ * refused for stating no total that matched.
+ *
+ * Only a parenthesised tail is allowed. "Total Amount" and "Total Value" are
+ * column captions, not totals rows, and admitting bare trailing words would
+ * swallow them.
+ */
+const TOTAL_ROW = /^\s*(?:grand\s+)?total\b\s*:?\s*(?:\([^)]*\))?\s*$/i;
 
 /**
  * Where the table stops — decided by geometry, not by a list of words.
@@ -505,15 +517,44 @@ function resolveLoneCgst(header: string[], roles: ColumnRole[]): void {
  * Mutates `roles` in place, which is ugly and keeps the decision in one place
  * rather than threading a second array through every caller.
  */
-function resolveBareAmount(header: string[], roles: ColumnRole[]): void {
+function resolveBareAmount(
+  header: string[], roles: ColumnRole[], dataRows: readonly string[][] = [],
+): void {
   const taxed: ColumnRole[] =
     ['cgst', 'sgst', 'igst', 'cess', 'tax_amount', 'tax_type', 'taxable'];
   if (roles.some((r) => taxed.includes(r) || r === 'total')) return;
 
-  const bare = /^\s*(?:amount|value)\s*[\p{Sc}]?\s*$/iu;
+  /*
+   * The caption must BEGIN with the word, not consist of it.
+   *
+   * A professional-fees bill heads its money column "Amount Rs.(Prof. fees)",
+   * and requiring the cell to be nothing but "Amount" left that document with
+   * no figure at all. Leading position is what does the work: "Tax Amount" and
+   * "Reimbursement Amount" both carry the word and neither is the document's
+   * value, and both are excluded by having something in front of it. (The tax
+   * ones never reach here anyway — the guard above returns first.)
+   */
+  const bare = /^\s*(?:amount|value)\b/iu;
+
+  /*
+   * And it must actually hold money. An empty column cannot be the total, and
+   * a column of prose — "Amount in Words" — would otherwise be promoted and
+   * then fail gate 1, refusing a document over a caption.
+   *
+   * This also settles the common pair of an amount column beside an empty
+   * "Reimbursement Amount": one of them carries figures, so there is exactly
+   * one candidate and no ambiguity to guard against.
+   */
+  const holdsMoney = (i: number) => dataRows.some((r) => {
+    const cell = r[i]?.trim();
+    if (cell === undefined || cell === '') return false;
+    try { parseAmount(cell); return true; } catch { return false; }
+  });
+
   const candidates = header
     .map((h, i) => ({ h, i }))
-    .filter(({ h, i }) => roles[i] === 'other' && bare.test(h));
+    .filter(({ h, i }) => roles[i] === 'other' && bare.test(h)
+                          && (dataRows.length === 0 || holdsMoney(i)));
 
   if (candidates.length === 1) roles[candidates[0]!.i] = 'total';
 }
@@ -544,7 +585,7 @@ export function gradeTable(
   labelledTotals: readonly string[] = [],
 ): InvoiceTable {
   const roles = header.map(roleOf);
-  resolveBareAmount(header, roles);
+  resolveBareAmount(header, roles, dataRows);
   resolveRateColumns(dataRows, roles);
   resolveLoneCgst(header, roles);
 

@@ -298,6 +298,67 @@ same table and take the same column sum, so they agree — and agree wrongly.
 Two-reader agreement catches MISREADING; it cannot catch MIS-SCOPING, in the
 same way a tied total never proved that every row was read.
 
+**BE-26 — "No GSTIN" is two opposite documents, and the party master decides
+which.**
+
+A bill with no supplier GSTIN is either:
+
+- a supplier **outside India** — an import of service, on which the recipient
+  owes IGST under reverse charge at a rate the paper cannot state; or
+- an **unregistered Indian supplier** — a professional under the threshold, a
+  small contractor — on which normally no GST arises at all, because s.9(4)
+  reverse charge on inward supplies from unregistered persons has been
+  suspended since 13 October 2017.
+
+The reader used to demand a reverse-charge rate before it would even look for
+the supplier, and its refusal named only the import case. A domestic
+professional's bill — a large share of a real SMB's payables — was therefore
+told it might be an import of service. That is not a missing feature; it is a
+confident wrong answer about the document.
+
+The paper genuinely cannot separate the two. **`gst_category` can**, and it is
+reviewed by a human when the vendor is created. So match the supplier first and
+let the master record decide:
+
+- `overseas` → import of service; still needs the rate supplied.
+- `unregistered` → post as a plain expense. No GST, no input credit.
+- neither on file → refuse, naming **both** categories so the reviewer knows
+  which decision they are making.
+- unregistered **but the document charges GST** → refuse. Either the supplier
+  has since registered and the master is stale, or this is not their document.
+  Neither is safe to claim credit on.
+
+The caller's reverse-charge flag must not outrank the master record: a folder
+ingested with `--rcm-rate` would otherwise raise IGST on a bill that owes none.
+
+**s.9(4) is suspended; s.9(3) is not.** For a listed handful of services —
+legal, goods transport, sponsorship, a director's fees — the recipient owes the
+tax whatever the supplier's registration, and a plain expense understates the
+liability. Ask when the document names such a service; do not ask on every
+unregistered purchase, which would make the feature unusable for the CA it
+exists to serve.
+
+**BE-27 — Read the notation Indian bills are actually written in.**
+
+Small vocabulary, large effect, and each of these silently cost a whole
+document:
+
+- **`15,000/-`** — rupees and no paise. Universal on Word-template and
+  hand-written bills; rejected outright, so such a document had no readable
+  amount anywhere and no total to check against.
+- **`Ref No.`** — how a professional-fees bill numbers itself. A consultant's
+  bill rarely says "Invoice No".
+- **A totals row captioned `Total (Fifteen Thousand Rupees Only)`** — requiring
+  the cell to be nothing but "Total" left that row counted as a second ITEM, so
+  a ₹15,000 bill summed to ₹30,000 and was refused for stating no matching
+  total. Only a parenthesised tail is admitted: "Total Amount" is a column
+  caption, not a totals row.
+- **A money column captioned `Amount Rs.(Prof. fees)`** — the bare-amount rule
+  required the caption to consist of the word. Leading position is what does
+  the work, and a candidate must actually hold figures: an empty
+  "Reimbursement Amount" beside it is then not a rival, and a column of prose
+  cannot be promoted and then fail gate 1.
+
 ---
 
 ## 5. Extraction — the AI pipeline

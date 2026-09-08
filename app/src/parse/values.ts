@@ -188,6 +188,18 @@ export function parseAmount(raw: string): ParsedAmount {
     body = body.slice(0, marker.index);
   }
 
+  /*
+   * The Indian "rupees and no paise" suffix: 15,000/- means 15000.00.
+   *
+   * Universal on hand-written and Word-template bills — professional fees,
+   * rent receipts, contractor bills — and rejected outright until now, so a
+   * document whose every figure was written that way had no readable amount
+   * at all and no total to check against.
+   *
+   * Stripped before the currency scan, not after: "Rs. 15,000/-" carries both.
+   */
+  body = body.replace(/\s*\/\s*-\s*$/, '');
+
   const currency = currencyOf(body);
   body = body
     .replace(/\b(?:INR|USD|EUR|GBP|Rs)\b\.?/gi, '')

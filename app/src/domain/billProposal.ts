@@ -562,11 +562,11 @@ async function findSupplier(
  */
 async function findOverseasSupplier(
   firmId: string, clientId: string, text: string,
-): Promise<{ id: string; name: string } | 'none' | 'ambiguous'> {
+): Promise<{ id: string; name: string; category: string } | 'none' | 'ambiguous'> {
   const haystack = text.toLowerCase();
   return withFirm(firmId, async (c) => {
-    const r = await c.query<{ id: string; name: string }>(
-      `SELECT id, name FROM parties
+    const r = await c.query<{ id: string; name: string; category: string }>(
+      `SELECT id, name, gst_category::text AS category FROM parties
         WHERE client_id = $1 AND party_type = 'supplier'
           AND gstin IS NULL AND is_active`,
       [clientId]);
@@ -579,6 +579,23 @@ async function findOverseasSupplier(
     return hits[0]!;
   });
 }
+
+/**
+ * Supplies on which the RECIPIENT owes GST however the supplier is registered.
+ *
+ * A purchase from an unregistered Indian supplier normally carries no GST at
+ * all: s.9(4) — reverse charge on inward supplies from unregistered persons —
+ * has been suspended since 13 October 2017 and reinstated only for notified
+ * cases. But s.9(3) is a different provision and is very much alive: for a
+ * listed handful of services the recipient pays regardless, and the supplier's
+ * registration is beside the point.
+ *
+ * So a plain expense is the right default and a wrong one for these. The
+ * document usually names the service, which is enough to raise the question
+ * with a human rather than either guessing or interrogating every bill.
+ */
+const NOTIFIED_RCM_SERVICE =
+  /\b(?:advocate|advocates|legal\s+(?:service|fee|consultanc)|goods\s+transport|\bGTA\b|transport\s+agency|sponsorship|arbitral|security\s+service|director(?:'?s)?\s+(?:fee|remuneration|sitting)|recovery\s+agent|insurance\s+agent)/i;
 
 /** Reads a file and proposes one bill per document it contains. */
 export async function proposeBills(
@@ -851,38 +868,106 @@ export async function proposeFromDocument(
   let partyName: string | null = null;
   let registration: GstinRecord | null = null;
 
+  /** True once the supplier is identified as an unregistered Indian one. */
+  let domesticUnregistered = false;
+
   if (seg.supplierGstin === null) {
     /*
-     * No GSTIN. Either a supplier outside India — an import of service, on
-     * which the recipient owes the tax — or an unregistered Indian one, on
-     * which usually nothing is owed. The document cannot tell them apart and
-     * neither can this code, so the caller decides by supplying the rate.
+     * No GSTIN. Two entirely different documents look like this and they are
+     * handled in opposite ways:
+     *
+     *   - a supplier OUTSIDE INDIA — an import of service, on which the
+     *     recipient owes IGST under reverse charge at a rate the paper cannot
+     *     state, because it charges none;
+     *   - an UNREGISTERED INDIAN supplier — a professional under the
+     *     threshold, a small contractor — on which normally no GST arises at
+     *     all. s.9(4) reverse charge on inward supplies from unregistered
+     *     persons has been suspended since 13 October 2017.
+     *
+     * This used to demand a reverse-charge rate before it would even look for
+     * the supplier, and its refusal named only the foreign case. So a domestic
+     * professional's bill — very common, and a large share of a real SMB's
+     * payables — was told it might be an import of service. That is not a
+     * missing feature, it is a confident wrong answer about the document.
+     *
+     * The paper genuinely cannot tell the two apart. The PARTY MASTER can, and
+     * always could: `gst_category` is 'overseas' or 'unregistered', and it is
+     * reviewed by a human when the vendor is created. So match the supplier
+     * first and let the master record decide, rather than making the caller
+     * answer a question the books already know.
      */
-    if (input.reverseCharge === undefined) {
+    const found = await findOverseasSupplier(firmId, input.clientId, pageText);
+    if (found === 'none') {
       blockers.push(
-        'no supplier GSTIN appears on this document. If the supplier is ' +
-        'outside India this is an import of service, and the GST is owed by ' +
-        'the recipient under reverse charge — at a rate the document cannot ' +
-        'state, because it charges none' +
-        (currency.currency !== null && currency.currency !== 'INR'
-          ? `. Its figures are in ${currency.currency}, so a rupee value needs ` +
-            'an exchange rate as well'
-          : '') +
-        '. Supply the rate to treat it as an import; otherwise post it by hand.');
+        'no supplier GSTIN appears on this document and no supplier on file ' +
+        'is named on it. Add the vendor first — as ' +
+        "gst_category 'unregistered' if they are an Indian supplier below the " +
+        "registration threshold, or 'overseas' if they are outside India, " +
+        'which decides whether any tax arises at all. Creating one from a PDF ' +
+        'would leave an unreviewed master record behind every future bill ' +
+        'from them.');
+    } else if (found === 'ambiguous') {
+      blockers.push(
+        'more than one supplier on file is named on this document, so which ' +
+        'one it is from cannot be settled from the paper. Post it by hand.');
+    } else if (found.category === 'overseas') {
+      partyId = found.id; partyName = found.name;
+      if (input.reverseCharge === undefined) {
+        blockers.push(
+          `${found.name} is on file as a supplier outside India, so this is an ` +
+          'import of service and the GST is owed by the recipient under ' +
+          'reverse charge — at a rate the document cannot state, because it ' +
+          'charges none' +
+          (currency.currency !== null && currency.currency !== 'INR'
+            ? `. Its figures are in ${currency.currency}, so a rupee value ` +
+              'needs an exchange rate as well'
+            : '') +
+          '. Supply the rate to post it.');
+      }
     } else {
-      const found = await findOverseasSupplier(firmId, input.clientId, pageText);
-      if (found === 'none') {
+      /*
+       * A domestic supplier with no registration. No GST is charged, none is
+       * owed, and there is no input credit to claim — the bill is an expense
+       * and nothing more.
+       */
+      partyId = found.id; partyName = found.name;
+      domesticUnregistered = true;
+      if (tableChargesTax(table)) {
         blockers.push(
-          'no supplier is on file for this document. Add the vendor first, ' +
-          "with gst_category 'overseas' so the tax posts to IGST — creating " +
-          'one from a PDF would leave an unreviewed master record behind ' +
-          'every future bill from them.');
-      } else if (found === 'ambiguous') {
-        blockers.push(
-          'more than one supplier on file is named on this document, so which ' +
-          'one it is from cannot be settled from the paper. Post it by hand.');
+          `${found.name} is on file as unregistered, but this document charges ` +
+          'GST. An unregistered supplier cannot collect it, so either the ' +
+          'supplier has since registered and the master record is stale, or ' +
+          'this is not their document. Neither is safe to claim credit on.');
       } else {
-        partyId = found.id; partyName = found.name;
+        warnings.push(
+          `${found.name} is on file as an unregistered Indian supplier, so no ` +
+          'GST arises on this bill and there is no input credit to claim — ' +
+          'reverse charge on purchases from unregistered persons (s.9(4)) has ' +
+          'been suspended since October 2017. Posted as an expense.');
+
+        /*
+         * Except where s.9(3) says otherwise. For a listed handful of services
+         * the recipient owes the tax whatever the supplier's registration, and
+         * a plain expense would understate the liability. Asked rather than
+         * assumed only when the document actually names such a service —
+         * putting the question on every unregistered purchase would make the
+         * feature unusable for the CA it exists to serve.
+         */
+        const notified = NOTIFIED_RCM_SERVICE.exec(pageText);
+        if (notified) {
+          confirmations.push({
+            field: 'reverse_charge_9_3',
+            chose: 'no reverse charge',
+            instead: 'reverse charge under s.9(3)',
+            question:
+              `This bill mentions "${notified[0]}". A few services — legal, ` +
+              'goods transport, sponsorship, a director\'s fees and a handful ' +
+              'more — are taxed in the recipient\'s hands under s.9(3) whatever ' +
+              'the supplier\'s registration. I have treated it as an ordinary ' +
+              'expense with no tax. Please confirm that is right, or post it ' +
+              'by hand with the rate.',
+          });
+        }
       }
     }
   } else {
@@ -985,9 +1070,16 @@ export async function proposeFromDocument(
 
   /*
    * This document is being treated as an import of service: no GSTIN on it,
-   * and the caller has named the rate its supply attracts.
+   * the supplier is on file as being outside India, and the caller has named
+   * the rate its supply attracts.
+   *
+   * The party's category is part of the test, not just the caller's flag. A
+   * folder ingested with `--rcm-rate` would otherwise sweep a domestic
+   * unregistered supplier into the import path and raise IGST on a bill that
+   * owes none.
    */
-  const rcm = seg.supplierGstin === null && input.reverseCharge !== undefined;
+  const rcm = seg.supplierGstin === null && input.reverseCharge !== undefined
+              && !domesticUnregistered;
   let fxRate: string | null = 'skip';
 
   if (rcm) {

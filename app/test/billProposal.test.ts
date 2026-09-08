@@ -49,6 +49,20 @@ const interStateTable = (taxable: string, tax: string, total: string) => page([
   w('1', 40, 130), w(taxable, 90, 130), w(tax, 200, 130), w(total, 280, 130),
 ]);
 
+/**
+ * An untaxed bill that NAMES its supplier on the page.
+ *
+ * A party with no GSTIN can only be matched by name, and the match runs over
+ * the words on the page rather than the segment text — so the name has to be
+ * in the fixture's geometry, not just in its prose.
+ */
+const unregisteredPage = (particulars = 'Consulting') => page([
+  w('Local Consultant', 40, 60),
+  w('Sl', 40, 100), w('Particulars', 90, 100), w('Amount', 300, 100),
+  w('1', 40, 130), w(particulars, 90, 130), w('15,000/-', 300, 130),
+  w('Total', 90, 160), w('15,000/-', 300, 160),
+]);
+
 const intraStateTable = () => page([
   w('Qty', 40, 100), w('Taxable', 90, 100), w('CGST', 200, 100),
   w('SGST', 260, 100), w('Total', 330, 100),
@@ -106,6 +120,14 @@ beforeAll(async () => {
        VALUES ($1,$2,'supplier',$3,$4,'registered_regular',$5,$6,$7)`,
       [t.firmId, t.clientId, name, g, g.slice(0, 2), creditors, t.userId]);
   }
+
+  // A domestic supplier with no registration — matched by NAME in the document
+  // text, exactly as the overseas ones are, since there is no GSTIN to match on.
+  await ownerPool.query(
+    `INSERT INTO parties (firm_id, client_id, party_type, name, gstin,
+                          gst_category, state_code, ledger_account_id, created_by)
+     VALUES ($1,$2,'supplier','Local Consultant',NULL,'unregistered','09',$3,$4)`,
+    [t.firmId, t.clientId, creditors, t.userId]);
 });
 
 afterAll(async () => { await closePools(); });
@@ -267,13 +289,80 @@ describe('what will not be posted', () => {
     expect(p.blockers.join(' ')).toMatch(/is not valid/);
   });
 
-  it('refuses a document with no supplier GSTIN, pointing at reverse charge', async () => {
-    // A foreign supplier: a valid bill, an import of service, and one whose
-    // tax the recipient owes. Not an error — just not postable unattended.
+  it('refuses a document with no supplier GSTIN and no supplier on file', async () => {
+    /*
+     * No GSTIN means one of two opposite things — a supplier outside India,
+     * whose tax the recipient owes, or an unregistered Indian one, on whom no
+     * tax arises at all. This refusal used to name only the import case, so a
+     * domestic professional's bill was told it might be an import of service.
+     *
+     * The paper cannot settle it and neither can this code. The party master
+     * can, so the refusal asks for the vendor and names both categories.
+     */
     const p = await propose(doc(null, 'P3', 'Subscription 929.00'),
       interStateTable('1000.00', '180.00', '1180.00'));
     expect(p.input).toBeNull();
-    expect(p.blockers.join(' ')).toMatch(/import of service/);
+    expect(p.blockers.join(' ')).toMatch(/no supplier on file is named on it/);
+    expect(p.blockers.join(' ')).toMatch(/'unregistered'/);
+    expect(p.blockers.join(' ')).toMatch(/'overseas'/);
+    // It must NOT assert the foreign reading over the domestic one.
+    expect(p.blockers.join(' ')).not.toMatch(/this is an import of service/);
+  });
+
+  it('posts a domestic unregistered supplier as a plain expense', async () => {
+    /*
+     * The gap this closes. A professional below the registration threshold, a
+     * small contractor — a large share of a real SMB's payables — has no
+     * GSTIN, and the code read that as "possibly an import of service" and
+     * demanded a reverse-charge rate before it would even look for the vendor.
+     *
+     * The document cannot say which it is. The party master can, and is
+     * reviewed by a human when the vendor is created.
+     */
+    const p = await propose(
+      doc(null, 'REF/1', 'Professional fees'), unregisteredPage(), undefined, {});
+    expect(p.partyName).toBe('Local Consultant');
+    expect(p.blockers).toEqual([]);
+    // Rate 0, not "no rate": the supply is taxable in principle and bears none,
+    // which is a different fact from a rate nobody could determine.
+    expect(p.input?.lines[0]?.gstRate).toBe('0');
+    expect(p.input?.claimedTotals?.igst ?? '0.00').toBe('0.00');
+    expect(p.warnings.join(' ')).toMatch(/unregistered Indian supplier/);
+    expect(p.warnings.join(' ')).toMatch(/s\.9\(4\)/);
+  });
+
+  it('does not sweep an unregistered supplier into the import path', async () => {
+    // A folder ingested with --rcm-rate would otherwise raise IGST on a bill
+    // that owes none: the caller's flag must not outrank the party master.
+    const p = await propose(doc(null, 'REF/2', 'Professional fees'),
+      unregisteredPage(), undefined, { reverseCharge: { rate: '18' } });
+    expect(p.input?.isReverseCharge).not.toBe(true);
+    expect(p.warnings.join(' ')).toMatch(/unregistered Indian supplier/);
+  });
+
+  it('asks before treating a notified s.9(3) service as untaxed', async () => {
+    /*
+     * s.9(4) is suspended; s.9(3) is not. For a listed handful of services the
+     * recipient owes the tax whatever the supplier's registration, so a plain
+     * expense would understate the liability. Asked only when the document
+     * names such a service — putting the question on every unregistered
+     * purchase would make the feature unusable.
+     */
+    const p = await propose(doc(null, 'REF/3', 'Legal fees'),
+      unregisteredPage('Legal services rendered by advocate'));
+    expect(p.confirmations.map((c) => c.field)).toContain('reverse_charge_9_3');
+  });
+
+  it('refuses when an unregistered supplier appears to charge GST', async () => {
+    // Either the master record is stale or this is not their document.
+    // Neither is safe to claim credit on.
+    const p = await propose(doc(null, 'REF/4', 'IGST 18 %'), page([
+      w('Local Consultant', 40, 60),
+      w('Qty', 40, 100), w('Taxable', 90, 100), w('IGST', 200, 100), w('Total', 280, 100),
+      w('1', 40, 130), w('1000.00', 90, 130), w('180.00', 200, 130), w('1180.00', 280, 130),
+    ]));
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/cannot collect it/);
   });
 
   it('refuses when the table did not tie', async () => {

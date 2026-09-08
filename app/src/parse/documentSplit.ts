@@ -153,6 +153,16 @@ const NUMBER_LABELS = [
    */
   /\binv\.?\s*(?:no|number)\b\.?\s*[#:]?\s*(\S+)/i,
   /*
+   * "Ref No." — how a professional-fees bill numbers itself.
+   *
+   * A chartered accountant's or consultant's bill rarely says "Invoice No";
+   * it says "Ref No. AAA/001/2026-27", and that reference IS the document's
+   * number — the one that would be matched in GSTR-2B if the supplier were
+   * registered. Last of the labelled forms, so any explicit invoice number
+   * still wins.
+   */
+  /\bref(?:erence)?\s*no\b\.?\s*[#:]?\s*(\S+)/i,
+  /*
    * A line that is nothing but "Invoice" and the number.
    *
    * A Lithuanian supplier heads its page "Invoice PC-699272" with no label at
