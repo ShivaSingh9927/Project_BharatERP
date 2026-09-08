@@ -29,6 +29,7 @@ import { runReconciliation, latestReconForPeriod, periodsWithRecon,
 import { paise, money } from '../domain/tax.ts';
 import { renderBillReview } from './views.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
+         learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
 import { createHash } from 'node:crypto';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
@@ -207,7 +208,19 @@ async function handle(
         const proposals = await previewBills(
           session.firmId, session.clientId, expenseAccountId,
           session.userId, file, readers);
-        for (const p of proposals) all.push({ ...proposalView(p), token });
+        for (const p of proposals) {
+          const view = proposalView(p);
+          // Pre-classify each line from what this supplier's lines were posted
+          // to before. A suggestion, pre-selected in the picker, never a post.
+          if (view.partyId) {
+            const learned = await learnedDefaultsFor(
+              session.firmId, session.clientId, view.partyId);
+            view.lines = view.lines.map((l) => ({
+              ...l, suggestedAccountId: learned.get(lineKey(l.description)),
+            }));
+          }
+          all.push({ ...view, token });
+        }
       }
       // Cache the last preview so the GET page can render it after reload.
       lastPreview.set(session.clientId, all as PreviewCard[]);

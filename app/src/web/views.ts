@@ -159,6 +159,9 @@ tr.done { opacity: .5; }
 .lines td { padding: 4px 8px 4px 0; vertical-align: middle; }
 .lines select { font-family: inherit; padding: 3px 6px; background: var(--panel);
   color: var(--ink); border: 1px solid var(--line); border-radius: 6px; max-width: 260px; }
+.learned { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--accent); border: 1px solid var(--accent); border-radius: 4px;
+  padding: 0 4px; margin-left: 6px; vertical-align: middle; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -798,7 +801,8 @@ interface ProposalViewV {
   tax: string | null;
   total: string | null;
   registrationStatus: string | null;
-  lines: Array<{ description: string; amount: string; hsn: string | null }>;
+  lines: Array<{ description: string; amount: string; hsn: string | null;
+    suggestedAccountId?: string }>;
   warnings: string[];
   blockers: string[];
   confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
@@ -847,13 +851,19 @@ function proposalCard(
     `<option value="${esc(ac.id)}" ${ac.id === sel ? 'selected' : ''}>${esc(ac.name)}${
       ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('');
 
-  const lineRows = p.lines.map((l, i) => `
+  const lineRows = p.lines.map((l, i) => {
+    const chosen = l.suggestedAccountId ?? defaultAccountId ?? '';
+    return `
     <tr>
       <td>${esc(l.description || 'Line ' + (i + 1))}${
         l.hsn ? ` <span class="muted">HSN ${esc(l.hsn)}</span>` : ''}</td>
       <td class="num">${inr(l.amount)}</td>
-      <td><select class="lineacct" data-line="${i}">${opt(defaultAccountId ?? '')}</select></td>
-    </tr>`).join('');
+      <td>
+        <select class="lineacct" data-line="${i}">${opt(chosen)}</select>
+        ${l.suggestedAccountId ? '<span class="learned" title="learned from a previous bill">learned</span>' : ''}
+      </td>
+    </tr>`;
+  }).join('');
 
   const controls = !canPost ? '' : `
     <div class="lines">

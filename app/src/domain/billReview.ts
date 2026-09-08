@@ -71,6 +71,58 @@ export async function expenseAccounts(
   });
 }
 
+/**
+ * A line's description reduced to a stable key.
+ *
+ * Lower-cased, alphanumerics only — so "Protect Promise Fee" and "Protect
+ * Promise Fee" are one memory, while "iPhone 128GB" and "iPhone 256GB" stay
+ * apart. Capped so a paragraph-long product description cannot become a
+ * pathological key; it simply will not match, which is the safe direction.
+ */
+export function lineKey(description: string): string {
+  return description.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 120);
+}
+
+/** The accounts a client has habitually posted THIS supplier's lines to. */
+export async function learnedDefaultsFor(
+  firmId: string, clientId: string, partyId: string,
+): Promise<Map<string, string>> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ line_key: string; account_id: string }>(
+      `SELECT line_key, account_id FROM line_account_defaults
+        WHERE client_id = $1 AND party_id = $2`, [clientId, partyId]);
+    return new Map(r.rows.map((x) => [x.line_key, x.account_id]));
+  });
+}
+
+/**
+ * Remembers where a reviewer posted each line, so the next bill from this
+ * supplier arrives pre-classified.
+ *
+ * The latest choice wins: a reviewer who re-files a line re-teaches it. Skipped
+ * when the supplier is unmatched — a memory needs a party to hang on.
+ */
+export async function recordLineDefaults(
+  firmId: string, clientId: string, partyId: string,
+  lines: Array<{ description: string; expenseAccountId: string }>,
+): Promise<void> {
+  await withFirm(firmId, async (c) => {
+    for (const l of lines) {
+      const key = lineKey(l.description);
+      if (key === '') continue;
+      await c.query(
+        `INSERT INTO line_account_defaults
+           (firm_id, client_id, party_id, line_key, account_id)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (client_id, party_id, line_key) DO UPDATE
+           SET account_id = EXCLUDED.account_id,
+               times_seen = line_account_defaults.times_seen + 1,
+               updated_at = now()`,
+        [firmId, clientId, partyId, key, l.expenseAccountId]);
+    }
+  });
+}
+
 /** The client's Purchases account — where a reviewed bill's lines post by
  *  default. A reviewer can still split a bill elsewhere; this is the floor. */
 export async function purchasesAccount(
@@ -145,9 +197,20 @@ export async function postReviewedBill(
   });
   if (overrides.blockItc) proposal.input.forceBlockItc = true;
 
-  return postProposal(firmId, proposal, {
+  const bill = await postProposal(firmId, proposal, {
     approvedBy, confirm, sourceUri: 'review-upload',
   });
+
+  // Learn from what was just approved — but only what a human actually decided.
+  // A failed post never reaches here, so nothing is learned from a bill that
+  // did not stand.
+  if (proposal.partyId !== null) {
+    await recordLineDefaults(firmId, clientId, proposal.partyId,
+      proposal.input.lines.map((l) => ({
+        description: l.description, expenseAccountId: l.expenseAccountId,
+      })));
+  }
+  return bill;
 }
 
 /** The view model for one proposal — everything the screen shows, serialisable. */
@@ -165,7 +228,13 @@ export interface ProposalView {
   registrationStatus: string | null;
   /** One entry per posting line, so the reviewer can classify each. Empty on a
    *  blocked proposal, which has no lines to post. */
-  lines: Array<{ description: string; amount: string; hsn: string | null }>;
+  partyId: string | null;
+  lines: Array<{
+    description: string; amount: string; hsn: string | null;
+    /** A learned default, when this supplier's line has been classified before.
+     *  Set by the review layer, not the pure proposal. */
+    suggestedAccountId?: string;
+  }>;
   warnings: string[];
   blockers: string[];
   confirmations: BillProposal['confirmations'];
@@ -190,6 +259,7 @@ export function proposalView(p: BillProposal): ProposalView {
     tax,
     total: p.table.sums.total ?? null,
     registrationStatus: p.registration?.status ?? null,
+    partyId: p.partyId,
     lines: (p.input?.lines ?? []).map((l) => ({
       description: l.description, amount: l.unitPrice, hsn: l.hsnSac ?? null,
     })),

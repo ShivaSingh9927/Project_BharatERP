@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { proposalView } from '../src/domain/billReview.ts';
+import { proposalView, lineKey } from '../src/domain/billReview.ts';
 import type { BillProposal } from '../src/domain/billProposal.ts';
 
 const base = (over: Partial<BillProposal> = {}): BillProposal => ({
@@ -24,6 +24,19 @@ const base = (over: Partial<BillProposal> = {}): BillProposal => ({
   readBy: 'coordinates', billDate: '2026-08-01', billDateBasis: 'read',
   llmProvenance: undefined, crossChecked: 'off',
   ...over,
+});
+
+describe('the line key that memory is stored under', () => {
+  it('collapses spacing and case so a fee name is one key', () => {
+    expect(lineKey('Protect Promise Fee')).toBe(lineKey('protect  promise  FEE'));
+  });
+  it('keeps genuinely different lines apart', () => {
+    // Numbers survive, so two product variants do not collapse into one memory.
+    expect(lineKey('iPhone 128GB')).not.toBe(lineKey('iPhone 256GB'));
+  });
+  it('caps a paragraph-long description rather than keying on all of it', () => {
+    expect(lineKey('x'.repeat(400)).length).toBe(120);
+  });
 });
 
 describe('deriving the card status', () => {
