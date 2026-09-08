@@ -333,6 +333,26 @@ describe('bill creation and GL posting (§9)', () => {
    * bill SAID: the header reported 'blocked' because one line was, and
    * `itcClaimable` came back false while ₹1,800 of credit sat in the entry.
    */
+  it('lets a reviewer withhold ITC on an otherwise-eligible bill', async () => {
+    /*
+     * The screen's "do not claim input credit" toggle. The account (Purchases)
+     * is eligible, so the credit would normally be claimed — forceBlockItc is
+     * the reviewer overriding for what only a human knows, and the GST is
+     * capitalised into the cost exactly as an account-blocked line is.
+     */
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'NOITC/2026/1', billDate: '2026-05-07',
+      lines: [{ description: 'Goods', unitPrice: '10000', gstRate: '18',
+        expenseAccountId: A('Purchases') }],
+      forceBlockItc: true,
+      createdBy: t.userId,
+    });
+    expect(bill.itcEligibility).toBe('blocked');
+    expect(bill.itcClaimableValue).toBe('0.00');
+    expect(bill.itcBlockedValue).toBe('1800.00');
+  });
+
   it('G-9 reports a mixed bill as mixed, not as wholly blocked', async () => {
     const bill = await createBill(t.firmId, {
       clientId: t.clientId, partyId: supplier,

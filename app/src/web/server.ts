@@ -28,7 +28,7 @@ import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
 import { paise, money } from '../domain/tax.ts';
 import { renderBillReview } from './views.ts';
-import { resolveReaders, purchasesAccount, previewBills, postReviewedBill,
+import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
 import { createHash } from 'node:crypto';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
@@ -181,6 +181,7 @@ async function handle(
 
   if (req.method === 'GET' && path === '/bills') {
     const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
+    const expAccounts = await expenseAccounts(session.firmId, session.clientId);
     const posted = await recentBills(session);
     const fresh = url.searchParams.has('new');
     const cards = fresh ? (lastPreview.get(session.clientId) ?? []) : [];
@@ -189,6 +190,7 @@ async function handle(
       body: renderBillReview({
         proposals: cards as never, token: cards[0]?.token ?? null, posted,
         hasExpenseAccount: expenseAccountId !== null,
+        accounts: expAccounts, defaultAccountId: expenseAccountId,
       }),
     }));
   }
@@ -224,7 +226,8 @@ async function handle(
     try {
       const bill = await postReviewedBill(
         session.firmId, session.clientId, expenseAccountId,
-        stashed.file, body.index, body.confirm ?? {}, session.userId, readers);
+        stashed.file, body.index, body.confirm ?? {}, session.userId, readers,
+        { expenseAccountId: body.expenseAccountId, blockItc: body.blockItc === true });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });

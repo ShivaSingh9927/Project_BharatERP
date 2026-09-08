@@ -145,6 +145,13 @@ tr.done { opacity: .5; }
 .warns li { color: var(--muted); }
 .blocks li { color: var(--bad); }
 .billactions { margin-top: 12px; }
+.billctl { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.billctl label { font-size: 13px; color: var(--muted); }
+.billctl select { margin-left: 6px; font-family: inherit; padding: 3px 6px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; }
+.billctl .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -794,7 +801,11 @@ const READ_BY_LABEL: Record<string, string> = {
   coordinates: 'read on-page', docling: 'read by Docling', llm: 'read by a model',
 };
 
-function proposalCard(p: ProposalViewV, token: string): string {
+function proposalCard(
+  p: ProposalViewV, token: string,
+  accounts: Array<{ id: string; name: string; itc: string | null }>,
+  defaultAccountId: string | null,
+): string {
   const badge = p.status === 'ready'
     ? '<span class="tag good">Ready to post</span>'
     : p.status === 'needs_answer'
@@ -819,6 +830,20 @@ function proposalCard(p: ProposalViewV, token: string): string {
 
   const canPost = p.status !== 'blocked';
 
+  // The classification controls — where the spend posts, and whether to claim
+  // credit. Offered only on a postable card; a blocked one has nothing to post.
+  const controls = !canPost ? '' : `
+    <div class="billctl">
+      <label>Post to
+        <select class="acct">
+          ${accounts.map((ac) => `<option value="${esc(ac.id)}"
+            ${ac.id === defaultAccountId ? 'selected' : ''}>${esc(ac.name)}${
+              ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('')}
+        </select>
+      </label>
+      <label class="chk"><input type="checkbox" class="noitc"> Do not claim input credit</label>
+    </div>`;
+
   return `<div class="billcard ${p.status}" data-index="${p.index}">
     <div class="billhead">
       <div>
@@ -838,6 +863,7 @@ function proposalCard(p: ProposalViewV, token: string): string {
     ${confirms}
     ${notes('warns', p.warnings)}
     ${notes('blocks', p.blockers)}
+    ${controls}
 
     <div class="billactions">
       ${canPost
@@ -853,6 +879,8 @@ export function renderBillReview(a: {
   token: string | null;
   posted: Array<{ number: string; party: string; date: string; total: string }>;
   hasExpenseAccount: boolean;
+  accounts: Array<{ id: string; name: string; itc: string | null }>;
+  defaultAccountId: string | null;
 }): string {
   const upload = `
     <div class="row">
@@ -888,7 +916,7 @@ ${upload}
 
 ${summary}
 <div id="cards">
-  ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '')).join('')}
+  ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '', a.accounts, a.defaultAccountId)).join('')}
 </div>
 
 ${a.posted.length === 0 ? '' : `
@@ -935,9 +963,13 @@ document.querySelectorAll('button.post').forEach((btn) => {
       const sel = c.querySelector('input[type=radio]:checked');
       if (sel) confirm[field] = sel.value;
     });
+    const acct = card.querySelector('.acct');
+    const noitc = card.querySelector('.noitc');
     btn.disabled = true; btn.textContent = 'Posting…';
     const r = await post('/api/bills/post', {
       token: btn.dataset.token, index: Number(btn.dataset.index), confirm,
+      expenseAccountId: acct ? acct.value : undefined,
+      blockItc: noitc ? noitc.checked : false,
     });
     if (r.ok) {
       card.classList.add('done');

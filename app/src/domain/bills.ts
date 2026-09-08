@@ -59,6 +59,18 @@ export interface CreateBillInput {
   paymentDueDate?: string;
   /** Figures printed on the vendor's document, for PB-4 cross-checking. */
   claimedTotals?: { cgst?: string; sgst?: string; igst?: string; grandTotal?: string };
+  /**
+   * The reviewer's decision NOT to claim input credit on this bill, whatever
+   * the account allows.
+   *
+   * The account's own `itc_eligibility` is the default and the usual path — a
+   * blocked category blocks itself. This is the override for what only a human
+   * knows: the purchase was partly personal, the supplier is under a cloud, the
+   * credit is being deferred on purpose. It forces every line to 'blocked', and
+   * the GST is capitalised into the cost rather than claimed, exactly as an
+   * account-blocked line already is.
+   */
+  forceBlockItc?: boolean;
 }
 
 /**
@@ -215,11 +227,15 @@ export async function createBill(
       // returned undefined every time and no client's trade could ever unblock
       // anything. It was exercised only by unit tests calling `decideItc`
       // directly — covered, passing, and unreachable from the path that posts.
-      const decision = decideItc({
-        accountEligibility: acc.rows[0]!.itc_eligibility,
-        blockedCategory: acc.rows[0]!.itc_blocked_category,
-        clientBusinessType: businessType,
-      });
+      const decision = input.forceBlockItc === true
+        ? { eligibility: 'blocked' as ItcEligibility,
+            reason: 'the reviewer chose not to claim input credit on this bill',
+            needsHumanDecision: false }
+        : decideItc({
+            accountEligibility: acc.rows[0]!.itc_eligibility,
+            blockedCategory: acc.rows[0]!.itc_blocked_category,
+            clientBusinessType: businessType,
+          });
 
       if (decision.eligibility === 'blocked') {
         warnings.push(

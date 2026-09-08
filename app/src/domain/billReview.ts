@@ -47,6 +47,30 @@ export async function resolveReaders(): Promise<ReviewReaders> {
   };
 }
 
+/** An expense account a bill's lines can post to. */
+export interface ExpenseAccount { id: string; name: string; itc: string | null; }
+
+/**
+ * The expense accounts a reviewer can post a bill to.
+ *
+ * Every non-group account on the expense side — Purchases, Office Rent,
+ * Professional Fees, and the rest — so the reviewer classifies the spend
+ * rather than dropping everything into one heap. The account carries its own
+ * ITC treatment, so choosing "Travel Expenses" (blocked) or "Insurance"
+ * (conditional) sets how the credit is handled without a separate decision.
+ */
+export async function expenseAccounts(
+  firmId: string, clientId: string,
+): Promise<ExpenseAccount[]> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ id: string; name: string; itc: string | null }>(
+      `SELECT id, name, itc_eligibility AS itc FROM accounts
+        WHERE client_id = $1 AND root_type = 'expense' AND NOT is_group
+        ORDER BY name`, [clientId]);
+    return r.rows;
+  });
+}
+
 /** The client's Purchases account — where a reviewed bill's lines post by
  *  default. A reviewer can still split a bill elsewhere; this is the floor. */
 export async function purchasesAccount(
@@ -91,16 +115,30 @@ export async function previewBills(
  * `postProposal` rather than posted on stale approval.
  */
 export async function postReviewedBill(
-  firmId: string, clientId: string, expenseAccountId: string,
+  firmId: string, clientId: string, defaultAccountId: string,
   file: Buffer, index: number, confirm: Record<string, string>,
   approvedBy: string, readers: ReviewReaders,
+  overrides: { expenseAccountId?: string; blockItc?: boolean } = {},
 ): Promise<CreatedBill> {
+  // Proposed with the default account — the account changes no figure and no
+  // confirmation, so this reproduces exactly the proposal the reviewer saw.
   const proposals = await proposeBills(firmId,
-    assembleInput(clientId, expenseAccountId, approvedBy, file, readers));
+    assembleInput(clientId, defaultAccountId, approvedBy, file, readers));
   const proposal = proposals.find((p) => p.index === index);
-  if (proposal === undefined) {
-    throw new Error(`document ${index} is no longer in this file`);
+  if (proposal === undefined || proposal.input === null) {
+    throw new Error(`document ${index} is no longer ready to post`);
   }
+
+  // The reviewer's classification: post every line to the account they chose,
+  // and honour their decision to withhold credit. Applied to the freshly
+  // re-run proposal, never to a stored one.
+  if (overrides.expenseAccountId) {
+    for (const line of proposal.input.lines) {
+      line.expenseAccountId = overrides.expenseAccountId;
+    }
+  }
+  if (overrides.blockItc) proposal.input.forceBlockItc = true;
+
   return postProposal(firmId, proposal, {
     approvedBy, confirm, sourceUri: 'review-upload',
   });
