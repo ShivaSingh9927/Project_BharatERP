@@ -124,6 +124,27 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 .tag.amb  { background: color-mix(in srgb, var(--bad) 10%, transparent); }
 tr.done { opacity: .5; }
 .warn { color: var(--warn, #b8860b); font-weight: 600; }
+.mt { margin-top: 26px; }
+.billcard { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  margin: 12px 0; background: var(--panel); }
+.billcard.blocked { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.billcard.needs_answer { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.billcard.done { opacity: .55; }
+.billhead { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  align-items: baseline; }
+.billhead b { margin-right: 8px; }
+.figs { display: flex; gap: 24px; margin: 12px 0; flex-wrap: wrap; }
+.fig { display: flex; flex-direction: column; }
+.fig b { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 17px; }
+.fig span span, .fig > span:last-child { font-size: 11px; color: var(--muted); }
+.confirm { background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.confirm p { margin: 0 0 6px; }
+.pick { display: block; margin: 3px 0; cursor: pointer; }
+.warns, .blocks { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.warns li { color: var(--muted); }
+.blocks li { color: var(--bad); }
+.billactions { margin-top: 12px; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -150,6 +171,7 @@ export function renderShell(a: {
   <span class="client">${esc(a.session.clientName)}</span>
   <nav>
     ${link('/accounts', 'accounts', 'Accounts')}
+    ${link('/bills', 'bills', 'Bills')}
     ${link('/import', 'import', 'Import')}
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
     ${link(`/brs${q}`, 'brs', 'BRS')}
@@ -736,6 +758,194 @@ document.querySelectorAll('button.resolve').forEach((b) => {
     } else {
       document.getElementById('msg').innerHTML =
         '<div class="msg bad">' + (r.error || 'could not resolve') + '</div>';
+    }
+  };
+});
+</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// Bill ingestion review
+//
+// A PDF becomes one card per document it holds. The card's whole job is to
+// make the three states legible at a glance — ready to post, needing an answer
+// first, or blocked — and to put the reason in plain language beside each. A
+// reviewer approves on their own authority (AT-13); nothing posts on its own.
+
+interface ProposalViewV {
+  index: number;
+  status: 'ready' | 'needs_answer' | 'blocked';
+  documentNumber: string | null;
+  partyName: string | null;
+  supplierGstin: string | null;
+  billDate: string | null;
+  readBy: 'coordinates' | 'docling' | 'llm';
+  taxable: string | null;
+  tax: string | null;
+  total: string | null;
+  registrationStatus: string | null;
+  warnings: string[];
+  blockers: string[];
+  confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
+  token?: string;
+}
+
+const READ_BY_LABEL: Record<string, string> = {
+  coordinates: 'read on-page', docling: 'read by Docling', llm: 'read by a model',
+};
+
+function proposalCard(p: ProposalViewV, token: string): string {
+  const badge = p.status === 'ready'
+    ? '<span class="tag good">Ready to post</span>'
+    : p.status === 'needs_answer'
+      ? '<span class="tag warn">Needs your answer</span>'
+      : '<span class="tag bad">Blocked</span>';
+
+  const money = (label: string, v: string | null): string =>
+    v !== null ? `<span class="fig"><b>${inr(v)}</b><span>${label}</span></span>` : '';
+
+  const confirms = p.confirmations.map((c) => `
+    <div class="confirm" data-field="${esc(c.field)}">
+      <p>${esc(c.question)}</p>
+      <label class="pick"><input type="radio" name="c_${p.index}_${esc(c.field)}"
+        value="${esc(c.chose)}" checked> ${esc(c.chose)} <span class="muted">(read)</span></label>
+      <label class="pick"><input type="radio" name="c_${p.index}_${esc(c.field)}"
+        value="${esc(c.instead)}"> ${esc(c.instead)}</label>
+    </div>`).join('');
+
+  const notes = (cls: string, items: string[]): string =>
+    items.length === 0 ? ''
+      : `<ul class="${cls}">${items.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`;
+
+  const canPost = p.status !== 'blocked';
+
+  return `<div class="billcard ${p.status}" data-index="${p.index}">
+    <div class="billhead">
+      <div>
+        <b class="mono">${esc(p.documentNumber ?? '(no number)')}</b>
+        ${badge}
+        <span class="tag">${READ_BY_LABEL[p.readBy] ?? p.readBy}</span>
+      </div>
+      <div class="muted">${esc(p.partyName ?? p.supplierGstin ?? 'supplier not identified')}
+        ${p.billDate ? ` · ${esc(p.billDate)}` : ''}
+        ${p.registrationStatus ? ` · GSTIN ${esc(p.registrationStatus)}` : ''}</div>
+    </div>
+
+    <div class="figs">
+      ${money('taxable', p.taxable)} ${money('tax', p.tax)} ${money('total', p.total)}
+    </div>
+
+    ${confirms}
+    ${notes('warns', p.warnings)}
+    ${notes('blocks', p.blockers)}
+
+    <div class="billactions">
+      ${canPost
+        ? `<button class="primary post" data-index="${p.index}" data-token="${esc(token)}">
+             ${p.status === 'needs_answer' ? 'Confirm & post' : 'Approve & post'}</button>`
+        : '<span class="muted">Resolve the blocker on the document, then re-upload.</span>'}
+    </div>
+  </div>`;
+}
+
+export function renderBillReview(a: {
+  proposals: ProposalViewV[];
+  token: string | null;
+  posted: Array<{ number: string; party: string; date: string; total: string }>;
+  hasExpenseAccount: boolean;
+}): string {
+  const upload = `
+    <div class="row">
+      <label>Upload invoice PDFs
+        <input type="file" id="pdfs" accept="application/pdf" multiple>
+      </label>
+      <button class="primary" id="run" disabled>Read them</button>
+    </div>`;
+
+  const summary = a.proposals.length === 0 ? '' : (() => {
+    const c = { ready: 0, needs_answer: 0, blocked: 0 };
+    for (const p of a.proposals) c[p.status]++;
+    return `<div class="panel strip">
+      <div class="stat"><b class="good">${c.ready}</b><span>ready</span></div>
+      <div class="stat"><b class="${c.needs_answer ? 'warn' : ''}">${c.needs_answer}</b><span>need an answer</span></div>
+      <div class="stat"><b class="${c.blocked ? 'bad' : ''}">${c.blocked}</b><span>blocked</span></div>
+    </div>`;
+  })();
+
+  const postedRows = a.posted.map((b) => `
+    <tr><td class="mono">${esc(b.number)}</td><td>${esc(b.party)}</td>
+        <td>${esc(b.date)}</td><td class="num">${inr(b.total)}</td></tr>`).join('');
+
+  return `<h1>Bills</h1>
+<p class="sub">Every figure is read on the page and checked before it can post.
+Nothing posts without you approving it.</p>
+
+${a.hasExpenseAccount ? '' :
+  '<div class="msg bad">This client has no Purchases account, so a bill has nowhere to post. Seed the chart of accounts first.</div>'}
+
+${upload}
+<div id="msg"></div>
+
+${summary}
+<div id="cards">
+  ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '')).join('')}
+</div>
+
+${a.posted.length === 0 ? '' : `
+  <h2 class="mt">Recently posted</h2>
+  <div class="panel" style="padding:0"><table>
+    <tr><th>Invoice</th><th>Supplier</th><th>Date</th><th class="num">Total</th></tr>
+    ${postedRows}
+  </table></div>`}
+
+<script>
+const post = (url, body) => fetch(url, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+}).then((r) => r.json());
+const say = (ok, t) => { document.getElementById('msg').innerHTML =
+  '<div class="msg ' + (ok ? 'good' : 'bad') + '">' + t + '</div>'; };
+
+const pdfs = document.getElementById('pdfs'), run = document.getElementById('run');
+if (pdfs) pdfs.onchange = () => { run.disabled = !pdfs.files.length; };
+if (run) run.onclick = async () => {
+  run.disabled = true; run.textContent = 'Reading…';
+  try {
+    // One file at a time, so a slow model read on one does not hold the rest.
+    const b64 = async (f) => {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      let s = ''; for (const x of buf) s += String.fromCharCode(x);
+      return btoa(s);
+    };
+    const files = [...pdfs.files];
+    const payloads = [];
+    for (const f of files) payloads.push({ name: f.name, data: await b64(f) });
+    const r = await post('/api/bills/preview', { files: payloads });
+    if (r.ok) location.href = '/bills?new=1';
+    else { say(false, r.error || 'could not read the file'); run.disabled = false; run.textContent = 'Read them'; }
+  } catch (e) { say(false, String(e)); run.disabled = false; run.textContent = 'Read them'; }
+};
+
+document.querySelectorAll('button.post').forEach((btn) => {
+  btn.onclick = async () => {
+    const card = btn.closest('.billcard');
+    const confirm = {};
+    card.querySelectorAll('.confirm').forEach((c) => {
+      const field = c.dataset.field;
+      const sel = c.querySelector('input[type=radio]:checked');
+      if (sel) confirm[field] = sel.value;
+    });
+    btn.disabled = true; btn.textContent = 'Posting…';
+    const r = await post('/api/bills/post', {
+      token: btn.dataset.token, index: Number(btn.dataset.index), confirm,
+    });
+    if (r.ok) {
+      card.classList.add('done');
+      card.querySelector('.billactions').innerHTML =
+        '<span class="good">Posted — ' + r.voucherId + '</span>';
+    } else {
+      say(false, r.error || 'could not post'); btn.disabled = false;
+      btn.textContent = 'Approve & post';
     }
   };
 });

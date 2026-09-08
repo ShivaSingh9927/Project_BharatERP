@@ -27,6 +27,10 @@ import { parseGstr2b } from '../parse/../integrations/gstr2bJson.ts';
 import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
 import { paise, money } from '../domain/tax.ts';
+import { renderBillReview } from './views.ts';
+import { resolveReaders, purchasesAccount, previewBills, postReviewedBill,
+         proposalView, type ReviewReaders } from '../domain/billReview.ts';
+import { createHash } from 'node:crypto';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
@@ -117,6 +121,43 @@ async function bankAccounts(session: Session): Promise<Array<{
   });
 }
 
+/*
+ * Uploaded files, held in memory by content hash so a proposal can be re-run
+ * at post time without a second upload. A local single-reviewer tool, so a
+ * simple bounded map is enough; oldest fall out past the cap.
+ */
+const fileStash = new Map<string, { file: Buffer; at: number }>();
+const STASH_CAP = 20;
+function stashFile(file: Buffer): string {
+  const token = createHash('sha256').update(file).digest('hex').slice(0, 16);
+  fileStash.set(token, { file, at: Date.now() });
+  while (fileStash.size > STASH_CAP) {
+    const oldest = [...fileStash.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) fileStash.delete(oldest[0]); else break;
+  }
+  return token;
+}
+
+let readers: ReviewReaders = { llm: undefined, docling: undefined, gstinLookup: undefined };
+
+/** The last preview rendered for a client, so a reload can show it again. */
+type PreviewCard = ReturnType<typeof proposalView> & { token: string };
+const lastPreview = new Map<string, PreviewCard[]>();
+
+/** A handful of the client's most recently posted bills. */
+async function recentBills(session: Session): Promise<Array<{
+  number: string; party: string; date: string; total: string;
+}>> {
+  return withFirm(session.firmId, async (c) => {
+    const r = await c.query<{ number: string; party: string; date: string; total: string }>(
+      `SELECT bill_number AS number, supplier_legal_name AS party,
+              to_char(bill_date, 'YYYY-MM-DD') AS date, grand_total::text AS total
+         FROM purchase_bills WHERE client_id = $1
+        ORDER BY approved_at DESC NULLS LAST LIMIT 10`, [session.clientId]);
+    return r.rows;
+  });
+}
+
 async function handle(
   req: IncomingMessage, res: ServerResponse, session: Session,
 ): Promise<void> {
@@ -131,6 +172,58 @@ async function handle(
       session, accounts, active: 'accounts',
       body: renderAccounts(accounts),
     }));
+  }
+
+  if (req.method === 'GET' && path === '/bills') {
+    const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
+    const posted = await recentBills(session);
+    const fresh = url.searchParams.has('new');
+    const cards = fresh ? (lastPreview.get(session.clientId) ?? []) : [];
+    return html(res, 200, renderShell({
+      session, accounts, active: 'bills',
+      body: renderBillReview({
+        proposals: cards as never, token: cards[0]?.token ?? null, posted,
+        hasExpenseAccount: expenseAccountId !== null,
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/bills/preview') {
+    const body = JSON.parse(await readBody(req));
+    const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
+    if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
+    try {
+      const all: unknown[] = [];
+      for (const f of body.files as Array<{ name: string; data: string }>) {
+        const file = Buffer.from(f.data, 'base64');
+        const token = stashFile(file);
+        const proposals = await previewBills(
+          session.firmId, session.clientId, expenseAccountId,
+          session.userId, file, readers);
+        for (const p of proposals) all.push({ ...proposalView(p), token });
+      }
+      // Cache the last preview so the GET page can render it after reload.
+      lastPreview.set(session.clientId, all as PreviewCard[]);
+      return json(res, 200, { ok: true, count: all.length });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/bills/post') {
+    const body = JSON.parse(await readBody(req));
+    const stashed = fileStash.get(body.token);
+    if (!stashed) return json(res, 200, { ok: false, error: 'this upload has expired — read the file again' });
+    const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
+    if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
+    try {
+      const bill = await postReviewedBill(
+        session.firmId, session.clientId, expenseAccountId,
+        stashed.file, body.index, body.confirm ?? {}, session.userId, readers);
+      return json(res, 200, { ok: true, voucherId: bill.voucherId });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
   }
 
   if (req.method === 'GET' && path === '/gstr2b') {
@@ -340,6 +433,7 @@ async function handle(
 // ---------------------------------------------------------------------------
 
 const session = await resolveSession();
+readers = await resolveReaders();
 
 createServer((req, res) => {
   handle(req, res, session).catch((e) => {
@@ -353,5 +447,8 @@ createServer((req, res) => {
   console.log(`  http://127.0.0.1:${PORT}`);
   console.log(`  firm ${session.firmId}`);
   console.log(`  client ${session.clientName}`);
+  const on = [readers.docling && 'Docling', readers.llm && 'model',
+              readers.gstinLookup && 'GSTIN lookup'].filter(Boolean);
+  console.log(`  readers: ${on.length ? on.join(', ') : 'on-page only'}`);
   console.log(`\n  No authentication. Localhost only. Not for production.\n`);
 });
