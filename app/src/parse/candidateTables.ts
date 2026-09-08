@@ -44,8 +44,8 @@
  * is a cell they cannot check.
  */
 
-import { gradeTable, statedTotalsInText, type InvoiceTable, type ColumnSource }
-  from './invoiceTable.ts';
+import { gradeTable, statedTotalsInText, labelledTotalsInText,
+         type InvoiceTable, type ColumnSource } from './invoiceTable.ts';
 import type { Charged } from './invoiceTax.ts';
 
 /** One table some strategy believed it saw. */
@@ -168,6 +168,7 @@ export function gradeCandidates(
   segmentText: string,
 ): CandidateVerdict | null {
   const stated = statedTotalsInText(segmentText);
+  const labelled = labelledTotalsInText(segmentText);
   const onThesePages = tables.filter((t) => pages.includes(t.page));
   if (onThesePages.length === 0) return null;
 
@@ -179,7 +180,7 @@ export function gradeCandidates(
       const header = c.cells[h];
       const rows = c.cells.slice(h + 1);
       if (header === undefined || rows.length === 0) continue;
-      const graded = gradeTable(header, rows, stated, chargedByDocument);
+      const graded = gradeTable(header, rows, stated, chargedByDocument, labelled);
       if (graded.readable) {
         const src = columnSourcesFor(c, header);
         if (src) graded.columnSources = src;

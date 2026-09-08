@@ -339,7 +339,8 @@ export function readInvoiceTableFromWords(
     };
   }
   const graded = gradeTable(
-    t.header, t.rows, statedTotalsInText(text), chargedByDocument);
+    t.header, t.rows, statedTotalsInText(text), chargedByDocument,
+    labelledTotalsInText(text));
 
   /*
    * The bands were computed and discarded until now, which made a documented
@@ -389,6 +390,35 @@ export function statedTotalsInText(text: string): string[] {
     for (const m of after.matchAll(
       /(?:[₹$€£]|Rs\.?|INR|USD|EUR|GBP)\s*([\d,]+\.\d{2})|([\d,]+\.\d{2})\s*(?:INR|USD|EUR|GBP)/gi)) {
       try { out.add(parseAmount(m[1] ?? m[2] ?? '').value); } catch { /* not one */ }
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Figures the document LABELS as its total, currency symbol or not.
+ *
+ * Deliberately separate from `statedTotalsInText`, which requires a currency
+ * marker because it also feeds the untaxed-document check — where a looser
+ * scan would surface more candidates, raise the largest, and start refusing
+ * documents that read correctly. This one is used for exactly one decision
+ * (adjudicating an apparent round-off) and is compared only for EXACT equality
+ * against a figure already derived from the table, so a spurious match cannot
+ * introduce a number of its own.
+ *
+ * "Invoice Value" and "Item Total" earn their place here: an Indian invoice
+ * routinely prints its payable that way, with no ₹ in front of it.
+ */
+const TOTAL_LABEL =
+  /\b(?:sub\s*total|grand\s+total|item\s+total|total\s+amount|invoice\s+value|invoice\s+total|amount\s+(?:due|payable)|net\s+payable|total\s+payable|total)\b/i;
+
+export function labelledTotalsInText(text: string): string[] {
+  const out = new Set<string>();
+  for (const line of text.split('\n')) {
+    if (!TOTAL_LABEL.test(line)) continue;
+    const after = line.slice(line.search(TOTAL_LABEL));
+    for (const m of after.matchAll(/(?<![\d.])([\d,]+\.\d{2})(?![\d%])/g)) {
+      try { out.add(parseAmount(m[1]!).value); } catch { /* not one */ }
     }
   }
   return [...out];
@@ -506,6 +536,12 @@ export function gradeTable(
    * code got wrong. See the note there.
    */
   chargedByDocument: Charged = 'no',
+  /**
+   * Figures the document labels as its total, currency optional — see
+   * `labelledTotalsInText`. Used for one decision only: telling a vendor who
+   * rounds every line apart from a vendor who rounds the bill.
+   */
+  labelledTotals: readonly string[] = [],
 ): InvoiceTable {
   const roles = header.map(roleOf);
   resolveBareAmount(header, roles);
@@ -626,15 +662,54 @@ export function gradeTable(
   const tie = checkTie(table.sums);
   if (!tie.ok) return { ...table, reason: tie.detail };
   if (tie.roundOff !== undefined) {
-    table.roundOff = tie.roundOff;
-    table.warnings = [
-      ...(table.warnings ?? []),
-      `the parts sum to ${money(paise(table.sums.total!) - paise(tie.roundOff))} ` +
-      `but the document states ${table.sums.total} — a ${tie.roundOff} rounding ` +
-      'difference. The document prints no round-off line, so this is inferred ' +
-      'from the figures, not read. Posted to Round Off; confirm it against the ' +
-      'invoice before approving.',
-    ];
+    const columnSum = table.sums.total!;
+    const parts = paise(columnSum) - paise(tie.roundOff);
+
+    /*
+     * Before inventing a round-off, ask whether the document states the parts
+     * sum as a total in its own words.
+     *
+     * `sums.total` is a SUM OF A COLUMN, and some vendors round every line to
+     * the rupee: a Zepto grocery bill prints line totals of 57.00, 14.00,
+     * 25.00 … which add to a whole-rupee 243.00, while the same page prints
+     * "Item Total 243.02" and "Invoice Value 243.02" — the figure the customer
+     * actually pays. Taking the column sum for the document's stated total
+     * manufactured a two-paise round-off and posted a total the invoice does
+     * not print anywhere.
+     *
+     * A figure the document LABELS as its total is a statement; a column sum
+     * is our arithmetic. Where the label agrees with the parts, the parts were
+     * right and there was never a rounding decision to record.
+     *
+     * Note this is not something two independent readers can catch. Both read
+     * the same table and both take its column sum, so they agree — and agree
+     * wrongly. Cross-checking catches misreading, never mis-scoping.
+     *
+     * Exact equality only. Anything looser would let a stray figure elsewhere
+     * on the page overwrite a total the columns agree on.
+     */
+    const labelled = [...statedTotals, ...labelledTotals].some((t) => {
+      try { return paise(t) === parts; } catch { return false; }
+    });
+    if (labelled) {
+      table.sums.total = money(parts);
+      table.warnings = [
+        ...(table.warnings ?? []),
+        `the total column sums to ${columnSum} because this vendor rounds each ` +
+        `line, but the document states ${money(parts)} as its total. The stated ` +
+        'figure is the one posted — it is what the supplier is owed and what ' +
+        'GSTR-2B will carry.',
+      ];
+    } else {
+      table.roundOff = tie.roundOff;
+      table.warnings = [
+        ...(table.warnings ?? []),
+        `the parts sum to ${money(parts)} but the document states ${columnSum} — ` +
+        `a ${tie.roundOff} rounding difference. The document prints no round-off ` +
+        'line, so this is inferred from the figures, not read. Posted to Round ' +
+        'Off; confirm it against the invoice before approving.',
+      ];
+    }
   }
 
   if (table.totals) {

@@ -271,6 +271,33 @@ unaffected. The API looked healthy and the software looked broken. Error text
 that says only "fetch failed" sends the next person hunting for a fault that is
 not in the code.
 
+**BE-25 — A total the document LABELS beats a total column we summed.**
+
+Two vendors produce the same apparent rounding difference and mean opposite
+things. Flipkart rounds the BILL: its parts come to 9,538.98 and it prints
+9,539.00, so two paise really were absorbed. Zepto rounds every LINE — 57.00,
+14.00, 25.00 … — so the total column sums to a whole-rupee 243.00 while the
+same page prints "Item Total 243.02" and "Invoice Value 243.02", the figure the
+customer actually pays.
+
+Reading the column sum as the document's stated total manufactured a round-off
+and posted a total the invoice does not print anywhere. So: before recording a
+round-off, check whether the document labels the PARTS SUM as its total. If it
+does, there was never a rounding decision — post the labelled figure.
+
+- **Exact equality only.** A labelled figure that does not equal the parts must
+  not hijack the total; it is compared against a number already derived from
+  the table, so a spurious match cannot introduce a value of its own.
+- The scan for labelled totals is deliberately separate from the one feeding
+  the untaxed-document check, which requires a currency marker. Loosening that
+  one would surface more candidates, raise its "largest stated total", and
+  start refusing documents that read correctly.
+
+**This class of error is invisible to cross-checking.** Both readers read the
+same table and take the same column sum, so they agree — and agree wrongly.
+Two-reader agreement catches MISREADING; it cannot catch MIS-SCOPING, in the
+same way a tied total never proved that every row was read.
+
 ---
 
 ## 5. Extraction — the AI pipeline

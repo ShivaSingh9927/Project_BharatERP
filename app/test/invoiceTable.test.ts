@@ -274,6 +274,48 @@ Sr.   Description        Taxable Value   CGST (INR)   SGST (INR)   Total
     expect(t.warnings?.join(' ')).toMatch(/prints\s+no\s+round-off\s+line/);
   });
 
+  it('posts the labelled total when the vendor rounds each LINE, not the bill', () => {
+    /*
+     * Two vendors, one apparent rounding difference, opposite meanings.
+     *
+     * Flipkart rounds the BILL: its parts come to 9538.98 and it prints
+     * 9539.00 as its total, so two paise really were absorbed — the case
+     * above. Zepto rounds every LINE: 57.00, 14.00, 25.00 … which add to a
+     * whole-rupee 243.00 in the total column, while the same page prints
+     * "Item Total 243.02" — the figure the customer pays.
+     *
+     * Reading the column sum as the document's stated total manufactured a
+     * round-off and posted a total the invoice does not print anywhere. Where
+     * the document LABELS the parts sum as its total, there was no rounding
+     * decision to record.
+     *
+     * Note no second reader can catch this: both would read the same table and
+     * take the same column sum, and agree. Cross-checking catches misreading,
+     * never mis-scoping.
+     */
+    const t = gradeTable(
+      ['Description', 'Taxable Value', 'CGST', 'SGST', 'Total'],
+      [['Item', '236.92', '3.05', '3.05', '243.00']],
+      [], 'yes', ['243.02']);
+    expect(t.readable).toBe(true);
+    expect(t.sums.total).toBe('243.02');
+    expect(t.roundOff).toBeUndefined();
+    expect(t.warnings?.join(' ')).toMatch(/rounds each line/);
+  });
+
+  it('still infers a round-off when no label agrees with the parts', () => {
+    // The Flipkart case, and the reason the rule above needs exact equality:
+    // a labelled figure that does NOT equal the parts must not hijack the total.
+    const t = gradeTable(
+      ['Description', 'Taxable Value', 'CGST', 'SGST', 'Total'],
+      [['Item', '236.92', '3.05', '3.05', '243.00']],
+      [], 'yes', ['999.99']);
+    expect(t.readable).toBe(true);
+    expect(t.sums.total).toBe('243.00');
+    expect(t.roundOff).toBe('-0.02');
+    expect(t.warnings?.join(' ')).toMatch(/prints no round-off line/);
+  });
+
   it('refuses a difference when the stated total is not a whole rupee', () => {
     /*
      * 5.35 read against 5.37 stated. Two paise again — the same gap the case
