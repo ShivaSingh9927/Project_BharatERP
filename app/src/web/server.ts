@@ -29,7 +29,8 @@ import { runReconciliation, latestReconForPeriod, periodsWithRecon,
 import { paise, money } from '../domain/tax.ts';
 import { loadDashboard } from '../domain/dashboard.ts';
 import { outstandingBills, paymentAccounts, recordPayment } from '../domain/payables.ts';
-import { renderBillReview, renderDashboard, renderPayables } from './views.ts';
+import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, renderSupplier } from './views.ts';
+import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -256,6 +257,28 @@ async function handle(
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }
+  }
+
+  if (req.method === 'GET' && path === '/suppliers') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'suppliers',
+      body: renderSupplierList({
+        suppliers: await supplierList(session.firmId, session.clientId) }),
+    }));
+  }
+
+  if (req.method === 'GET' && path.startsWith('/suppliers/')) {
+    const id = decodeURIComponent(path.slice('/suppliers/'.length));
+    const detail = await supplierDetail(session.firmId, session.clientId, id);
+    if (detail === null) {
+      return html(res, 404, renderShell({
+        session, accounts, active: 'suppliers',
+        body: '<h1>Supplier not found</h1><p><a href="/suppliers">← Suppliers</a></p>',
+      }));
+    }
+    return html(res, 200, renderShell({
+      session, accounts, active: 'suppliers', body: renderSupplier(detail),
+    }));
   }
 
   if (req.method === 'GET' && path === '/payables') {

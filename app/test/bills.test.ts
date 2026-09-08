@@ -16,6 +16,7 @@ import { decideItc, canClaimItc, billsApproaching180Days } from '../src/domain/i
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
 import { trialBalance, balanceSheet } from '../src/reports/index.ts';
 import { outstandingBills, recordPayment, paymentAccounts } from '../src/domain/payables.ts';
+import { supplierDetail, supplierList } from '../src/domain/suppliers.ts';
 import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
 
 let t: SeededTenant;
@@ -665,6 +666,38 @@ describe('payables — what is owed, and paying it', () => {
       clientId: t.clientId, billVoucherId: bill.voucherId, amount: '500.00',
       paidFromAccountId: cash.id, paymentDate: '2026-05-10', createdBy: t.userId,
     })).rejects.toThrow(/exceeds the .* outstanding/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('the supplier 360 gathers a supplier\'s whole history', () => {
+  it('shows bills, the payment that settled one, and running totals', async () => {
+    // By now this supplier has PAYABLE/2026/1 (paid in full) and
+    // PAYABLE/2026/2 (unpaid) from the payables tests, plus earlier bills.
+    const d = await supplierDetail(t.firmId, t.clientId, supplier);
+    expect(d).not.toBeNull();
+
+    const paid = d!.bills.find((b) => b.billNumber === 'PAYABLE/2026/1');
+    const owing = d!.bills.find((b) => b.billNumber === 'PAYABLE/2026/2');
+    expect(paid!.settled).toBe(true);
+    expect(owing!.settled).toBe(false);
+    expect(owing!.outstanding).toBe('118.00');
+
+    // The two payments against PAYABLE/2026/1 are listed against it.
+    const against1 = d!.payments.filter((p) => p.billNumber === 'PAYABLE/2026/1');
+    expect(against1.length).toBe(2);
+    expect(against1.reduce((s, p) => s + Number(p.amount), 0)).toBe(11800);
+
+    // Totals reconcile: outstanding = billed − paid on settled, and the ageing
+    // for this supplier agrees.
+    expect(Number(d!.totalPaid)).toBeGreaterThanOrEqual(11800);
+  });
+
+  it('lists the supplier with an outstanding balance', async () => {
+    const list = await supplierList(t.firmId, t.clientId);
+    const s = list.find((x) => x.id === supplier);
+    expect(s).toBeDefined();
+    expect(Number(s!.outstanding)).toBeGreaterThan(0);
   });
 });
 

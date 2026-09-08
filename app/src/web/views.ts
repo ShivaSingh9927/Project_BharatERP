@@ -207,6 +207,7 @@ export function renderShell(a: {
     ${link('/accounts', 'accounts', 'Accounts')}
     ${link('/bills', 'bills', 'Bills')}
     ${link('/payables', 'payables', 'Payables')}
+    ${link('/suppliers', 'suppliers', 'Suppliers')}
     ${link('/import', 'import', 'Import')}
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
     ${link(`/brs${q}`, 'brs', 'BRS')}
@@ -1242,4 +1243,112 @@ document.querySelectorAll('button.p-go').forEach((btn) => {
   };
 });
 </script>`;
+}
+
+// ---------------------------------------------------------------------------
+// Suppliers — the list, and the 360 view of one.
+
+interface SupplierListRowV {
+  id: string; name: string; gstin: string | null;
+  status: string | null; outstanding: string;
+}
+
+export function renderSupplierList(a: { suppliers: SupplierListRowV[] }): string {
+  const rows = a.suppliers.map((s) => `
+    <tr>
+      <td><a href="/suppliers/${esc(s.id)}">${esc(s.name)}</a></td>
+      <td class="mono">${esc(s.gstin ?? '—')}</td>
+      <td>${s.status
+        ? `<span class="tag ${/active/i.test(s.status) ? 'good' : 'bad'}">${esc(s.status)}</span>`
+        : '<span class="muted">unchecked</span>'}</td>
+      <td class="num">${s.outstanding === '0.00' ? '<span class="muted">—</span>' : inr(s.outstanding)}</td>
+    </tr>`).join('');
+  return `<h1>Suppliers</h1>
+<p class="sub">Everyone the client buys from. Open one for its full history.</p>
+${a.suppliers.length === 0
+  ? '<p class="empty">No suppliers yet.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Supplier</th><th>GSTIN</th><th>Registration</th><th class="num">Outstanding</th></tr>
+      ${rows}</table></div>`}`;
+}
+
+interface SupplierDetailV {
+  id: string; name: string; legalName: string | null; gstin: string | null;
+  stateCode: string | null; gstCategory: string;
+  registration: {
+    status: string; taxpayerType: string | null;
+    registeredOn: string | null; cancelledOn: string | null;
+    einvoiceRequired: boolean | null;
+  } | null;
+  totalBilled: string; totalPaid: string; totalOutstanding: string;
+  bills: Array<{ voucherId: string; billNumber: string; billDate: string;
+    grandTotal: string; outstanding: string; settled: boolean }>;
+  payments: Array<{ voucherNumber: string; date: string; amount: string;
+    billNumber: string | null }>;
+  learned: Array<{ lineKey: string; accountName: string; timesSeen: number }>;
+}
+
+export function renderSupplier(s: SupplierDetailV): string {
+  const reg = s.registration;
+  const regLine = reg === null
+    ? '<span class="muted">registration not checked</span>'
+    : `<span class="tag ${/active/i.test(reg.status) ? 'good' : 'bad'}">${esc(reg.status)}</span>
+       ${reg.taxpayerType ? esc(reg.taxpayerType) : ''}
+       ${reg.registeredOn ? ` · registered ${esc(reg.registeredOn)}` : ''}
+       ${reg.cancelledOn ? ` · <span class="bad">cancelled ${esc(reg.cancelledOn)}</span>` : ''}
+       ${reg.einvoiceRequired ? ' · e-invoicing required' : ''}`;
+
+  const billRows = s.bills.map((b) => `
+    <tr>
+      <td class="mono">${esc(b.billNumber)}</td>
+      <td>${esc(b.billDate)}</td>
+      <td class="num">${inr(b.grandTotal)}</td>
+      <td class="num">${b.settled
+        ? '<span class="tag good">settled</span>'
+        : '<b>' + inr(b.outstanding) + '</b>'}</td>
+    </tr>`).join('');
+
+  const payRows = s.payments.length === 0 ? '' : `
+    <h2 class="mt">Payments</h2>
+    <div class="panel" style="padding:0"><table>
+      <tr><th>Voucher</th><th>Date</th><th>Against</th><th class="num">Amount</th></tr>
+      ${s.payments.map((p) => `<tr>
+        <td class="mono">${esc(p.voucherNumber)}</td><td>${esc(p.date)}</td>
+        <td class="mono">${esc(p.billNumber ?? '—')}</td>
+        <td class="num">${inr(p.amount)}</td></tr>`).join('')}
+    </table></div>`;
+
+  const learnedBlock = s.learned.length === 0 ? '' : `
+    <h2 class="mt">What the books have learned</h2>
+    <p class="sub">Where this supplier's lines are posted by default — taught by
+    past bills, offered on the next.</p>
+    <div class="panel" style="padding:0"><table>
+      <tr><th>Line</th><th>Posts to</th><th class="num">Times</th></tr>
+      ${s.learned.map((l) => `<tr>
+        <td class="mono">${esc(l.lineKey)}</td><td>${esc(l.accountName)}</td>
+        <td class="num muted">${l.timesSeen}</td></tr>`).join('')}
+    </table></div>`;
+
+  return `<p class="sub"><a href="/suppliers">← Suppliers</a></p>
+<h1>${esc(s.name)}</h1>
+<p class="sub">${esc(s.legalName && s.legalName !== s.name ? s.legalName + ' · ' : '')}
+  <span class="mono">${esc(s.gstin ?? 'no GSTIN')}</span>
+  ${s.stateCode ? ` · state ${esc(s.stateCode)}` : ''} · ${esc(s.gstCategory)}</p>
+<p>${regLine}</p>
+
+<div class="tiles">
+  <div class="tile"><b>${inr(s.totalBilled)}</b><span>billed</span></div>
+  <div class="tile"><b class="good">${inr(s.totalPaid)}</b><span>paid</span></div>
+  <a class="tile" href="/payables"><b class="${s.totalOutstanding === '0.00' ? '' : 'bad'}">${inr(s.totalOutstanding)}</b><span>outstanding</span></a>
+</div>
+
+<h2 class="mt">Bills</h2>
+${s.bills.length === 0
+  ? '<p class="empty">No bills from this supplier yet.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Invoice</th><th>Date</th><th class="num">Total</th><th class="num">Outstanding</th></tr>
+      ${billRows}</table></div>`}
+
+${payRows}
+${learnedBlock}`;
 }
