@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { proposeBills, postProposal, llmSettings } from '../src/domain/billProposal.ts';
 import { llmClientFromEnv } from '../src/parse/llmTable.ts';
 import { sandboxLookupFromEnv } from '../src/integrations/sandboxGst.ts';
+import { doclingClientFromEnv } from '../src/parse/doclingTable.ts';
 import { closePools } from '../src/db/pool.ts';
 
 const [firmId, clientId, expenseAccountId, dir] = process.argv.slice(2);
@@ -63,11 +64,13 @@ if (post && !approvedBy) {
 
 const llm = llmClientFromEnv() ?? undefined;
 const gstinLookup = sandboxLookupFromEnv() ?? undefined;
+const docling = (await doclingClientFromEnv()) ?? undefined;
 const settings = await llmSettings(firmId);
 
 console.log(`model available : ${llm ? `${llm.provider}/${llm.model}` : 'no key set'}`);
 console.log(`firm allows it  : extraction=${settings.extraction} cross-check=${settings.crossCheck}`);
 console.log(`GSTIN lookup    : ${gstinLookup ? gstinLookup.source : 'no key set'}`);
+console.log(`Docling reader  : ${docling ? 'up' : 'not running'}`);
 console.log(`mode            : ${post ? 'POSTING' : 'dry run'}\n`);
 
 if (llm && !settings.extraction) {
@@ -76,7 +79,7 @@ if (llm && !settings.extraction) {
 }
 
 let posted = 0, ready = 0, blocked = 0, needsAnswer = 0;
-const tally = { coordinates: 0, llm: 0 };
+const tally = { coordinates: 0, docling: 0, llm: 0 };
 const checks = { off: 0, agreed: 0, disagreed: 0, unavailable: 0 };
 
 for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
@@ -86,7 +89,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
     proposals = await proposeBills(firmId, {
       clientId, file: readFileSync(join(dir, file)),
       createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-      expenseAccountId, llm, gstinLookup, sourceUri: `file://${join(dir, file)}`,
+      expenseAccountId, llm, gstinLookup, docling,
+      sourceUri: `file://${join(dir, file)}`,
       ...(rcmRate === undefined ? {} : { reverseCharge: { rate: rcmRate } }),
     });
 
@@ -109,7 +113,7 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
           proposals = await proposeBills(firmId, {
             clientId, file: readFileSync(join(dir, file)),
             createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
-            expenseAccountId, llm, gstinLookup,
+            expenseAccountId, llm, gstinLookup, docling,
             sourceUri: `file://${join(dir, file)}`,
             reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! },
           });
@@ -125,8 +129,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
     tally[p.readBy]++;
     checks[p.crossChecked]++;
     const label = `[${p.index}] ${p.documentNumber ?? '(no number)'}`;
-    const via = p.readBy === 'llm'
-      ? ` via ${p.llmProvenance?.model}` : '';
+    const via = p.readBy === 'llm' ? ` via ${p.llmProvenance?.model}`
+      : p.readBy === 'docling' ? ' via Docling' : '';
     const check = p.crossChecked === 'off' ? '' : ` cross-check:${p.crossChecked}`;
 
     if (p.blockers.length > 0) {
@@ -185,7 +189,8 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith('.pdf')).sort()) {
 console.log('=== summary ===');
 console.log(`ready ${ready}, needing an answer ${needsAnswer}, ` +
             `blocked ${blocked}${post ? `, posted ${posted}` : ''}`);
-console.log(`read by coordinates ${tally.coordinates}, by model ${tally.llm}`);
+console.log(`read by coordinates ${tally.coordinates}, by Docling ${tally.docling}, ` +
+            `by model ${tally.llm}`);
 if (settings.crossCheck) {
   console.log(`cross-check: agreed ${checks.agreed}, disagreed ${checks.disagreed}, ` +
               `unavailable ${checks.unavailable}`);

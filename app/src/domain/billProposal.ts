@@ -58,6 +58,8 @@ import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
 import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
+import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
+import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
 import { readInvoiceTableFromLlm, type LlmClient } from '../parse/llmTable.ts';
@@ -104,10 +106,11 @@ export interface BillProposal {
   /** Present only when `blockers` is empty. */
   input: CreateBillInput | null;
   /**
-   * How the figures were read. `llm` means the document left the building, so
-   * it belongs on the record beside the figures rather than in a log file.
+   * How the figures were read. `docling` is a machine-learned reader that
+   * stays on the premises; `llm` means the document left the building, so it
+   * belongs on the record beside the figures rather than in a log file.
    */
-  readBy: 'coordinates' | 'llm';
+  readBy: 'coordinates' | 'docling' | 'llm';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
@@ -155,6 +158,16 @@ export interface ProposeInput {
    * consent — `firm_ai_settings` is.
    */
   llm?: LlmClient;
+  /**
+   * An on-premise machine-learned reader, tried after the coordinate reader
+   * and BEFORE the model. It reads layouts the clusterer cannot — Amazon's
+   * single-space columns, Kamatera's stacked sub-tables — without the document
+   * leaving the building, so it needs no `firm_ai_settings` consent the way the
+   * model does.
+   */
+  docling?: DoclingClient;
+  /** The Docling reading of the whole file, extracted once in `proposeBills`. */
+  doclingTables?: DoclingTable[];
   /**
    * Checks a supplier GSTIN against the GST portal, through a licensed
    * provider. Optional: without it the bill still posts, and says that the
@@ -501,9 +514,23 @@ export async function proposeBills(
   const text = extractPdfText(input.file, input.password);
   const segments = splitDocuments(text);
 
+  /*
+   * Docling reads the whole file ONCE, here, not once per document — the
+   * models are expensive to run and a file's tables carry the page they sat
+   * on, so each document takes only the tables on its own pages. A failure to
+   * reach the sidecar is not fatal: the pipeline falls through to the model,
+   * exactly as before Docling existed.
+   */
+  let doclingTables: DoclingTable[] | undefined;
+  if (input.docling) {
+    try { doclingTables = await input.docling.read(input.file); }
+    catch { doclingTables = undefined; }
+  }
+
   const out: BillProposal[] = [];
   for (const seg of segments) {
-    out.push(await proposeFromDocument(firmId, input, seg, pages, fileHash, text));
+    out.push(await proposeFromDocument(
+      firmId, { ...input, doclingTables }, seg, pages, fileHash, text));
   }
   return out;
 }
@@ -534,6 +561,7 @@ export async function proposeFromDocument(
     .flatMap((p) => p.rows.map((r) => r.words.map((w) => w.text).join(' ')))
     .join('\n');
   let readBy: BillProposal['readBy'] = 'coordinates';
+  const segPages = pages.filter((p) => seg.pages.includes(p.number));
   let llmProvenance: { provider: string; model: string } | undefined;
   let crossChecked: BillProposal['crossChecked'] = 'off';
 
@@ -547,6 +575,24 @@ export async function proposeFromDocument(
    * so it earns its turn only where the cheaper answer is unavailable.
    */
   const ai = input.llm ? await llmSettings(firmId) : { extraction: false, crossCheck: false };
+
+  /*
+   * Docling first among the fallbacks — it stays on the premises.
+   *
+   * Tried the moment the coordinate reader refuses, ahead of the model,
+   * because it reads difficult geometry deterministically and locally where
+   * the model would send the document to a third party. Its output faces the
+   * same gates: `readInvoiceTableFromDocling` grades every table it found and
+   * keeps one only if it ties.
+   */
+  if (!table.readable && input.docling && input.doclingTables) {
+    const dt = readInvoiceTableFromDocling(
+      input.doclingTables, seg.pages, profile.charged, seg.text);
+    if (dt?.readable) {
+      table = dt;
+      readBy = 'docling';
+    }
+  }
 
   if (!table.readable && input.llm && ai.extraction) {
     const attempt = await readInvoiceTableFromLlm(seg.text, input.llm, profile.charged);

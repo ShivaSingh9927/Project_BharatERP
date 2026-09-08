@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .env
+
+# Docling sidecar virtualenv and models
+services/docling/.venv/

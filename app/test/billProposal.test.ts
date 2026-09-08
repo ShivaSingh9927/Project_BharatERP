@@ -635,6 +635,59 @@ describe('the tax split is warned about, not blocked', () => {
  * fiduciary. A default that exported documents would be making that decision
  * for them, so no row means no.
  */
+describe('Docling as a reader ahead of the model', () => {
+  /*
+   * A fake sidecar returning fixed tables, so this needs no running service
+   * and no models.
+   */
+  const fakeDocling = (cells: string[][]) => ({
+    read: async () => [{ page: 1, cells }],
+  });
+
+  it('reads a table the coordinate reader could not, without a model', async () => {
+    /*
+     * Amazon's single-space columns collapse for the clusterer. Docling reads
+     * them; because it stays on the premises, the document is NOT marked as
+     * having left the building the way a model reading would be.
+     */
+    const amazonish = page([
+      w('Sl', 40, 100), w('Description', 70, 100),
+      // one space between the numeric columns — below a gutter's minimum
+      w('1 Item 222.86 11.14 234.00', 40, 130),
+    ]);
+    const p = await propose(
+      doc(SAME_STATE, 'DC1', 'IGST 5 %'), amazonish, undefined, {
+        docling: fakeDocling([
+          ['Product', 'Taxable Value', 'IGST', 'Total'],
+          ['Item', '222.86', '11.14', '234.00'],
+        ]),
+        doclingTables: [{ page: 1, cells: [
+          ['Product', 'Taxable Value', 'IGST', 'Total'],
+          ['Item', '222.86', '11.14', '234.00'],
+        ] }],
+      });
+    expect(p.readBy).toBe('docling');
+    expect(p.blockers).toEqual([]);
+    expect(p.table.sums.taxable).toBe('222.86');
+    // Not a model reading — no "sent to a third party" warning.
+    expect(p.warnings.join(' ')).not.toMatch(/third party/);
+  });
+
+  it('is refused by the gates when its reading does not tie, like any reader', async () => {
+    const p = await propose(
+      doc(SAME_STATE, 'DC2', 'IGST 5 %'),
+      page([w('x', 40, 100)]), undefined, {
+        docling: fakeDocling([['a'], ['b']]),
+        doclingTables: [{ page: 1, cells: [
+          ['Product', 'Taxable Value', 'IGST', 'Total'],
+          // tax cell holds two numbers — gate 1 refuses it
+          ['Item', '222.86', '11.14 11.14', '234.00'],
+        ] }],
+      });
+    expect(p.readBy).not.toBe('docling');
+  });
+});
+
 describe('a model as extractor of last resort', () => {
   /** Returns a table that ties, and records whether it was asked at all. */
   const spyLlm = (): LlmClient & { calls: number } => {
