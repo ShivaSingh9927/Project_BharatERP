@@ -95,8 +95,13 @@ const json = (res: ServerResponse, code: number, body: unknown): void => {
 const html = (res: ServerResponse, code: number, body: string): void => {
   res.writeHead(code, {
     'content-type': 'text/html; charset=utf-8',
+    // connect-src 'self' is required, not optional: without it default-src
+    // 'none' blocks the same-origin fetch() every interactive screen makes,
+    // and the browser reports only "TypeError: Failed to fetch". curl ignores
+    // CSP, so this was invisible until the UI was driven from a browser.
     'content-security-policy':
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'",
+      "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; " +
+      "script-src 'unsafe-inline'; form-action 'self'",
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
   });
