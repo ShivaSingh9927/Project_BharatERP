@@ -22,7 +22,11 @@ import { settleInvoiceFromBankLine, postBankCharge, postInterestCredit } from '.
 import { bankReconciliationStatement } from '../domain/brs.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
 import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
-         renderCashRegister } from './views.ts';
+         renderCashRegister, renderGstr2b } from './views.ts';
+import { parseGstr2b } from '../parse/../integrations/gstr2bJson.ts';
+import { runReconciliation, latestReconForPeriod, periodsWithRecon,
+         resolveReconLine } from '../domain/gstr2bStore.ts';
+import { paise, money } from '../domain/tax.ts';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
@@ -36,11 +40,16 @@ interface Session {
 }
 
 async function resolveSession(): Promise<Session> {
+  // Pointed at a specific client when SESSION_CLIENT_ID is set — otherwise the
+  // oldest, which is the seed client. Useful for demoing against a tenant that
+  // has data without reseeding.
+  const pin = process.env.SESSION_CLIENT_ID;
   const r = await ownerPool.query<Session & { firm_id: string; client_id: string;
                                               user_id: string; client_name: string }>(
     `SELECT c.firm_id, c.id AS client_id, c.name AS client_name,
             (SELECT id FROM users u WHERE u.firm_id = c.firm_id ORDER BY u.created_at LIMIT 1) AS user_id
-     FROM clients c ORDER BY c.created_at LIMIT 1`);
+     FROM clients c ${pin ? 'WHERE c.id = $1' : ''}
+     ORDER BY c.created_at LIMIT 1`, pin ? [pin] : []);
   if (r.rowCount === 0) {
     throw new Error('no client found — run `npm run seed` first');
   }
@@ -122,6 +131,47 @@ async function handle(
       session, accounts, active: 'accounts',
       body: renderAccounts(accounts),
     }));
+  }
+
+  if (req.method === 'GET' && path === '/gstr2b') {
+    const periods = await periodsWithRecon(session.firmId, session.clientId);
+    const period = url.searchParams.get('period') ?? periods[0]
+      ?? new Date().toISOString().slice(0, 7);
+    const lines = periods.length
+      ? await latestReconForPeriod(session.firmId, session.clientId, period)
+      : [];
+    // The two figures the CA came for.
+    let supported = 0n, atRisk = 0n;
+    for (const l of lines) {
+      if (l.status === 'matched' && l.billTax) supported += paise(l.billTax);
+      if (l.status === 'in_books_only' && l.supplierGstin && l.billTax)
+        atRisk += paise(l.billTax);
+    }
+    return html(res, 200, renderShell({
+      session, accounts, active: 'gstr2b',
+      body: renderGstr2b({
+        period, periods, lines,
+        creditSupported: money(supported), creditAtRisk: money(atRisk),
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/2b/run') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const filed = parseGstr2b(body.json);
+      await runReconciliation(session.firmId, session.clientId, body.period,
+        filed, body.json, 'portal-json');
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/2b/resolve') {
+    const body = JSON.parse(await readBody(req));
+    await resolveReconLine(session.firmId, body.id, session.userId);
+    return json(res, 200, { ok: true });
   }
 
   if (req.method === 'GET' && path === '/reconcile') {

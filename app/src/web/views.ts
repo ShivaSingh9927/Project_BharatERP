@@ -115,6 +115,15 @@ kbd {
 dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   color: var(--ink); max-width: 420px; padding: 18px; }
 dialog::backdrop { background: rgba(0,0,0,.4); }
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--muted); }
+.note { color: var(--muted); font-size: 13px; max-width: 40ch; }
+.tag.good { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+.tag.bad  { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.tag.warn { background: color-mix(in srgb, var(--warn, #b8860b) 18%, transparent); }
+.tag.amb  { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+tr.done { opacity: .5; }
+.warn { color: var(--warn, #b8860b); font-weight: 600; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -145,6 +154,7 @@ export function renderShell(a: {
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
     ${link(`/brs${q}`, 'brs', 'BRS')}
     ${link('/cash', 'cash', 'Cash')}
+    ${link('/gstr2b', 'gstr2b', 'GSTR-2B')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -575,4 +585,159 @@ export function renderCashRegister(r: {
     </table>
     <p class="muted">A run of consecutive negative days is shown once — it is
     one missing entry, not one per day.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// GSTR-2B reconciliation
+//
+// The four situations, most-actionable first — mismatch and unfiled credit are
+// where money is at stake, matched is the reassuring tail. The number the CA
+// came for sits at the top: credit 2B supports, and credit booked that no
+// supplier has yet filed (s.16(2)(aa)).
+
+interface ReconLineView {
+  id: string; status: string; supplierGstin: string | null; note: string;
+  resolved: boolean; billNumber: string | null; billTax: string | null;
+  filedNumber: string | null; filedTax: string | null;
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  matched: 'Matched',
+  mismatch: 'Mismatch',
+  in_books_only: 'In books, not filed',
+  in_2b_only: 'Filed, not in books',
+};
+const STATUS_CLASS: Record<string, string> = {
+  matched: 'good', mismatch: 'bad', in_books_only: 'warn', in_2b_only: 'amb',
+};
+
+export function renderGstr2b(a: {
+  period: string;
+  periods: string[];
+  lines: ReconLineView[];
+  creditSupported: string;
+  creditAtRisk: string;
+}): string {
+  const counts: Record<string, number> = {};
+  for (const l of a.lines) counts[l.status] = (counts[l.status] ?? 0) + 1;
+
+  const periodPicker = `
+    <form method="get" action="/gstr2b" class="row">
+      <label>Return period
+        <select name="period" onchange="this.form.submit()">
+          ${a.periods.map((p) =>
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </label>
+      <noscript><button type="submit">Show</button></noscript>
+    </form>`;
+
+  const upload = `
+    <div class="row">
+      <label>Reconcile a 2B JSON downloaded from the portal
+        <input type="file" id="f2b" accept="application/json,.json">
+      </label>
+      <button class="primary" id="run2b" disabled>Run reconciliation</button>
+    </div>`;
+
+  if (a.periods.length === 0) {
+    return `<h1>GSTR-2B</h1>
+      <p class="sub">Reconcile the purchase ledger against what suppliers filed.
+      Under s.16(2)(aa), credit is claimable only on an invoice that appears here.</p>
+      <form method="get" action="/gstr2b" class="row">
+        <label>Return period <input name="period" value="${esc(a.period)}" placeholder="YYYY-MM"></label>
+        <button type="submit">Set period</button>
+      </form>
+      ${upload}
+      <p class="empty">No reconciliation yet. Set the period and upload its 2B JSON to begin.</p>
+      <script>
+      const f = document.getElementById('f2b'), run = document.getElementById('run2b');
+      const post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+      if (f) f.onchange = () => { run.disabled = !f.files.length; };
+      if (run) run.onclick = async () => {
+        try {
+          const json = JSON.parse(await f.files[0].text());
+          const r = await post('/api/2b/run', { period: ${JSON.stringify(a.period)}, json });
+          if (r.ok) location.href = '/gstr2b?period=' + encodeURIComponent(${JSON.stringify(a.period)});
+          else alert(r.error || 'could not reconcile');
+        } catch (e) { alert('that file is not valid JSON'); }
+      };
+      </script>`;
+  }
+
+  const row = (l: ReconLineView): string => `
+    <tr class="${l.resolved ? 'done' : ''}">
+      <td><span class="tag ${STATUS_CLASS[l.status] ?? ''}">${STATUS_LABEL[l.status] ?? l.status}</span></td>
+      <td class="mono">${esc(l.supplierGstin ?? '—')}</td>
+      <td class="mono">${esc(l.billNumber ?? l.filedNumber ?? '—')}</td>
+      <td class="num">${l.billTax !== null ? inr(l.billTax) : ''}</td>
+      <td class="num">${l.filedTax !== null ? inr(l.filedTax) : ''}</td>
+      <td class="note">${esc(l.note)}</td>
+      <td>${l.resolved
+        ? '<span class="muted">resolved</span>'
+        : `<button class="resolve" data-id="${esc(l.id)}">Resolve</button>`}</td>
+    </tr>`;
+
+  return `<h1>GSTR-2B</h1>
+<p class="sub">What the books claim, against what suppliers filed. Credit is
+claimable only on invoices that appear in 2B (s.16(2)(aa)).</p>
+
+${periodPicker}
+
+<div class="panel strip">
+  <div class="stat"><b class="good">${inr(a.creditSupported)}</b><span>credit 2B supports</span></div>
+  <div class="stat"><b class="${a.creditAtRisk === '0.00' ? '' : 'warn'}">${inr(a.creditAtRisk)}</b><span>booked, not yet filed</span></div>
+  <div class="stat"><b class="${counts['mismatch'] ? 'bad' : ''}">${counts['mismatch'] ?? 0}</b><span>mismatch</span></div>
+  <div class="stat"><b>${counts['in_books_only'] ?? 0}</b><span>in books only</span></div>
+  <div class="stat"><b>${counts['in_2b_only'] ?? 0}</b><span>in 2B only</span></div>
+  <div class="stat"><b class="good">${counts['matched'] ?? 0}</b><span>matched</span></div>
+</div>
+
+<div id="msg"></div>
+${upload}
+
+<div class="panel" style="padding:0"><table>
+  <tr><th>Status</th><th>Supplier GSTIN</th><th>Invoice</th>
+      <th class="num">Books tax</th><th class="num">2B tax</th>
+      <th>What it means</th><th></th></tr>
+  ${a.lines.map(row).join('')}
+</table></div>
+
+<script>
+const post = (url, body) => fetch(url, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+}).then((r) => r.json());
+
+const f = document.getElementById('f2b'), run = document.getElementById('run2b');
+if (f) f.onchange = () => { run.disabled = !f.files.length; };
+if (run) run.onclick = async () => {
+  const file = f.files[0]; if (!file) return;
+  run.disabled = true; run.textContent = 'Reading…';
+  try {
+    const json = JSON.parse(await file.text());
+    const r = await post('/api/2b/run', { period: ${JSON.stringify(a.period)}, json });
+    if (r.ok) { location.href = '/gstr2b?period=' + encodeURIComponent(${JSON.stringify(a.period)}); }
+    else { document.getElementById('msg').innerHTML = '<div class="msg bad">' + (r.error || 'could not reconcile') + '</div>'; run.disabled = false; run.textContent = 'Run reconciliation'; }
+  } catch (e) {
+    document.getElementById('msg').innerHTML = '<div class="msg bad">that file is not valid JSON</div>';
+    run.disabled = false; run.textContent = 'Run reconciliation';
+  }
+};
+
+document.querySelectorAll('button.resolve').forEach((b) => {
+  b.onclick = async () => {
+    const r = await post('/api/2b/resolve', { id: b.dataset.id });
+    if (r.ok) {
+      const tr = b.closest('tr');
+      tr.classList.add('done');
+      b.replaceWith(Object.assign(document.createElement('span'),
+        { className: 'muted', textContent: 'resolved' }));
+    } else {
+      document.getElementById('msg').innerHTML =
+        '<div class="msg bad">' + (r.error || 'could not resolve') + '</div>';
+    }
+  };
+});
+</script>`;
 }

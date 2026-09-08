@@ -117,3 +117,82 @@ export async function fetchAndReconcile(
   const filed = parseGstr2b(raw);
   return runReconciliation(firmId, clientId, period, filed, raw, 'sandbox');
 }
+
+/** A reconciliation line as the screen shows it — the stored verdict plus the
+ *  books-side figures joined back from the bill. */
+export interface ReconLineView {
+  id: string;
+  status: string;
+  supplierGstin: string | null;
+  note: string;
+  resolved: boolean;
+  billNumber: string | null;
+  billTax: string | null;
+  filedNumber: string | null;
+  filedTax: string | null;
+}
+
+/** Return periods that have at least one reconciliation, newest first. */
+export async function periodsWithRecon(
+  firmId: string, clientId: string,
+): Promise<string[]> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ period: string }>(
+      `SELECT DISTINCT period FROM gstr2b_recon_lines
+        WHERE client_id = $1 ORDER BY period DESC`, [clientId]);
+    return r.rows.map((x) => x.period);
+  });
+}
+
+/**
+ * The lines of the MOST RECENT reconciliation for a period.
+ *
+ * A period can be reconciled more than once — a fresh 2B download supersedes
+ * the last — so only the newest statement's lines are shown. The books-side
+ * tax is joined from the bill so the screen can total the credit at stake
+ * without re-deriving it.
+ */
+export async function latestReconForPeriod(
+  firmId: string, clientId: string, period: string,
+): Promise<ReconLineView[]> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{
+      id: string; status: string; supplier_gstin: string | null; note: string;
+      resolved: boolean; bill_number: string | null; bill_tax: string | null;
+      filed_number: string | null; filed_tax: string | null;
+    }>(
+      `WITH latest AS (
+         SELECT id FROM gstr2b_statements
+          WHERE client_id = $1 AND period = $2
+          ORDER BY fetched_at DESC LIMIT 1)
+       SELECT l.id, l.status, l.supplier_gstin, l.note,
+              (l.resolved_at IS NOT NULL) AS resolved,
+              pb.bill_number,
+              (pb.total_cgst + pb.total_sgst + pb.total_igst + pb.total_cess)::text
+                AS bill_tax,
+              l.filed_number, l.filed_tax::text AS filed_tax
+         FROM gstr2b_recon_lines l
+         LEFT JOIN purchase_bills pb ON pb.voucher_id = l.voucher_id
+        WHERE l.client_id = $1 AND l.period = $2
+          AND l.statement_id = (SELECT id FROM latest)
+        ORDER BY CASE l.status
+          WHEN 'mismatch' THEN 0 WHEN 'in_books_only' THEN 1
+          WHEN 'in_2b_only' THEN 2 ELSE 3 END, l.created_at`,
+      [clientId, period]);
+    return r.rows.map((x) => ({
+      id: x.id, status: x.status, supplierGstin: x.supplier_gstin, note: x.note,
+      resolved: x.resolved, billNumber: x.bill_number, billTax: x.bill_tax,
+      filedNumber: x.filed_number, filedTax: x.filed_tax,
+    }));
+  });
+}
+
+/** Marks a reconciliation line resolved by a named reviewer. */
+export async function resolveReconLine(
+  firmId: string, lineId: string, userId: string,
+): Promise<void> {
+  await withFirm(firmId, (c) => c.query(
+    `UPDATE gstr2b_recon_lines
+        SET resolved_by = $2, resolved_at = now()
+      WHERE id = $1 AND resolved_at IS NULL`, [lineId, userId]));
+}
