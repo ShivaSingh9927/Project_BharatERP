@@ -15,6 +15,7 @@ import { computeTds } from '../src/domain/tds.ts';
 import { decideItc, canClaimItc, billsApproaching180Days } from '../src/domain/itc.ts';
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
 import { trialBalance, balanceSheet } from '../src/reports/index.ts';
+import { outstandingBills, recordPayment, paymentAccounts } from '../src/domain/payables.ts';
 import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
 
 let t: SeededTenant;
@@ -609,6 +610,61 @@ describe('180-day ITC reversal monitor (BE-7)', () => {
     const atRisk = await withFirm(t.firmId, (c) =>
       billsApproaching180Days(c, t.clientId, '2026-12-01'));
     expect(atRisk.some((b) => b.breached)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('payables — what is owed, and paying it', () => {
+  it('reads outstanding from the ledger and settles a bill on payment', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'PAYABLE/2026/1', billDate: '2026-05-07',
+      lines: [{ description: 'Goods', unitPrice: '10000', gstRate: '18',
+        expenseAccountId: A('Purchases') }],
+      createdBy: t.userId,
+    });
+    // grand total = 10,000 + 1,800 IGST = 11,800; all outstanding at first.
+    const before = await outstandingBills(t.firmId, t.clientId);
+    const row = before.find((b) => b.billNumber === 'PAYABLE/2026/1');
+    expect(row).toBeDefined();
+    expect(row!.outstanding).toBe('11800.00');
+
+    const cash = (await paymentAccounts(t.firmId, t.clientId))
+      .find((a) => a.name === 'Cash')!;
+
+    // A part payment leaves the balance owing.
+    const p1 = await recordPayment(t.firmId, {
+      clientId: t.clientId, billVoucherId: bill.voucherId, amount: '1800.00',
+      paidFromAccountId: cash.id, paymentDate: '2026-05-10', createdBy: t.userId,
+    });
+    expect(p1.outstandingAfter).toBe('10000.00');
+    expect(p1.fullySettled).toBe(false);
+
+    // The rest clears it, and it drops off the ageing.
+    const p2 = await recordPayment(t.firmId, {
+      clientId: t.clientId, billVoucherId: bill.voucherId, amount: '10000.00',
+      paidFromAccountId: cash.id, paymentDate: '2026-05-11', createdBy: t.userId,
+    });
+    expect(p2.fullySettled).toBe(true);
+    const after = await outstandingBills(t.firmId, t.clientId);
+    expect(after.find((b) => b.billNumber === 'PAYABLE/2026/1')).toBeUndefined();
+  });
+
+  it('refuses to pay more than is owed', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: supplier,
+      billNumber: 'PAYABLE/2026/2', billDate: '2026-05-07',
+      lines: [{ description: 'Goods', unitPrice: '100', gstRate: '18',
+        expenseAccountId: A('Purchases') }],
+      createdBy: t.userId,
+    });
+    const cash = (await paymentAccounts(t.firmId, t.clientId))
+      .find((a) => a.name === 'Cash')!;
+    // outstanding is 118.00; 500 must be refused (BV-4).
+    await expect(recordPayment(t.firmId, {
+      clientId: t.clientId, billVoucherId: bill.voucherId, amount: '500.00',
+      paidFromAccountId: cash.id, paymentDate: '2026-05-10', createdBy: t.userId,
+    })).rejects.toThrow(/exceeds the .* outstanding/);
   });
 });
 

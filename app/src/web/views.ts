@@ -170,6 +170,14 @@ tr.done { opacity: .5; }
 a.tile:hover { border-color: var(--accent); }
 .tile b { font-size: 24px; font-variant-numeric: tabular-nums; font-family: var(--mono); }
 .tile span { font-size: 12px; color: var(--muted); }
+.payrow { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap;
+  padding: 8px 0; }
+.payrow label { display: flex; flex-direction: column; font-size: 12px;
+  color: var(--muted); gap: 3px; }
+.payrow input, .payrow select { font-family: inherit; padding: 4px 6px;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; }
+tr.payform td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 `;
 
 // ---------------------------------------------------------------------------
@@ -198,6 +206,7 @@ export function renderShell(a: {
     ${link('/', 'home', 'Home')}
     ${link('/accounts', 'accounts', 'Accounts')}
     ${link('/bills', 'bills', 'Bills')}
+    ${link('/payables', 'payables', 'Payables')}
     ${link('/import', 'import', 'Import')}
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
     ${link(`/brs${q}`, 'brs', 'BRS')}
@@ -1106,4 +1115,124 @@ ${issues}
 
 <h2 class="mt">Recently posted</h2>
 ${recent}`;
+}
+
+// ---------------------------------------------------------------------------
+// Payables — who is owed, how overdue, and paying them down.
+//
+// Ageing across the top, oldest-due bills first below. A payment reveals a
+// small inline form on the row: how much, from which account, when. Nothing
+// leaves the ledger's own arithmetic — the payment is a posted voucher.
+
+interface OutstandingBillV {
+  voucherId: string; billNumber: string; supplierName: string;
+  billDate: string; dueDate: string; grandTotal: string; outstanding: string;
+  daysOverdue: number; bucket: string;
+}
+
+const BUCKET_LABEL: Record<string, string> = {
+  not_due: 'Not due', d0_30: '1–30 days', d31_60: '31–60 days',
+  d61_90: '61–90 days', d90_plus: '90+ days',
+};
+
+export function renderPayables(a: {
+  bills: OutstandingBillV[];
+  accounts: Array<{ id: string; name: string }>;
+  today: string;
+}): string {
+  // Ageing totals per bucket.
+  const buckets: Record<string, bigint> = {
+    not_due: 0n, d0_30: 0n, d31_60: 0n, d61_90: 0n, d90_plus: 0n };
+  let total = 0n;
+  for (const b of a.bills) {
+    const p = BigInt(Math.round(Number(b.outstanding) * 100));
+    buckets[b.bucket] = (buckets[b.bucket] ?? 0n) + p;
+    total += p;
+  }
+  const rupees = (p: bigint) => inr((p / 100n).toString() + '.' + String(p % 100n).padStart(2, '0'));
+
+  const strip = `<div class="panel strip">
+    ${(['not_due', 'd0_30', 'd31_60', 'd61_90', 'd90_plus'] as const).map((k) =>
+      `<div class="stat"><b class="${k === 'd90_plus' && buckets[k] ? 'bad' : k === 'd61_90' && buckets[k] ? 'warn' : ''}">${
+        rupees(buckets[k] ?? 0n)}</b><span>${BUCKET_LABEL[k]}</span></div>`).join('')}
+    <div class="stat"><b>${rupees(total)}</b><span>total payable</span></div>
+  </div>`;
+
+  const acctOptions = a.accounts.map((ac) =>
+    `<option value="${esc(ac.id)}">${esc(ac.name)}</option>`).join('');
+
+  const rows = a.bills.map((b) => `
+    <tr class="prow" data-v="${esc(b.voucherId)}">
+      <td>${esc(b.supplierName)}</td>
+      <td class="mono">${esc(b.billNumber)}</td>
+      <td>${esc(b.dueDate)}</td>
+      <td class="num ${b.daysOverdue > 60 ? 'bad' : b.daysOverdue > 0 ? 'warn' : 'muted'}">${
+        b.daysOverdue > 0 ? b.daysOverdue + 'd overdue' : 'not due'}</td>
+      <td class="num"><b>${inr(b.outstanding)}</b></td>
+      <td><button class="pay" data-v="${esc(b.voucherId)}" data-out="${esc(b.outstanding)}">Pay</button></td>
+    </tr>
+    <tr class="payform" id="pf_${esc(b.voucherId)}" hidden>
+      <td colspan="6">
+        <div class="payrow">
+          <label>Amount <input type="text" class="p-amt" value="${esc(b.outstanding)}"></label>
+          <label>From <select class="p-acct">${acctOptions}</select></label>
+          <label>Date <input type="date" class="p-date" value="${esc(a.today)}"></label>
+          <label>Ref <input type="text" class="p-ref" placeholder="UTR / cheque no"></label>
+          <button class="primary p-go" data-v="${esc(b.voucherId)}">Record payment</button>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  return `<h1>Payables</h1>
+<p class="sub">What the client owes, oldest first. A payment posts to the ledger
+and clears the bill.</p>
+
+${strip}
+<div id="msg"></div>
+
+${a.bills.length === 0
+  ? '<p class="empty">Nothing outstanding. Every bill is paid.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Supplier</th><th>Invoice</th><th>Due</th><th class="num">Age</th>
+          <th class="num">Outstanding</th><th></th></tr>
+      ${rows}
+    </table></div>`}
+
+<script>
+const post = (url, body) => fetch(url, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+}).then((r) => r.json());
+const say = (ok, t) => { document.getElementById('msg').innerHTML =
+  '<div class="msg ' + (ok ? 'good' : 'bad') + '">' + t + '</div>'; };
+
+document.querySelectorAll('button.pay').forEach((b) => {
+  b.onclick = () => {
+    const f = document.getElementById('pf_' + b.dataset.v);
+    f.hidden = !f.hidden;
+  };
+});
+
+document.querySelectorAll('button.p-go').forEach((btn) => {
+  btn.onclick = async () => {
+    const form = btn.closest('.payrow');
+    btn.disabled = true; btn.textContent = 'Posting…';
+    const r = await post('/api/payables/pay', {
+      billVoucherId: btn.dataset.v,
+      amount: form.querySelector('.p-amt').value.trim(),
+      paidFromAccountId: form.querySelector('.p-acct').value,
+      paymentDate: form.querySelector('.p-date').value,
+      reference: form.querySelector('.p-ref').value.trim() || undefined,
+    });
+    if (r.ok) {
+      say(true, 'Paid ' + r.paid + (r.fullySettled ? ' — bill settled.'
+        : ' — ' + r.outstandingAfter + ' still outstanding.'));
+      setTimeout(() => location.reload(), 900);
+    } else {
+      say(false, r.error || 'could not record the payment');
+      btn.disabled = false; btn.textContent = 'Record payment';
+    }
+  };
+});
+</script>`;
 }

@@ -28,7 +28,8 @@ import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
 import { paise, money } from '../domain/tax.ts';
 import { loadDashboard } from '../domain/dashboard.ts';
-import { renderBillReview, renderDashboard } from './views.ts';
+import { outstandingBills, paymentAccounts, recordPayment } from '../domain/payables.ts';
+import { renderBillReview, renderDashboard, renderPayables } from './views.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -252,6 +253,36 @@ async function handle(
         { lineAccounts: body.lineAccounts, expenseAccountId: body.expenseAccountId,
           blockItc: body.blockItc === true });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/payables') {
+    const [bills, payAccounts] = await Promise.all([
+      outstandingBills(session.firmId, session.clientId),
+      paymentAccounts(session.firmId, session.clientId),
+    ]);
+    const today = new Date().toISOString().slice(0, 10);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'payables',
+      body: renderPayables({ bills, accounts: payAccounts, today }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/payables/pay') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await recordPayment(session.firmId, {
+        clientId: session.clientId, billVoucherId: body.billVoucherId,
+        amount: body.amount, paidFromAccountId: body.paidFromAccountId,
+        paymentDate: body.paymentDate, createdBy: session.userId,
+        reference: body.reference,
+      });
+      return json(res, 200, {
+        ok: true, paid: r.paid, outstandingAfter: r.outstandingAfter,
+        fullySettled: r.fullySettled,
+      });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }
