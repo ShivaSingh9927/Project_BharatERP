@@ -178,6 +178,7 @@ a.tile:hover { border-color: var(--accent); }
   background: var(--bg); color: var(--ink); border: 1px solid var(--line);
   border-radius: 6px; }
 tr.payform td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
 `;
 
 // ---------------------------------------------------------------------------
@@ -203,6 +204,7 @@ export function renderShell(a: {
   <b>BharatERP</b>
   <span class="client">${esc(a.session.clientName)}</span>
   <nav>
+    ${link('/firm', 'firm', 'Firm')}
     ${link('/', 'home', 'Home')}
     ${link('/accounts', 'accounts', 'Accounts')}
     ${link('/bills', 'bills', 'Bills')}
@@ -1510,4 +1512,94 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// The firm cockpit — every client on one page, neediest first.
+//
+// The one screen that is not about a single client. It answers the question a
+// practice actually runs on: which of these needs me today?
+
+interface CockpitRowV {
+  clientId: string; name: string; gstin: string | null;
+  outputTax: string; creditAtRisk: string; reconciled: boolean;
+  overduePayable: string; overdueCount: number; billsPosted: number;
+  registrationIssues: number;
+  gstr1Due: string; gstr3bDue: string;
+  daysToGstr1: number; daysToGstr3b: number; attention: number;
+}
+
+export function renderCockpit(a: {
+  period: string; periods: string[]; today: string;
+  rows: CockpitRowV[];
+  totals: { clients: number; outputTax: string; creditAtRisk: string;
+    overduePayable: string; needingAttention: number };
+}): string {
+  const picker = `
+    <form method="get" action="/firm" class="row">
+      <label>Period
+        <select name="period" onchange="this.form.submit()">
+          ${(a.periods.length ? a.periods : [a.period]).map((p) =>
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </label>
+    </form>`;
+
+  const dueCell = (days: number, date: string) => {
+    if (days < 0) return `<span class="bad">${-days}d overdue</span>`;
+    if (days <= 7) return `<span class="warn">in ${days}d</span>`;
+    return `<span class="muted">${esc(date.slice(5))}</span>`;
+  };
+
+  const flags = (r: CockpitRowV) => {
+    const out: string[] = [];
+    if (!r.reconciled && r.outputTax !== '0.00') out.push('<span class="tag warn">2B not run</span>');
+    if (r.registrationIssues > 0) {
+      out.push(`<span class="tag bad">${r.registrationIssues} supplier registration</span>`);
+    }
+    if (r.overdueCount > 0) out.push(`<span class="tag">${r.overdueCount} overdue</span>`);
+    return out.join(' ') || '<span class="muted">—</span>';
+  };
+
+  // Every link carries ?client=, which switches the session for that client.
+  const rows = a.rows.map((r) => `
+    <tr class="${r.attention >= 60 ? 'hot' : ''}">
+      <td><a href="/?client=${esc(r.clientId)}"><b>${esc(r.name)}</b></a>
+        <div class="why mono">${esc(r.gstin ?? 'no GSTIN')}</div></td>
+      <td>${dueCell(r.daysToGstr1, r.gstr1Due)}</td>
+      <td>${dueCell(r.daysToGstr3b, r.gstr3bDue)}</td>
+      <td class="num">${inr(r.outputTax)}</td>
+      <td class="num">${r.creditAtRisk === '0.00'
+        ? '<span class="muted">—</span>'
+        : `<a class="bad" href="/gstr2b?client=${esc(r.clientId)}">${inr(r.creditAtRisk)}</a>`}</td>
+      <td class="num">${r.overduePayable === '0.00'
+        ? '<span class="muted">—</span>'
+        : `<a href="/payables?client=${esc(r.clientId)}">${inr(r.overduePayable)}</a>`}</td>
+      <td class="num muted">${r.billsPosted}</td>
+      <td>${flags(r)}</td>
+    </tr>`).join('');
+
+  return `<h1>The firm</h1>
+<p class="sub">Every client, sorted by what needs you. Deadlines are the
+standard monthly dates — clients on the QRMP scheme file to a different
+calendar this does not know about.</p>
+
+${picker}
+
+<div class="panel strip">
+  <div class="stat"><b>${a.totals.clients}</b><span>clients</span></div>
+  <div class="stat"><b class="${a.totals.needingAttention ? 'bad' : 'good'}">${a.totals.needingAttention}</b><span>need attention</span></div>
+  <div class="stat"><b>${inr(a.totals.outputTax)}</b><span>tax declared</span></div>
+  <div class="stat"><b class="${a.totals.creditAtRisk === '0.00' ? '' : 'bad'}">${inr(a.totals.creditAtRisk)}</b><span>credit at risk</span></div>
+  <div class="stat"><b>${inr(a.totals.overduePayable)}</b><span>overdue payables</span></div>
+</div>
+
+${a.rows.length === 0
+  ? '<p class="empty">No clients yet.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Client</th><th>GSTR-1</th><th>GSTR-3B</th><th class="num">Tax declared</th>
+          <th class="num">Credit at risk</th><th class="num">Overdue</th>
+          <th class="num">Bills</th><th>Flags</th></tr>
+      ${rows}
+    </table></div>`}`;
 }

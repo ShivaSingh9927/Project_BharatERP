@@ -35,6 +35,8 @@ import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
 import { renderGstr3b } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
+import { renderCockpit } from './views.ts';
+import { loadCockpit } from '../domain/firmCockpit.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -49,6 +51,22 @@ interface Session {
   clientId: string;
   userId: string;
   clientName: string;
+}
+
+/**
+ * Switches the session to another of the firm's clients.
+ *
+ * The cockpit lists every client and links into each, so the client can no
+ * longer be fixed at boot. The FIRM stays fixed — it is who is logged in — and
+ * only a client belonging to that firm can be selected, which is the check that
+ * stops a URL from reaching another firm's books.
+ */
+async function sessionForClient(base: Session, clientId: string): Promise<Session> {
+  const r = await ownerPool.query<{ name: string }>(
+    'SELECT name FROM clients WHERE id = $1 AND firm_id = $2',
+    [clientId, base.firmId]);
+  if (r.rowCount === 0) return base;      // not ours: stay where we are
+  return { ...base, clientId, clientName: r.rows[0]!.name };
 }
 
 async function resolveSession(): Promise<Session> {
@@ -172,13 +190,26 @@ async function recentBills(session: Session): Promise<Array<{
 }
 
 async function handle(
-  req: IncomingMessage, res: ServerResponse, session: Session,
+  req: IncomingMessage, res: ServerResponse, base: Session,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname;
+
+  // Any screen may be asked for a different client of the same firm.
+  const wanted = url.searchParams.get('client');
+  const session = wanted ? await sessionForClient(base, wanted) : base;
+
   const accounts = await bankAccounts(session);
 
   // ---- pages --------------------------------------------------------------
+
+  if (req.method === 'GET' && path === '/firm') {
+    const cockpit = await loadCockpit(session.firmId,
+      url.searchParams.get('period') ?? undefined);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'firm', body: renderCockpit(cockpit),
+    }));
+  }
 
   if (req.method === 'GET' && path === '/') {
     const dash = await loadDashboard(session.firmId, session.clientId,
