@@ -788,6 +788,70 @@ declaring the full invoice and the tax side has no support in the GST system.
 - **The supplier's credit note is recorded once.** A second against one return
   would mean they credited us twice, which is another return, not an edit.
 
+**BE-39 — Who approved this is the load-bearing fact, so it has to be proved.**
+
+The review server had no authentication: it picked the oldest client and that
+firm's first user at boot and every screen trusted it. That made the entire
+audit trail a fiction. AT-13 is a database CHECK — an AI-proposed voucher
+cannot exist without a named approver — and the name it was enforcing came from
+`ORDER BY created_at LIMIT 1`.
+
+- **Authentication sits OUTSIDE the tenant boundary**, and that is a fact to
+  design around rather than a wrinkle. Every other table is isolated by RLS on
+  `app.firm_id`; a session cannot be, because resolving it is HOW the firm
+  becomes known. So the auth tables are reached only by the owner connection,
+  which is exactly why they hold as little as possible and the queries against
+  them are few and narrow.
+- **The password is never stored** — a scrypt verifier is, with a per-user
+  random salt and the cost parameters kept ON THE ROW. Parameters hardcoded in
+  application code can never be raised, because the old hashes stop verifying.
+- **The session token is never stored either**, only its SHA-256. A leak of the
+  session table then yields nothing usable: the cookie needs the preimage. Same
+  reasoning as the password, applied to the thing that stands in for one.
+- **Length is the only password rule.** Character classes push people towards
+  Passw0rd! and are worse than a floor on every measure anybody has taken.
+- **Failure is uniform.** A wrong password, an unknown email and an account
+  with no password set are indistinguishable, and the work is done even when
+  the account does not exist — returning early makes an unknown email answer
+  in a millisecond and a known one in a hundred, which is a usable oracle.
+- **Lockout lives in the database, keyed by the email TRIED.** In memory, an
+  attacker who waits for a deploy gets a fresh allowance. Including emails that
+  match no user, or probing for valid addresses is free. A locked account
+  refuses the RIGHT password too, or the lockout is decoration.
+- **Two expiries.** Absolute, capping how long one login lasts however busy the
+  user is; and idle, so a session left open on a shared machine dies on its
+  own.
+- **An ISSUED password is good for one login.** Somebody other than its owner
+  chose it, so until it is replaced the session reaches exactly one page.
+  Letting it roam leaves a shared password in use indefinitely. The bootstrap
+  script GENERATES rather than asks, because a password typed on a command line
+  lands in shell history, in the process list, and in any terminal recording.
+- **Changing a password revokes every other session**, because the usual reason
+  to change one is that somebody else might know the old one.
+- **Client scoping is checked on every request, twice.** A client-scoped user
+  never leaves their own client whatever the URL says — an SMB owner must not
+  reach another of the firm's clients by editing a query string, and RLS cannot
+  help because both belong to the firm whose id it filters on. A firm-scoped
+  user may switch, but only within their firm.
+- **Every state-changing request must be same-origin**, checked for every
+  non-read method before the session is even resolved — so an endpoint added
+  later is covered by default rather than by the author remembering. The cookie
+  is HttpOnly and SameSite=Strict, which is most of the defence on its own.
+- **Signing in and out are audited**, with the session id and the address. An
+  approval trail that cannot say when its approver arrived is missing the first
+  link. A password change is audited as a CHANGE — verifying the current
+  password used to go through the login path, which issued a session nobody
+  asked for and wrote a "login" row for an event that was not one. An audit
+  trail that reports the wrong event is worse than one that misses it.
+- **Still not production, and the reason is no longer the login.** The cookie
+  cannot be Secure over plain HTTP, so beyond localhost it would travel in
+  clear. TLS, a Secure cookie, and rate limiting that is not one process's
+  opinion are what remains.
+- **Deliberately absent:** password reset by email, "remember me", OAuth. Each
+  is a real feature with its own failure modes, and a half-built one is worse
+  than none — a reset flow with a guessable token is a back door with a
+  friendly name.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1266,6 +1330,9 @@ In addition to the GL Engine's V-1…V-13:
 | PR-2 | A return is not dated before the bill it returns |
 | PR-3 | Returns against a line, cumulatively, do not exceed what that line was billed for |
 | PR-4 | One supplier credit note per return; a second means another return, not an edit |
+| AU-1 | A password is at least 12 characters, stored only as a salted scrypt verifier, and an issued one is good for a single sign-in (BE-39) |
+| AU-2 | Every request resolves its own session; a client-scoped user cannot leave their client and no user can leave their firm (BE-39) |
+| AU-3 | Every state-changing request is same-origin; sign-in, sign-out and password changes are audited (BE-39) |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 

@@ -2,12 +2,23 @@
  * Local review server for the reconciliation screen.
  * Spec: bank-and-reconciliation.md §14.1
  *
- * ⚠️ THIS HAS NO AUTHENTICATION AND IS NOT A PRODUCTION SERVER.
- *
  * It binds to 127.0.0.1 only and exists for one purpose: putting the
- * reconciliation workflow in front of a CA to find out whether it actually
- * saves them time (§16.2, §16.3). Those answers change the product, and no
- * amount of further engine work produces them.
+ * workflow in front of a CA to find out whether it actually saves them time
+ * (§16.2, §16.3). Those answers change the product, and no amount of further
+ * engine work produces them.
+ *
+ * ── Authentication (BE-39) ────────────────────────────────────────────────
+ *
+ * It used to have none: `resolveSession` picked the oldest client and that
+ * firm's first user at boot, and every screen trusted it. That made the whole
+ * audit trail a fiction — "who approved this bill" is the load-bearing fact
+ * (AT-13), and it was being answered by ORDER BY created_at LIMIT 1.
+ *
+ * Now every route is behind a session cookie, every write is checked for
+ * same-origin, and the user on the session is the user recorded as the
+ * approver. It still binds to localhost, because a login is not the only thing
+ * production needs — TLS, a real secret store, and rate limiting that is not
+ * one process's opinion are the rest of it.
  *
  * Deliberately dependency-free — node:http and server-rendered HTML. A build
  * step and a framework are commitments; this is a question being asked.
@@ -47,53 +58,86 @@ import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postRe
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
 import { createHash } from 'node:crypto';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
+import { login, logout, sessionFromToken, changePassword,
+         lockoutRemaining, type Session as AuthSession } from '../domain/auth.ts';
+import { renderLogin } from './views.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
 
-/** Resolved once at boot so the screens need no login. */
-interface Session {
-  firmId: string;
-  clientId: string;
-  userId: string;
-  clientName: string;
+/**
+ * Who is signed in. Resolved from the cookie on EVERY request — not once at
+ * boot — because that is the difference between an identity and a default.
+ */
+type Session = AuthSession;
+
+/** Name of the session cookie. */
+const COOKIE = 'bharaterp_session';
+
+function cookies(req: IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    out[part.slice(0, eq).trim()] = decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return out;
 }
 
 /**
- * Switches the session to another of the firm's clients.
+ * The cookie a browser is asked to keep.
  *
- * The cockpit lists every client and links into each, so the client can no
- * longer be fixed at boot. The FIRM stays fixed — it is who is logged in — and
- * only a client belonging to that firm can be selected, which is the check that
- * stops a URL from reaching another firm's books.
+ * HttpOnly so a script on the page cannot read it; SameSite=Strict so it is
+ * not sent on any cross-site request at all, which is most of CSRF defence on
+ * its own; Path=/ because every route needs it. Not Secure, and that is not an
+ * oversight — this serves plain HTTP on localhost, where a Secure cookie would
+ * simply never be sent. Behind TLS it must be added, and the note at the
+ * bottom of this file says so.
  */
-async function sessionForClient(base: Session, clientId: string): Promise<Session> {
-  const r = await ownerPool.query<{ name: string }>(
-    'SELECT name FROM clients WHERE id = $1 AND firm_id = $2',
-    [clientId, base.firmId]);
-  if (r.rowCount === 0) return base;      // not ours: stay where we are
-  return { ...base, clientId, clientName: r.rows[0]!.name };
+const setCookie = (token: string, expires: Date): string =>
+  `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; ` +
+  `Expires=${expires.toUTCString()}`;
+
+const clearCookie = (): string =>
+  `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+
+/** The caller's address, for the audit trail. */
+const callerIp = (req: IncomingMessage): string | undefined =>
+  req.socket.remoteAddress ?? undefined;
+
+/**
+ * Is this state-changing request coming from our own page?
+ *
+ * SameSite=Strict already stops a browser sending the cookie cross-site, so
+ * this is the second lock rather than the first — it catches the cases where
+ * the header is present and wrong, and it costs nothing. A missing Origin on a
+ * same-origin form post is normal and allowed; a PRESENT one that disagrees
+ * with Host is not.
+ */
+function sameOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined || origin === 'null') return true;
+  try {
+    return new URL(origin).host === req.headers.host;
+  } catch {
+    return false;
+  }
 }
 
-async function resolveSession(): Promise<Session> {
-  // Pointed at a specific client when SESSION_CLIENT_ID is set — otherwise the
-  // oldest, which is the seed client. Useful for demoing against a tenant that
-  // has data without reseeding.
-  const pin = process.env.SESSION_CLIENT_ID;
-  const r = await ownerPool.query<Session & { firm_id: string; client_id: string;
-                                              user_id: string; client_name: string }>(
-    `SELECT c.firm_id, c.id AS client_id, c.name AS client_name,
-            (SELECT id FROM users u WHERE u.firm_id = c.firm_id ORDER BY u.created_at LIMIT 1) AS user_id
-     FROM clients c ${pin ? 'WHERE c.id = $1' : ''}
-     ORDER BY c.created_at LIMIT 1`, pin ? [pin] : []);
-  if (r.rowCount === 0) {
-    throw new Error('no client found — run `npm run seed` first');
-  }
-  const row = r.rows[0]!;
-  if (!row.user_id) throw new Error('the firm has no users — run `npm run seed` first');
-  return {
-    firmId: row.firm_id, clientId: row.client_id,
-    userId: row.user_id, clientName: row.client_name,
-  };
+/**
+ * The signed-in session for this request, or null.
+ *
+ * Resolved per request rather than at boot. The client can be switched by
+ * query string — the cockpit links into each of the firm's clients — and
+ * `sessionFromToken` decides whether this user may look at the one asked for:
+ * a client-scoped user never leaves their own, and a firm-scoped one never
+ * leaves their firm.
+ */
+async function currentSession(
+  req: IncomingMessage, wantedClientId?: string,
+): Promise<Session | null> {
+  const token = cookies(req)[COOKIE];
+  if (token === undefined) return null;
+  return sessionFromToken(token, wantedClientId);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,14 +241,130 @@ async function recentBills(session: Session): Promise<Array<{
 }
 
 async function handle(
-  req: IncomingMessage, res: ServerResponse, base: Session,
+  req: IncomingMessage, res: ServerResponse,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname;
 
-  // Any screen may be asked for a different client of the same firm.
-  const wanted = url.searchParams.get('client');
-  const session = wanted ? await sessionForClient(base, wanted) : base;
+  /*
+   * Everything that CHANGES something must come from our own page.
+   *
+   * Checked before the session is even resolved, and for every method that is
+   * not a read — so a new endpoint added later is covered by default rather
+   * than by the author remembering.
+   */
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req)) {
+    return json(res, 403, {
+      ok: false,
+      error: 'this request did not come from this page and was refused.',
+    });
+  }
+
+  // ---- the door ------------------------------------------------------------
+
+  if (path === '/login') {
+    if (req.method === 'GET') {
+      return html(res, 200, renderLogin({}));
+    }
+    if (req.method === 'POST') {
+      const body = new URLSearchParams(await readBody(req));
+      const email = (body.get('email') ?? '').trim();
+      const r = await login(email, body.get('password') ?? '', {
+        ip: callerIp(req), userAgent: req.headers['user-agent'],
+      });
+      if (!r.ok) {
+        /*
+         * One message for every kind of failure.
+         *
+         * A wrong password, an unknown email and an account with no password
+         * all read the same, because a different message for each turns this
+         * form into a directory of who banks with which CA. The lockout is the
+         * one exception: a user who cannot get in needs to know it is
+         * temporary, and by then the address is already known to be real.
+         */
+        return html(res, r.reason === 'locked' ? 429 : 401, renderLogin({
+          email,
+          error: r.reason === 'locked'
+            ? `Too many attempts. Try again in ` +
+              `${Math.ceil((r.retryAfterSeconds ?? 60) / 60)} minute(s).`
+            : r.reason === 'no_client'
+              ? 'That sign-in is right, but this firm has no client set up yet.'
+              : 'Those details do not match an account.',
+        }));
+      }
+      res.setHeader('Set-Cookie', setCookie(r.token, r.expiresAt));
+      res.statusCode = 302;
+      res.setHeader('Location', r.mustChangePassword ? '/password' : '/');
+      res.end();
+      return;
+    }
+  }
+
+  if (req.method === 'POST' && path === '/logout') {
+    const token = cookies(req)[COOKIE];
+    if (token !== undefined) await logout(token);
+    res.setHeader('Set-Cookie', clearCookie());
+    res.statusCode = 302;
+    res.setHeader('Location', '/login');
+    res.end();
+    return;
+  }
+
+  // ---- the gate ------------------------------------------------------------
+
+  const session = await currentSession(req, url.searchParams.get('client') ?? undefined);
+  if (session === null) {
+    // An API caller gets an error it can act on; a browser gets the form.
+    if (path.startsWith('/api/')) {
+      return json(res, 401, { ok: false, error: 'your session has ended — sign in again' });
+    }
+    res.statusCode = 302;
+    res.setHeader('Location', '/login');
+    res.end();
+    return;
+  }
+
+  /*
+   * An ISSUED password is good for one login and no further.
+   *
+   * Somebody other than its owner chose it, so until it is replaced the
+   * session can reach exactly one page. Letting it roam would leave a shared
+   * password in use indefinitely, which is the state this check exists to end.
+   */
+  if (session.mustChangePassword && path !== '/password') {
+    if (path.startsWith('/api/')) {
+      return json(res, 403, {
+        ok: false, error: 'set your own password before using this' });
+    }
+    res.statusCode = 302;
+    res.setHeader('Location', '/password');
+    res.end();
+    return;
+  }
+
+  if (path === '/password') {
+    if (req.method === 'GET') {
+      return html(res, 200, renderLogin({
+        changeFor: session.email, issued: session.mustChangePassword }));
+    }
+    if (req.method === 'POST') {
+      const body = new URLSearchParams(await readBody(req));
+      try {
+        await changePassword(
+          session.userId, body.get('current') ?? '', body.get('next') ?? '',
+          session.sessionId);
+      } catch (e) {
+        return html(res, 400, renderLogin({
+          changeFor: session.email, issued: session.mustChangePassword,
+          error: (e as Error).message,
+        }));
+      }
+      res.statusCode = 302;
+      res.setHeader('Location', '/');
+      res.end();
+      return;
+    }
+  }
 
   const accounts = await bankAccounts(session);
 
@@ -735,11 +895,10 @@ async function handle(
 
 // ---------------------------------------------------------------------------
 
-const session = await resolveSession();
 readers = await resolveReaders();
 
 createServer((req, res) => {
-  handle(req, res, session).catch((e) => {
+  handle(req, res).catch((e) => {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`  ${req.method} ${req.url} — ${message}`);
     if (!res.headersSent) json(res, 500, { ok: false, error: message });
@@ -748,10 +907,17 @@ createServer((req, res) => {
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`\n  BharatERP review server`);
   console.log(`  http://127.0.0.1:${PORT}`);
-  console.log(`  firm ${session.firmId}`);
-  console.log(`  client ${session.clientName}`);
   const on = [readers.docling && 'Docling', readers.llm && 'model',
               readers.gstinLookup && 'GSTIN lookup'].filter(Boolean);
   console.log(`  readers: ${on.length ? on.join(', ') : 'on-page only'}`);
-  console.log(`\n  No authentication. Localhost only. Not for production.\n`);
+  console.log(`  sign in at /login — set a password with ` +
+              `npx tsx scripts/set-password.ts <email>`);
+  /*
+   * Still not production, and the reason is no longer the login.
+   *
+   * The cookie cannot be Secure over plain HTTP, so on anything but localhost
+   * it would travel in clear. TLS, a cookie marked Secure, and rate limiting
+   * that is not one process's opinion are what remains.
+   */
+  console.log(`\n  Localhost only: no TLS, so the session cookie is not Secure.\n`);
 });

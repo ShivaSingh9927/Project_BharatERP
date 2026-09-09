@@ -105,6 +105,12 @@ textarea { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
 /* A link that sits beside a button and should read as one. */
+/* Who is signed in, and the way out. Deliberately a form and not a link:
+   signing out changes state, and a GET that changes state can be triggered by
+   anything that renders a URL. */
+.who { margin-left: auto; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted); }
+.who button { padding: 3px 9px; font: inherit; font-size: 12px; }
 .btnlink { display: inline-block; margin-left: 6px; padding: 3px 9px; font-size: 13px;
   border: 1px solid var(--line); border-radius: 6px; text-decoration: none;
   color: var(--ink); }
@@ -213,7 +219,7 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
 // ---------------------------------------------------------------------------
 
 export function renderShell(a: {
-  session: { clientName: string };
+  session: { clientName: string; displayName?: string; email?: string };
   accounts: Array<{ id: string; bank_name: string; last4: string }>;
   active: string;
   accountId?: string;
@@ -249,6 +255,10 @@ export function renderShell(a: {
     ${link('/tds', 'tds', 'TDS')}
     ${link('/returns', 'returns', 'Returns')}
   </nav>
+  <form method="post" action="/logout" class="who">
+    <span title="${esc(a.session.email ?? '')}">${esc(a.session.displayName ?? '')}</span>
+    <button type="submit">Sign out</button>
+  </form>
 </header>
 <main>${a.body}</main>
 </body></html>`;
@@ -1835,6 +1845,76 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// The door.
+//
+// Its own page, outside `renderShell`: the shell carries a client switcher and
+// a nav to screens the caller has no right to yet, and drawing them around a
+// login form would be telling an unauthenticated visitor who the firm's
+// clients are.
+
+export function renderLogin(a: {
+  email?: string;
+  error?: string;
+  /** Set when this is the change-password form rather than the login form. */
+  changeFor?: string;
+  /** True when the current password was issued by an administrator. */
+  issued?: boolean;
+}): string {
+  const body = a.changeFor === undefined ? `
+    <h1>Sign in</h1>
+    <form method="post" action="/login">
+      <label>Email
+        <input name="email" type="email" autocomplete="username" required
+          value="${esc(a.email ?? '')}" autofocus></label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+    <p class="sub">No sign-up here. A firm's partner issues accounts, because
+      an accounting system's users are its audit trail — every posting names
+      one of them.</p>` : `
+    <h1>${a.issued ? 'Choose your own password' : 'Change password'}</h1>
+    ${a.issued ? `<p class="sub">The password you signed in with was issued to
+      you, so somebody else knows it. It works once. Choose your own and
+      nothing else on this account will accept the old one.</p>` : ''}
+    <form method="post" action="/password">
+      <input type="hidden" name="email" value="${esc(a.changeFor)}"
+        autocomplete="username">
+      <label>Current password
+        <input name="current" type="password" autocomplete="current-password" required autofocus></label>
+      <label>New password
+        <input name="next" type="password" autocomplete="new-password"
+          minlength="12" required></label>
+      <button class="primary" type="submit">Save it</button>
+    </form>
+    <p class="sub">At least 12 characters, and no rules about symbols — length
+      is what defeats guessing. Every other session on this account is signed
+      out when you save, because the usual reason to change a password is that
+      somebody else might know the old one.</p>`;
+
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BharatERP</title>
+<style>${CSS}
+.gate { max-width: 380px; margin: 12vh auto; padding: 0 20px; }
+.gate form { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.gate label { display: flex; flex-direction: column; gap: 5px; font-size: 13px;
+  color: var(--muted); }
+.gate input { padding: 9px 10px; font: inherit; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.gate button { padding: 9px; font: inherit; }
+.gate .err { margin-top: 14px; padding: 9px 11px; border-radius: 6px;
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+  color: var(--bad); font-size: 14px; }
+</style></head><body>
+<main class="gate">
+  <div class="brand" style="font-size:15px">BharatERP</div>
+  ${a.error ? `<div class="err">${esc(a.error)}</div>` : ''}
+  ${body}
+</main></body></html>`;
 }
 
 // ---------------------------------------------------------------------------
