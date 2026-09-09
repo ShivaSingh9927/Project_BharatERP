@@ -48,6 +48,7 @@ import { validateGstin } from './gstin.ts';
 import { paise, money, STATUTORY_RATES } from './tax.ts';
 import { partyRcmRate, PROVISION_TEXT, type RcmProvision } from './partyRcm.ts';
 import { assessTdsOnBill, type TdsAssessment } from './tdsOnBill.ts';
+import { capitaliseAsset } from './fixedAssets.ts';
 import { parseAmount } from '../parse/values.ts';
 import { createBill, contentHash, type CreateBillInput, type BillLineInput,
          type CreatedBill } from './bills.ts';
@@ -1816,6 +1817,88 @@ export async function proposeFromDocument(
     }
   }
 
+  /*
+   * BE-11, at last. A line big enough to be an asset asks which it is.
+   *
+   * The rule is old and the reason it never fired is that there was nowhere to
+   * capitalise TO. Now there is, so a ₹3,00,000 line stops being posted to
+   * Purchases by default — which was Lesson 2's error of principle: this
+   * year's profit understated by the whole cost and the next four years' by
+   * nothing.
+   *
+   * ASKED, never decided. Whether a ₹40,000 payment bought a machine or
+   * repaired one is not visible in the figures, and it is the difference
+   * between an asset with a fifteen-year life and this month's expense.
+   *
+   * ── The threshold ALONE is the wrong trigger ─────────────────────────────
+   *
+   * BE-11 as written says any line above the threshold asks the question, and
+   * that reading is unusable: it asks whether a ₹1,00,000 professional fee, a
+   * ₹50,000 legal bill or a month's rent is a fixed asset. None of them can
+   * be, and a prompt that fires on every large line is one a CA switches off
+   * in a week — the same failure the TDS question was designed around.
+   *
+   * So it asks only where a capital item could actually be sitting: a GOODS
+   * head, where a machine coded to Purchases is a real and common mistake, or
+   * a fixed-asset head, where the debit is already an asset and the only
+   * question is whether anyone put it on the register. Service heads never ask.
+   */
+  if (lines.length > 0 && dateRead.date) {
+    try {
+      const big = await withFirm(firmId, async (c) => {
+        const th = await c.query<{ value: string }>(
+          `SELECT value::text FROM compliance_thresholds
+            WHERE key = 'capitalisation_threshold'
+              AND effective_from <= $1::date
+              AND (effective_to IS NULL OR effective_to >= $1::date)
+            ORDER BY effective_from DESC LIMIT 1`, [dateRead.date]);
+        if (th.rowCount === 0) return [];
+        const limit = paise(th.rows[0]!.value);
+
+        const ids = [...new Set(lines.map((l) => l.expenseAccountId))];
+        const acc = await c.query<{ id: string; name: string; kind: string }>(
+          `SELECT id, name,
+                  CASE WHEN account_type = 'fixed_asset' THEN 'asset'
+                       WHEN expense_class = 'cogs' THEN 'goods'
+                       ELSE 'service' END AS kind
+             FROM accounts WHERE client_id = $1 AND id = ANY($2::uuid[])`,
+          [input.clientId, ids]);
+        const kindOf = new Map(acc.rows.map((r) => [r.id, r]));
+
+        return lines
+          .map((l, i) => ({ i, l, a: kindOf.get(l.expenseAccountId) }))
+          .filter(({ l, a }) => paise(l.unitPrice) >= limit
+                                && a !== undefined && a.kind !== 'service')
+          .map(({ i, l, a }) => ({ lineNo: i + 1, amount: l.unitPrice,
+                                   description: l.description,
+                                   head: a!.name, alreadyAsset: a!.kind === 'asset',
+                                   threshold: th.rows[0]!.value }));
+      });
+
+      for (const b of big) {
+        confirmations.push({
+          field: `capitalise_${b.lineNo}`,
+          chose: 'post it as an expense',
+          instead: 'capitalise it as a fixed asset',
+          question: b.alreadyAsset
+            ? `Line ${b.lineNo}, "${b.description}", is ${b.amount} posted to ` +
+              `${b.head} — an asset head, so this is already on the balance ` +
+              'sheet. Capitalise it to put it on the asset register too, ' +
+              'where it will depreciate; leave it as it is and the debit sits ' +
+              'there with nothing to depreciate it.'
+            : `Line ${b.lineNo}, "${b.description}", is ${b.amount} on ` +
+              `${b.head} — at or above the ${b.threshold} capitalisation ` +
+              'threshold. If it bought something with a life of its own it ' +
+              'belongs on the balance sheet and depreciates; if it was stock ' +
+              'or a repair it is this period\'s cost. The figures cannot tell ' +
+              'the two apart, and the difference is a whole year\'s profit.',
+        });
+      }
+    } catch {
+      // A missing threshold master must not block a bill that reads perfectly.
+    }
+  }
+
   const ready = blockers.length === 0;
   return {
     index: seg.index, pages: seg.pages,
@@ -1886,6 +1969,21 @@ export async function postProposal(
      * the accounts actually being posted to.
      */
     tds?: { category: string; deduct: boolean };
+    /**
+     * Lines the reviewer chose to capitalise, and what class each is (BE-41).
+     *
+     * Capitalising is not a note on the side: the line's debit moves from the
+     * expense head to the asset head, and the asset goes on the register with
+     * the bill as its source. Both have to happen or the balance sheet and the
+     * register disagree from the first day.
+     */
+    capitalise?: Array<{
+      lineNo: number;
+      assetClassKey: string;
+      identifier?: string;
+      /** Defaults to the bill date. Schedule II wants the date of USE. */
+      putToUseOn?: string;
+    }>;
   },
 ): Promise<CreatedBill> {
   if (proposal.input === null) {
@@ -1933,6 +2031,65 @@ export async function postProposal(
     : { category: proposal.tds.category,
         deduct: answers['tds_deduction'] === tdsQuestion.chose };
 
+  /*
+   * A line answered "capitalise" needs its class, or nothing can be done with
+   * the answer.
+   *
+   * Refused rather than silently expensed: the reviewer said this is an asset,
+   * and posting it to Purchases anyway would overrule them without saying so.
+   */
+  const answeredCapitalise = proposal.confirmations
+    .filter((c) => c.field.startsWith('capitalise_')
+                   && answers[c.field] === c.instead)
+    .map((c) => Number(c.field.slice('capitalise_'.length)));
+  const given = new Set((opts.capitalise ?? []).map((x) => x.lineNo));
+  const unclassed = answeredCapitalise.filter((n) => !given.has(n));
+  if (unclassed.length > 0) {
+    throw new ValidationError(
+      `line(s) ${unclassed.join(', ')} were marked as fixed assets but no ` +
+      'asset class was given for them. The class decides the useful life and ' +
+      'the tax block, so it cannot be guessed — and posting them as expenses ' +
+      'instead would overrule the answer without saying so.', 'PB-14');
+  }
+
+  /*
+   * Move the debit to the asset head BEFORE posting.
+   *
+   * Capitalising means the money lands in Computers rather than in Purchases.
+   * Doing it afterwards would need a second correcting voucher, and for a
+   * moment the P&L would carry an expense that was never one.
+   */
+  const capitalising: Array<{ lineNo: number; assetClassKey: string;
+                             identifier?: string; putToUseOn?: string;
+                             className: string }> = [];
+  for (const cap of opts.capitalise ?? []) {
+    const line = proposal.input.lines[cap.lineNo - 1];
+    if (line === undefined) {
+      throw new ValidationError(
+        `this bill has no line ${cap.lineNo}`, 'PB-14');
+    }
+    const resolved = await withFirm(firmId, async (c) => {
+      const r = await c.query<{ id: string; name: string }>(
+        `SELECT a.id, ac.name
+           FROM asset_classes ac
+           JOIN accounts a ON a.client_id = $1 AND a.name = ac.asset_account_name
+                          AND NOT a.is_group
+          WHERE ac.key = $2 AND ac.effective_from <= $3::date
+            AND (ac.effective_to IS NULL OR ac.effective_to >= $3::date)
+          ORDER BY ac.effective_from DESC LIMIT 1`,
+        [proposal.input!.clientId, cap.assetClassKey,
+         cap.putToUseOn ?? proposal.input!.billDate]);
+      return r.rows[0] ?? null;
+    });
+    if (resolved === null) {
+      throw new ValidationError(
+        `"${cap.assetClassKey}" is not an asset class with a matching account ` +
+        'in this chart, so there is nowhere for the asset to sit.', 'PB-14');
+    }
+    line.expenseAccountId = resolved.id;
+    capitalising.push({ ...cap, className: resolved.name });
+  }
+
   const bill = await createBill(firmId, {
     ...proposal.input,
     // A confirmed answer outranks what was read; an explicit override outranks
@@ -1942,6 +2099,34 @@ export async function postProposal(
     ...(opts.tds === undefined ? {} : { tds: opts.tds }),
     approvedBy: opts.approvedBy,
   });
+
+  /*
+   * The register entry, after the bill exists.
+   *
+   * `sourceVoucherId` is the bill, so the asset can always be traced to what
+   * bought it — which is the first thing an auditor asks about a fixed asset
+   * and the thing a spreadsheet register never knows.
+   */
+  for (const cap of capitalising) {
+    const line = proposal.input.lines[cap.lineNo - 1]!;
+    const asset = await capitaliseAsset(firmId, {
+      clientId: proposal.input.clientId,
+      assetClassKey: cap.assetClassKey,
+      description: line.description,
+      ...(cap.identifier === undefined ? {} : { identifier: cap.identifier }),
+      cost: line.unitPrice,
+      putToUseOn: cap.putToUseOn ?? proposal.input.billDate,
+      sourceVoucherId: bill.voucherId,
+      ...(proposal.partyId === null ? {} : { partyId: proposal.partyId }),
+      createdBy: opts.approvedBy,
+    });
+    bill.warnings.push(
+      `line ${cap.lineNo} was capitalised as ${cap.className} rather than ` +
+      'expensed, so it sits on the balance sheet and depreciates from ' +
+      `${cap.putToUseOn ?? proposal.input.billDate}. It will not reduce profit ` +
+      'this period except through depreciation, which has to be run.');
+    bill.warnings.push(...asset.warnings);
+  }
 
   for (const c of proposal.confirmations) {
     if (answers[c.field] !== c.chose) {

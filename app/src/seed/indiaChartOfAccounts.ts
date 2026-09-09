@@ -57,6 +57,15 @@ export const INDIA_COA: CoaRoot[] = [
           { name: 'Furniture and Fixtures', accountType: 'fixed_asset', liquidityClass: 'non_current', code: '1110' },
           { name: 'Office Equipment', accountType: 'fixed_asset', liquidityClass: 'non_current', code: '1120' },
           { name: 'Plant and Machinery', accountType: 'fixed_asset', liquidityClass: 'non_current', code: '1130' },
+          /*
+           * The two heads an SMB actually buys, and they are not
+           * interchangeable with the ones above: a computer depreciates at 40%
+           * for tax against plant's 15%, and a car carries its own set of
+           * restrictions. Posting either to "Office Equipment" gets the
+           * depreciation wrong for years (BE-41).
+           */
+          { name: 'Computers', accountType: 'fixed_asset', liquidityClass: 'non_current', code: '1140' },
+          { name: 'Vehicles', accountType: 'fixed_asset', liquidityClass: 'non_current', code: '1150' },
           {
             // Contra-asset (Lesson 8): sits under Assets, but its normal
             // balance is credit. Preserves original cost while showing what
@@ -189,6 +198,15 @@ export const INDIA_COA: CoaRoot[] = [
           // Lesson 4: a customer who will never pay is a real business loss —
           // an Expense, distinct from Drawings.
           { name: 'Bad Debts', accountType: 'general', expenseClass: 'opex', code: '5195' },
+          /*
+           * Selling an asset for less than its carrying amount is a loss of
+           * the business, and it needs its own head: a debit parked in Other
+           * Income would understate both income and expense, and the figure
+           * has to be findable at year end because the tax treatment of a
+           * disposal is nothing like the book one (BE-41).
+           */
+          { name: 'Loss on Sale of Assets', accountType: 'general',
+            expenseClass: 'non_operating', code: '5197' },
           // CSR is blocked for input credit outright — s.17(5)(fa), inserted by
           // the Finance Act 2023 and confirmed by the CA review (A5.1). It needs
           // its own account so the block can attach to something.

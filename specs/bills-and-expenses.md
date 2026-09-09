@@ -902,6 +902,83 @@ it. A credit note, a receipt and a write-off all reduce it through the same
   gets sent when a customer disputes what they owe, and one that omitted a
   receipt or a credit note would be worse than none.
 
+**BE-41 — Book depreciation and tax depreciation are two different numbers,
+and a system that computes one of them is lying.**
+
+BE-11 has said since the beginning that a bill above the capitalisation
+threshold must ask "expense or capitalise?" and never default silently. Nothing
+ever asked, because there was nowhere to capitalise TO — so a Rs 3,00,000 batch
+of laptops went to Purchases. That is Lesson 2's error of principle: this
+year's profit understated by the whole cost and the next four years' by
+nothing.
+
+The register closes it, and the shape it has to take comes from one fact:
+
+  **Books** follow Companies Act 2013 Schedule II — a useful life per class,
+  straight line or written down, residual capped at 5%, pro-rata from the date
+  the asset became available for use. This POSTS.
+
+  **Tax** follows Income Tax Act s.32 with Appendix I rates — a BLOCK of
+  assets rather than individual ones, always written-down value, and half the
+  rate for anything put to use under 180 days in its first year. This never
+  posts.
+
+Neither is a rounding of the other, and the gap between them is the main
+add-back in the income computation and where the deferred tax item comes from.
+So they are separate functions returning separate numbers, and the screen shows
+both with the difference between them.
+
+- **The trigger is the threshold AND the head.** BE-11's literal reading — any
+  line above the threshold — is unusable: it asks whether a Rs 1,00,000
+  professional fee or a month's rent is a fixed asset. It asks only on a GOODS
+  head, where a machine coded to Purchases is a real and common mistake, or on
+  a fixed-asset head, where the debit is already an asset and the question is
+  whether anyone put it on the register. Service heads never ask.
+- **Capitalising MOVES the debit.** The line posts to Computers rather than to
+  Purchases, before the voucher is written — doing it afterwards would need a
+  correcting entry, and for a moment the P&L would carry an expense that never
+  was one. The asset then records the bill as its source, so it can always be
+  traced to what bought it.
+- **"Capitalise" without a class is refused, not quietly expensed.** The
+  reviewer said this is an asset; posting it to Purchases anyway would overrule
+  them without saying so, and the class is what decides the life and the block.
+- **The pro-rata denominator is the year's own day count, not 365.** With 365
+  fixed, a full year containing 29 February charged 366/365 of the annual
+  figure — and the total still came right, because the residual cap caught it
+  at the end. A self-correcting error that a CA has to spend an afternoon
+  disproving is worse than an obvious one.
+- **One fiscal year per run.** The life is in years, the pro-rata denominator
+  is the year's day count, and tax reckons by year; a period crossing 31 March
+  mixes two of each.
+- **A period may be charged ONCE**, and an overlapping period counts. Charging
+  a year twice halves every asset's life and the voucher still balances, so
+  nothing downstream would catch it.
+- **Never below residual value.** The cap is what stops a rounding drift over a
+  fifteen-year life writing an asset past zero.
+- **Depreciation is a contra-asset, not a reduction of the asset** (Lesson 8),
+  so cost stays visible on the register: what was paid and what is left are
+  different questions.
+- **A disposal takes the cost and its accumulated depreciation off together**,
+  and the book gain or loss has its own head — a debit parked in Other Income
+  would understate both income and expense. It also SAYS that for tax there is
+  no gain or loss on one asset: the proceeds come off the block and the block
+  keeps depreciating, so the book figure is adjusted in the computation rather
+  than reported. A disposal of an asset that was never depreciated says that
+  too, because the gain depends entirely on a run nobody has made.
+- **A block emptied by a sale is flagged, not guessed at.** Proceeds beyond the
+  whole block are a short-term capital gain under s.50, which is a computation
+  of its own.
+- **The lives and rates are NOT CA-REVIEWED, and every charge says so.** The
+  precedent is the TDS section codes: a table that looks authoritative and is
+  not is worse than one that admits it. This matters more here, because a wrong
+  life misstates profit every year until the asset is written off.
+- **The capitalisation threshold is a POLICY, not a statute.** Schedule II sets
+  no de minimis; where a client draws the line is their own accounting policy,
+  consistently applied. Rs 5,000 is a default to be changed, not a rule.
+- **s.32(1)(iia) additional depreciation is not included**, and nor is any
+  restriction particular to the client's business. Both are judgements about
+  the client rather than facts about the asset.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1387,6 +1464,11 @@ In addition to the GL Engine's V-1…V-13:
 | RV-2 | A receipt and a write-off are for a positive amount; money going the other way is a refund or a credit note |
 | RV-3 | Cash plus tax withheld does not exceed what the invoice still owes; an overpayment is an advance, not a receipt |
 | RV-4 | A write-off states why the debt is uncollectable, and includes the GST, which is not recoverable (BE-40) |
+| FA-1 | An asset names a class in force on the date it was put to use, and the chart has a head for it (BE-41) |
+| FA-2 | A depreciation run covers one fiscal year and no more |
+| FA-3 | A period is depreciated once; an overlapping period is refused |
+| FA-4 | An asset is disposed of once, not before it was put to use, and proceeds have somewhere to land |
+| PB-14 | A bill line answered "capitalise" carries an asset class; it is never expensed instead (BE-41) |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 

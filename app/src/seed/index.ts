@@ -8,6 +8,7 @@ import { withFirm, ownerPool } from '../db/pool.ts';
 import { INDIA_COA, defaultNormalBalance, type CoaNode, type CoaRoot } from './indiaChartOfAccounts.ts';
 import type { RootType } from '../domain/types.ts';
 import { seedTdsHeads } from './tdsSections.ts';
+import { seedAssetClasses } from './assetClasses.ts';
 
 export interface SeededTenant {
   firmId: string;
@@ -162,6 +163,10 @@ export async function seedTenant(opts: {
    * and nothing in the tests or the UI would look wrong.
    */
   await seedTdsHeads(clientId);
+  // Global and statutory, like the GST and TDS masters — but seeded here and
+  // idempotently, so a tenant cannot exist without the classes its assets
+  // would need. Nothing can forget it.
+  await seedAssetClasses();
   return { firmId, clientId, userId, fiscalYearId, accounts };
 }
 

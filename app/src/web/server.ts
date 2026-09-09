@@ -45,7 +45,7 @@ import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
 import { renderGstr3b, renderTds, renderReturns, renderReceivables,
-         renderStatement } from './views.ts';
+         renderStatement, renderAssets } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
@@ -55,6 +55,8 @@ import { createPurchaseReturn, recordSupplierCreditNote, purchaseReturns,
          billForReturn } from '../domain/purchaseReturns.ts';
 import { outstandingInvoices, recordReceipt, writeOffReceivable,
          customerStatement, receiptAccounts } from '../domain/receivables.ts';
+import { assetRegister, computeDepreciation, postDepreciation,
+         taxDepreciationSchedule, fiscalYearOf } from '../domain/fixedAssets.ts';
 import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
@@ -572,6 +574,64 @@ async function handle(
         ok: true, paid: r.paid, outstandingAfter: r.outstandingAfter,
         fullySettled: r.fullySettled,
       });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/assets') {
+    /*
+     * The fiscal year, not the calendar one: depreciation is annual and
+     * reckoned April to March, so the page defaults to the year the current
+     * date falls in and can be pointed at an earlier one.
+     */
+    const asOf = new Date().toISOString().slice(0, 10);
+    const fy = Number(url.searchParams.get('fy') ?? fiscalYearOf(asOf));
+    const from = `${fy}-04-01`, to = `${fy + 1}-03-31`;
+
+    let book;
+    let alreadyRun = false;
+    try {
+      book = await computeDepreciation(session.firmId, session.clientId, from, to);
+    } catch {
+      book = { fromDate: from, toDate: to, lines: [], total: '0.00', warnings: [] };
+    }
+    // Already charged? Then the computed figure is what WOULD be charged
+    // again, so the button is closed rather than left to be refused.
+    const run = await withFirm(session.firmId, async (c) => {
+      const r = await c.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM depreciation_runs
+          WHERE client_id = $1 AND from_date <= $3::date AND to_date >= $2::date`,
+        [session.clientId, from, to]);
+      return Number(r.rows[0]!.n) > 0;
+    });
+    alreadyRun = run;
+    if (alreadyRun) book = { ...book, lines: [], total: book.total };
+
+    return html(res, 200, renderShell({
+      session, accounts, active: 'assets',
+      body: renderAssets({
+        asOf, fiscalYear: fy,
+        register: await assetRegister(session.firmId, session.clientId, to),
+        book, alreadyRun,
+        tax: await taxDepreciationSchedule(session.firmId, session.clientId, fy),
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/assets/depreciate') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await postDepreciation(session.firmId, {
+        clientId: session.clientId,
+        fromDate: String(body.fromDate), toDate: String(body.toDate),
+        createdBy: session.userId,
+        // Depreciation is an estimate the client is responsible for, so the
+        // person running it is the person approving it.
+        approvedBy: session.userId,
+      });
+      return json(res, 200, {
+        ok: true, total: r.total, lines: r.lines, warnings: r.warnings });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }

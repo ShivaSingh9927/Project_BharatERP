@@ -132,7 +132,15 @@ describe('a posted bill can say where its figures came from', () => {
     const p = await proposeFromDocument(t.firmId,
       { clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases },
       doc(), wide, 'd'.repeat(64));
-    const bill = await postProposal(t.firmId, p, { approvedBy: t.userId });
+    /*
+     * 13,047.46 on a goods head is above the capitalisation threshold, so
+     * BE-11 now asks whether it is stock or an asset. It is stock here, and
+     * the question has to be answered before anything posts.
+     */
+    const cap = p.confirmations.find((c) => c.field.startsWith('capitalise_'))!;
+    const bill = await postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { [cap.field]: cap.chose },
+    });
     const taxable = (await explainBill(t.firmId, bill.voucherId))
       .find((f) => f.fieldPath === 'totals.taxable')!;
 

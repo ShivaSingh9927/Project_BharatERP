@@ -114,6 +114,9 @@ textarea { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 
 .btnlink { display: inline-block; margin-left: 6px; padding: 3px 9px; font-size: 13px;
   border: 1px solid var(--line); border-radius: 6px; text-decoration: none;
   color: var(--ink); }
+/* A disposed asset stays on the register — it is history, not a mistake —
+   but it should not read as something the client still owns. */
+tr.gone td { opacity: .55; }
 .cnbox { display: flex; gap: 4px; margin-top: 4px; }
 .cnbox input { width: 130px; padding: 3px 6px; font: inherit;
   border: 1px solid var(--line); border-radius: 4px; }
@@ -254,6 +257,7 @@ export function renderShell(a: {
     ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
     ${link('/tds', 'tds', 'TDS')}
     ${link('/receivables', 'receivables', 'Receivables')}
+    ${link('/assets', 'assets', 'Assets')}
     ${link('/returns', 'returns', 'Returns')}
   </nav>
   <form method="post" action="/logout" class="who">
@@ -1846,6 +1850,159 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Fixed assets — the register, and both depreciation figures side by side.
+//
+// The page exists to make one thing unmissable: the book charge and the tax
+// charge are different numbers, and the gap between them is the add-back in
+// the income computation. A screen showing one of them labelled
+// "depreciation" would be telling a CA something false.
+
+interface AssetsV {
+  asOf: string;
+  fiscalYear: number;
+  register: {
+    rows: Array<{ id: string; description: string; identifier: string | null;
+                  className: string; cost: string; putToUseOn: string;
+                  accumulated: string; carrying: string; residualValue: string;
+                  disposedOn: string | null; disposalProceeds: string | null }>;
+    totalCost: string; totalCarrying: string;
+  };
+  book: { fromDate: string; toDate: string; total: string;
+          lines: Array<{ description: string; className: string; method: string;
+                         openingWdv: string; charge: string; closingWdv: string;
+                         days: number; note: string | null }>;
+          warnings: string[] };
+  /** Null when this year has already been charged. */
+  alreadyRun: boolean;
+  tax: { fiscalYear: string; total: string;
+         blocks: Array<{ block: string; rate: string; openingWdv: string;
+                         additionsFullRate: string; additionsHalfRate: string;
+                         deductions: string; depreciation: string;
+                         closingWdv: string; note: string | null }>;
+         warnings: string[] };
+}
+
+export function renderAssets(a: AssetsV): string {
+  const gap = (Number(a.tax.total) - Number(a.book.total)).toFixed(2);
+
+  const register = a.register.rows.length === 0
+    ? `<p class="sub">Nothing on the register yet. A bill line above the
+       capitalisation threshold on a goods or asset head asks whether it is a
+       cost or an asset (BE-11), and answering "asset" puts it here.</p>`
+    : `<div class="panel" style="padding:0"><table>
+        <tr><th>Asset</th><th>Class</th><th>In use from</th>
+            <th class="num">Cost</th><th class="num">Depreciated</th>
+            <th class="num">Carrying</th></tr>
+        ${a.register.rows.map((r) => `<tr class="${r.disposedOn ? 'gone' : ''}">
+          <td>${esc(r.description)}${r.identifier
+            ? `<div class="muted small">${esc(r.identifier)}</div>` : ''}</td>
+          <td class="muted small">${esc(r.className)}</td>
+          <td>${esc(r.putToUseOn)}${r.disposedOn
+            ? `<div class="muted small">gone ${esc(r.disposedOn)}${
+                r.disposalProceeds ? ` for ${inr(r.disposalProceeds)}` : ''}</div>`
+            : ''}</td>
+          <td class="num">${inr(r.cost)}</td>
+          <td class="num">${r.accumulated === '0.00'
+            ? '<span class="muted">—</span>' : inr(r.accumulated)}</td>
+          <td class="num">${r.disposedOn
+            ? '<span class="muted">—</span>' : `<b>${inr(r.carrying)}</b>`}</td>
+        </tr>`).join('')}
+        <tr><td colspan="3"><b>Total</b></td>
+            <td class="num"><b>${inr(a.register.totalCost)}</b></td><td></td>
+            <td class="num"><b>${inr(a.register.totalCarrying)}</b></td></tr>
+      </table></div>`;
+
+  return `<h1>Fixed assets</h1>
+<p class="sub">What the client owns, what it has depreciated, and what it is
+carried at. Accumulated depreciation sits as a contra-asset, so the cost stays
+visible — what was paid and what is left are different questions.</p>
+
+<div class="tiles">
+  <div class="tile"><b>${inr(a.register.totalCarrying)}</b><span>carrying amount</span></div>
+  <div class="tile"><b>${inr(a.book.total)}</b><span>book charge, ${esc(a.book.fromDate.slice(0,4))}-${esc(String((Number(a.book.fromDate.slice(0,4))+1)%100).padStart(2,'0'))}</span></div>
+  <div class="tile"><b>${inr(a.tax.total)}</b><span>tax charge, same year</span></div>
+  <div class="tile"><b class="${gap === '0.00' ? '' : 'warn'}">${inr(gap)}</b>
+    <span>difference to add back</span></div>
+</div>
+
+<h2 class="mt">The register</h2>
+${register}
+
+<h2 class="mt">Book depreciation — Companies Act, Schedule II</h2>
+<p class="sub">What POSTS. Pro-rated by days from the date each asset became
+available for use, and capped so nothing falls below its residual value.</p>
+${a.book.lines.length === 0
+  ? `<p class="sub">${a.alreadyRun
+      ? 'Already charged for this year.'
+      : 'Nothing to charge — no asset in use, or everything is written down.'}</p>`
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Asset</th><th>Method</th><th class="num">Opening</th>
+          <th class="num">Charge</th><th class="num">Closing</th><th>Days</th></tr>
+      ${a.book.lines.map((l) => `<tr>
+        <td>${esc(l.description)}<div class="muted small">${esc(l.className)}${
+          l.note ? ` · ${esc(l.note)}` : ''}</div></td>
+        <td class="muted small">${l.method === 'slm' ? 'straight line' : 'written down'}</td>
+        <td class="num">${inr(l.openingWdv)}</td>
+        <td class="num"><b>${inr(l.charge)}</b></td>
+        <td class="num">${inr(l.closingWdv)}</td>
+        <td class="num muted">${l.days}</td></tr>`).join('')}
+      <tr><td colspan="3"><b>Total</b></td>
+          <td class="num"><b>${inr(a.book.total)}</b></td><td colspan="2"></td></tr>
+    </table></div>
+    <div class="billactions">
+      <button class="primary" id="runDep"
+        data-from="${esc(a.book.fromDate)}" data-to="${esc(a.book.toDate)}"
+        ${a.alreadyRun ? 'disabled' : ''}>
+        ${a.alreadyRun ? 'Already charged for this year' : 'Post this charge'}</button>
+      <span id="depResult" class="muted"></span>
+    </div>`}
+${a.book.warnings.length === 0 ? '' :
+  `<ul class="warns">${a.book.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`}
+
+<h2 class="mt">Tax depreciation — Income Tax Act, block of assets</h2>
+<p class="sub">A computation and not an entry. Nothing here posts: the unit is
+the BLOCK rather than the asset, the method is always written-down value at the
+Appendix I rate, and an asset put to use for under 180 days in its first year
+gets half of it.</p>
+${a.tax.blocks.length === 0
+  ? '<p class="sub">No block has anything in it for this year.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Block</th><th class="num">Rate</th><th class="num">Opening</th>
+          <th class="num">Additions</th><th class="num">Under 180d</th>
+          <th class="num">Sold</th><th class="num">Depreciation</th>
+          <th class="num">Closing</th></tr>
+      ${a.tax.blocks.map((b) => `<tr>
+        <td>${esc(b.block)}${b.note
+          ? `<div class="bad small">${esc(b.note)}</div>` : ''}</td>
+        <td class="num">${esc(b.rate)}%</td>
+        <td class="num">${inr(b.openingWdv)}</td>
+        <td class="num">${inr(b.additionsFullRate)}</td>
+        <td class="num">${b.additionsHalfRate === '0.00'
+          ? '<span class="muted">—</span>' : inr(b.additionsHalfRate)}</td>
+        <td class="num">${b.deductions === '0.00'
+          ? '<span class="muted">—</span>' : inr(b.deductions)}</td>
+        <td class="num"><b>${inr(b.depreciation)}</b></td>
+        <td class="num">${inr(b.closingWdv)}</td></tr>`).join('')}
+    </table></div>`}
+${a.tax.warnings.length === 0 ? '' :
+  `<ul class="warns">${a.tax.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`}
+
+<script>
+const rd = document.getElementById('runDep');
+if (rd) rd.onclick = async () => {
+  const out = document.getElementById('depResult');
+  rd.disabled = true; out.textContent = 'Posting…';
+  const r = await post('/api/assets/depreciate', {
+    fromDate: rd.dataset.from, toDate: rd.dataset.to });
+  if (!r.ok) { rd.disabled = false; out.innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
+  out.innerHTML = '<span class="good">Charged ' + r.total + ' across ' +
+    r.lines + ' asset(s).</span>';
+  setTimeout(() => location.reload(), 1200);
+};
+</script>`;
 }
 
 // ---------------------------------------------------------------------------
