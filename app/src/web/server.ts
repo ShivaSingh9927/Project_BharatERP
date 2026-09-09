@@ -33,12 +33,14 @@ import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, 
 import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
-import { renderGstr3b, renderTds } from './views.ts';
+import { renderGstr3b, renderTds, renderReturns } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
 import { setPartyRcmRate } from '../domain/partyRcm.ts';
 import { tdsPosition, recordTdsDeposit } from '../domain/tdsCompliance.ts';
+import { createPurchaseReturn, recordSupplierCreditNote, purchaseReturns,
+         billForReturn } from '../domain/purchaseReturns.ts';
 import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
@@ -407,6 +409,63 @@ async function handle(
         ok: true, paid: r.paid, outstandingAfter: r.outstandingAfter,
         fullySettled: r.fullySettled,
       });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/returns') {
+    const billId = url.searchParams.get('bill');
+    return html(res, 200, renderShell({
+      session, accounts, active: 'returns',
+      body: renderReturns({
+        returns: await purchaseReturns(session.firmId, session.clientId),
+        bill: billId === null ? null
+          : await billForReturn(session.firmId, session.clientId, billId),
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/returns/create') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await createPurchaseReturn(session.firmId, {
+        clientId: session.clientId,
+        billVoucherId: String(body.billVoucherId),
+        noteNumber: String(body.noteNumber ?? '').trim(),
+        noteDate: String(body.noteDate),
+        reason: String(body.reason ?? ''),
+        lines: (body.lines as Array<{ billLineNo: number; taxableValue: string }>)
+          .map((l) => ({ billLineNo: Number(l.billLineNo),
+                         taxableValue: String(l.taxableValue) })),
+        createdBy: session.userId,
+        // The reviewer posting it IS the approver here: a return is money
+        // leaving the expense and coming off a supplier's account.
+        approvedBy: session.userId,
+        ...(body.supplierCreditNote
+          ? { supplierCreditNote: {
+                number: String(body.supplierCreditNote.number),
+                date: String(body.supplierCreditNote.date) } }
+          : {}),
+      });
+      return json(res, 200, {
+        ok: true, grandTotal: r.grandTotal, warnings: r.warnings,
+        awaiting: r.awaitingSupplierCreditNote,
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/returns/credit-note') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      await recordSupplierCreditNote(session.firmId, {
+        clientId: session.clientId,
+        returnVoucherId: String(body.returnVoucherId),
+        number: String(body.number), date: String(body.date),
+      });
+      return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }

@@ -729,6 +729,65 @@ dates nothing in the software knew.
   section codes in the master are still marked unverified, and printing them on
   a client's Form 16A would put our guess on their letterhead.
 
+**BE-38 — A purchase return reverses our credit at once; only the SUPPLIER's
+credit note settles the tax.**
+
+Short delivery, damaged stock, a rate corrected after the invoice was cut.
+Every real payables ledger has to reduce a bill that is already posted, and
+there was no way to say it — so the two things people reach for instead were
+the only options, and both are wrong. Deleting the bill destroys the audit
+trail and the GSTR-2B match; a manual journal moves the money without touching
+the tax or the ageing.
+
+**The asymmetry is the whole difficulty.** Under s.34 a credit note is the
+SUPPLIER's instrument: only they can issue one, and only theirs reduces their
+output liability. What the recipient issues is a debit note, and it is a book
+document — it records that we are paying less and entitles nobody to a tax
+adjustment. What the law asks of the recipient is the mirror duty: reverse the
+input credit taken on the returned portion.
+
+So a return does two separable things and says so. It reduces what we owe and
+reverses our credit immediately, because that is our own obligation and waits
+on nobody. And it leaves the supplier's credit note OUTSTANDING and tracked,
+because until that arrives and appears in GSTR-2B the supplier is still
+declaring the full invoice and the tax side has no support in the GST system.
+
+- **The reversal follows the ORIGINAL line, not today's rules.** A line whose
+  credit was blocked had its GST capitalised into the expense, so returning it
+  takes the whole GST back out of the expense; an eligible line's GST comes off
+  input credit. Reversing the wrong one misstates profit by the tax. And the
+  tax reversed is a slice of what was actually POSTED — on a purchase bill that
+  is the vendor's own figure, not our recomputation (PB-4), so recomputing from
+  the rate master would reverse a different number from the one that went in.
+- **The last piece of a line takes the remainder, not its own share.** A line
+  returned in three parts has each part's prorated share round to slightly less
+  than a third, stranding a paisa of input credit on a line that no longer
+  exists. Giving the final return whatever is left makes a fully-returned line
+  reverse exactly what went in.
+- **Cumulative, across every earlier return.** Two returns of 60% each look
+  reasonable alone and together credit us for 120% of a line — reversing credit
+  that was never taken and leaving the supplier owing money the bill never
+  supported.
+- **A reverse-charge bill unwinds BOTH sides.** It raised the liability and the
+  credit together, so reversing only the credit would leave the client owing
+  output tax on a supply they sent back. The s.31(3)(f) self-invoice needs a
+  matching credit note of the client's own.
+- **The ageing needs no status column.** The Creditors debit points at the bill
+  through `settles_voucher_id`, the same mechanism a payment uses — because a
+  return settles part of what was owed just as a payment does.
+- **TDS is flagged, never silently adjusted.** The deduction was computed on an
+  amount that has just shrunk, so part of it now sits on a sum no longer
+  payable. But the challan may already be deposited, and undoing a deposited
+  deduction is a correction statement filed with the department, not a ledger
+  entry. What this must do is make sure nobody discovers it in July (BE-37).
+- **A return against a paid bill leaves the supplier owing US**, which turns
+  their balance into an asset and is not what an ageing is built to show. Said
+  out loud rather than left to be noticed.
+- **A return with no reason is refused.** It is the one an auditor asks about,
+  and by then nobody remembers.
+- **The supplier's credit note is recorded once.** A second against one return
+  would mean they credited us twice, which is another return, not an edit.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1203,6 +1262,10 @@ In addition to the GL Engine's V-1…V-13:
 | PB-11 | Content hash not already present (BE-2) |
 | PB-12 | A bill whose expense heads attract TDS does not post until a human has said whether to withhold; a bill already deducted on its credit cannot be deducted again on payment (BE-36) |
 | PB-13 | A TDS challan names one month of DEDUCTIONS and may not exceed what that month still owes; interest and late fees post to their own head, never to the tax liability (BE-37) |
+| PR-1 | A purchase return names the bill it reduces, at least one of its lines, and a reason (BE-38) |
+| PR-2 | A return is not dated before the bill it returns |
+| PR-3 | Returns against a line, cumulatively, do not exceed what that line was billed for |
+| PR-4 | One supplier credit note per return; a second means another return, not an edit |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 

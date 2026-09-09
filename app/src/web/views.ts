@@ -104,6 +104,13 @@ button:disabled { opacity: .5; cursor: default; }
 textarea { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 12px; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
+/* A link that sits beside a button and should read as one. */
+.btnlink { display: inline-block; margin-left: 6px; padding: 3px 9px; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 6px; text-decoration: none;
+  color: var(--ink); }
+.cnbox { display: flex; gap: 4px; margin-top: 4px; }
+.cnbox input { width: 130px; padding: 3px 6px; font: inherit;
+  border: 1px solid var(--line); border-radius: 4px; }
 /* A month whose deposit deadline has passed. Tinted rather than just
    red-texted: it is the row a CA has to act on today. */
 .lategrp td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
@@ -240,6 +247,7 @@ export function renderShell(a: {
     ${link('/gstr1', 'gstr1', 'GSTR-1')}
     ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
     ${link('/tds', 'tds', 'TDS')}
+    ${link('/returns', 'returns', 'Returns')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -1495,7 +1503,8 @@ export function renderPayables(a: {
       <td class="num ${b.daysOverdue > 60 ? 'bad' : b.daysOverdue > 0 ? 'warn' : 'muted'}">${
         b.daysOverdue > 0 ? b.daysOverdue + 'd overdue' : 'not due'}</td>
       <td class="num"><b>${inr(b.outstanding)}</b></td>
-      <td><button class="pay" data-v="${esc(b.voucherId)}" data-out="${esc(b.outstanding)}">Pay</button></td>
+      <td><button class="pay" data-v="${esc(b.voucherId)}" data-out="${esc(b.outstanding)}">Pay</button>
+        <a class="btnlink" href="/returns?bill=${esc(b.voucherId)}">Return</a></td>
     </tr>
     <tr class="payform" id="pf_${esc(b.voucherId)}" hidden>
       <td colspan="6">
@@ -1826,6 +1835,169 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Purchase returns — the debit note.
+//
+// The screen has to carry one idea that is easy to get wrong and expensive:
+// our debit note reduces what we owe and reverses our own credit, and it does
+// NOT reduce the supplier's liability. Only their credit note does that. So
+// the list leads with which returns are still waiting for one.
+
+interface ReturnsV {
+  returns: Array<{
+    voucherId: string; noteNumber: string; noteDate: string; billNumber: string;
+    supplier: string; reason: string; taxableValue: string; grandTotal: string;
+    supplierCreditNote: string | null;
+  }>;
+  /** Set when a bill was chosen to return against. */
+  bill: null | {
+    voucherId: string; billNumber: string; billDate: string; supplier: string;
+    grandTotal: string;
+    lines: Array<{ lineNo: number; description: string; hsnSac: string | null;
+                   taxableValue: string; returned: string; remaining: string;
+                   gstRate: string; itc: string }>;
+  };
+}
+
+export function renderReturns(a: ReturnsV): string {
+  const waiting = a.returns.filter((r) => r.supplierCreditNote === null);
+
+  const form = a.bill === null ? `
+    <p class="sub">Pick a bill from <a href="/payables">Payables</a> and press
+      Return. A return always points at the bill it reduces — a floating credit
+      is one nobody can reconcile.</p>` : `
+    <div class="panel">
+      <h2>Return against ${esc(a.bill.billNumber)}</h2>
+      <p class="sub">${esc(a.bill.supplier)}, dated ${esc(a.bill.billDate)},
+        ${inr(a.bill.grandTotal)}. Enter the taxable value going back on each
+        line — the tax comes off in the same proportion it went on, and a line
+        whose credit was blocked has its GST taken back out of the expense
+        rather than off input credit.</p>
+      <table>
+        <tr><th>#</th><th>Line</th><th class="num">Billed</th>
+            <th class="num">Already back</th><th class="num">Returning</th></tr>
+        ${a.bill.lines.map((l) => `
+          <tr>
+            <td class="muted">${l.lineNo}</td>
+            <td>${esc(l.description)}
+              <div class="muted small">${esc(l.gstRate)}%${
+                l.itc === 'eligible' ? '' : ` · credit ${esc(l.itc)}`}${
+                l.hsnSac ? ` · HSN ${esc(l.hsnSac)}` : ''}</div></td>
+            <td class="num">${inr(l.taxableValue)}</td>
+            <td class="num ${l.returned === '0.00' ? 'muted' : ''}">${
+              l.returned === '0.00' ? '—' : inr(l.returned)}</td>
+            <td class="num">${Number(l.remaining) <= 0
+              ? '<span class="muted">fully returned</span>'
+              : `<input class="rline" data-line="${l.lineNo}"
+                   data-max="${esc(l.remaining)}" inputmode="decimal"
+                   placeholder="up to ${esc(l.remaining)}">`}</td>
+          </tr>`).join('')}
+      </table>
+      <div class="row mt">
+        <label>Debit note no. <input id="rnum"></label>
+        <label>Dated <input id="rdate" type="date" value="${esc(a.bill.billDate)}"></label>
+        <label>Why <input id="rreason" size="34"
+          placeholder="short delivery, damaged, rate corrected"></label>
+      </div>
+      <div class="row">
+        <label>Supplier's credit note <input id="rscn" placeholder="if it has arrived"></label>
+        <label>Dated <input id="rscnd" type="date"></label>
+      </div>
+      <div class="billactions">
+        <button class="primary" id="rsave" data-bill="${esc(a.bill.voucherId)}">Post the return</button>
+        <span id="rresult" class="muted"></span>
+      </div>
+      <div id="rwarn"></div>
+    </div>`;
+
+  const rows = a.returns.map((r) => `
+    <tr>
+      <td class="mono">${esc(r.noteNumber)}<div class="muted small">${esc(r.noteDate)}</div></td>
+      <td>${esc(r.supplier)}<div class="muted small">against ${esc(r.billNumber)}</div></td>
+      <td>${esc(r.reason)}</td>
+      <td class="num">${inr(r.grandTotal)}</td>
+      <td>${r.supplierCreditNote === null
+        ? `<span class="warn">not received</span>
+           <div class="cnbox"><input class="cnnum" placeholder="their CN no.">
+             <input class="cndate" type="date">
+             <button class="cnsave" data-v="${esc(r.voucherId)}">Record</button></div>`
+        : `<span class="good mono">${esc(r.supplierCreditNote)}</span>`}</td>
+    </tr>`).join('');
+
+  return `<h1>Purchase returns</h1>
+<p class="sub">Goods that went back, and the bills they reduce. A debit note is
+OUR document: it records that we are paying less and it reverses the input
+credit we took. It does not reduce the supplier's liability — under s.34 only
+their credit note does that, so each one below is tracked until it arrives.</p>
+
+${waiting.length === 0 ? '' : `<div class="panel strip">
+  <div class="stat"><b class="warn">${waiting.length}</b>
+    <span>awaiting the supplier's credit note</span></div>
+  <div class="stat"><b>${inr(waiting.reduce((t, r) =>
+    (Number(t) + Number(r.grandTotal)).toFixed(2), '0'))}</b>
+    <span>unsupported in GSTR-2B</span></div>
+</div>`}
+
+${form}
+
+<h2 class="mt">Returns</h2>
+${a.returns.length === 0
+  ? '<p class="sub">None yet.</p>'
+  : `<div class="panel" style="padding:0"><table>
+      <tr><th>Debit note</th><th>Supplier</th><th>Reason</th>
+          <th class="num">Value</th><th>Their credit note</th></tr>
+      ${rows}
+    </table></div>`}
+
+<script>
+const rs = document.getElementById('rsave');
+if (rs) rs.onclick = async () => {
+  const out = document.getElementById('rresult');
+  const warn = document.getElementById('rwarn');
+  const lines = [];
+  document.querySelectorAll('input.rline').forEach((el) => {
+    const v = el.value.trim();
+    if (v !== '') lines.push({ billLineNo: Number(el.dataset.line), taxableValue: v });
+  });
+  if (lines.length === 0) { out.textContent = 'Nothing entered to return.'; return; }
+  const g = (id) => document.getElementById(id).value.trim();
+  out.textContent = 'Posting…'; warn.innerHTML = '';
+  const r = await fetch('/api/returns/create', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      billVoucherId: rs.dataset.bill, noteNumber: g('rnum'), noteDate: g('rdate'),
+      reason: g('rreason'), lines,
+      supplierCreditNote: g('rscn') ? { number: g('rscn'), date: g('rscnd') } : undefined,
+    }),
+  }).then((x) => x.json());
+  if (!r.ok) { out.innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
+  out.innerHTML = '<span class="good">Posted ' + r.grandTotal + '.</span>';
+  // The warnings are the reason this screen exists, so they are shown before
+  // the reload rather than lost in it.
+  warn.innerHTML = '<ul class="warns">' +
+    (r.warnings || []).map((w) => '<li>' + w.replace(/</g, '&lt;') + '</li>').join('') +
+    '</ul><p class="sub">Reloading…</p>';
+  setTimeout(() => { location.href = '/returns'; }, (r.warnings || []).length ? 6000 : 1200);
+};
+
+document.querySelectorAll('button.cnsave').forEach((b) => {
+  b.onclick = async () => {
+    const box = b.closest('.cnbox');
+    const num = box.querySelector('.cnnum').value.trim();
+    const date = box.querySelector('.cndate').value.trim();
+    if (!num || !date) { b.textContent = 'number and date'; return; }
+    b.disabled = true;
+    const r = await fetch('/api/returns/credit-note', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ returnVoucherId: b.dataset.v, number: num, date }),
+    }).then((x) => x.json());
+    if (!r.ok) { b.disabled = false; b.textContent = 'failed'; return; }
+    location.reload();
+  };
+});
+</script>`;
 }
 
 // ---------------------------------------------------------------------------
