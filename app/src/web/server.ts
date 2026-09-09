@@ -37,6 +37,7 @@ import { renderGstr3b } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
+import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
@@ -278,6 +279,34 @@ async function handle(
     }
   }
 
+  if (req.method === 'POST' && path === '/api/bills/fill') {
+    /*
+     * Re-read the file with the reviewer's answers folded in, and show what
+     * they produce. The same gates run, so a mistyped figure is refused here
+     * rather than at the moment of posting — the reviewer sees the bill they
+     * are about to approve.
+     */
+    const body = JSON.parse(await readBody(req));
+    const stashed = fileStash.get(body.token);
+    if (!stashed) return json(res, 200, { ok: false, error: 'this upload has expired — read the file again' });
+    const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
+    if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
+    try {
+      const proposals = await previewBills(
+        session.firmId, session.clientId, expenseAccountId, session.userId,
+        stashed.file, readers, body.manual);
+      const p = proposals.find((x) => x.index === body.index);
+      if (p === undefined) return json(res, 200, { ok: false, error: 'no such document' });
+      return json(res, 200, {
+        ok: true, ready: p.blockers.length === 0,
+        blockers: p.blockers, warnings: p.warnings,
+        form: formFor(p),
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
   if (req.method === 'POST' && path === '/api/bills/post') {
     const body = JSON.parse(await readBody(req));
     const stashed = fileStash.get(body.token);
@@ -289,7 +318,7 @@ async function handle(
         session.firmId, session.clientId, expenseAccountId,
         stashed.file, body.index, body.confirm ?? {}, session.userId, readers,
         { lineAccounts: body.lineAccounts, expenseAccountId: body.expenseAccountId,
-          blockItc: body.blockItc === true });
+          blockItc: body.blockItc === true, manual: body.manual });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });

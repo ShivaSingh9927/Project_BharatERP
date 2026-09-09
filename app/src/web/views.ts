@@ -145,6 +145,18 @@ tr.done { opacity: .5; }
 .warns li { color: var(--muted); }
 .blocks li { color: var(--bad); }
 .billactions { margin-top: 12px; }
+.fill { margin-top: 12px; padding: 12px; border: 1px solid var(--line);
+        border-radius: 6px; background: #fbfaf7; }
+.fillhead { font-weight: 600; margin-bottom: 10px; }
+.fillrow { margin-bottom: 12px; }
+.fillrow label { display: block; font-size: 13px; margin-bottom: 4px; }
+.fillrow label .muted { font-weight: 400; }
+.fillrow input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px;
+                 font: inherit; min-width: 220px; }
+.fillfigs { display: flex; gap: 6px; flex-wrap: wrap; }
+.fillfigs input { min-width: 0; width: 108px; text-align: right;
+                  font-variant-numeric: tabular-nums; }
+.small { font-size: 12px; }
 .billctl { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
   margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .billctl label { font-size: 13px; color: var(--muted); }
@@ -819,7 +831,7 @@ interface ProposalViewV {
   partyName: string | null;
   supplierGstin: string | null;
   billDate: string | null;
-  readBy: 'coordinates' | 'docling' | 'llm';
+  readBy: string;
   taxable: string | null;
   tax: string | null;
   total: string | null;
@@ -829,12 +841,72 @@ interface ProposalViewV {
   warnings: string[];
   blockers: string[];
   confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
+  /** What to ask for, when the bill was refused — see `billForm.ts`. */
+  form?: {
+    fields: Array<{ field: string; ask: string; because: string }>;
+    unfixable: string[];
+  };
   token?: string;
 }
 
 const READ_BY_LABEL: Record<string, string> = {
-  coordinates: 'read on-page', docling: 'read by Docling', llm: 'read by a model',
+  coordinates: 'read on-page', candidates: 'read from the page structure',
+  docling: 'read by Docling', llm: 'read by a model',
+  summary: 'read from stated totals', charges: 'read from charges in words',
+  entered: 'entered by a reviewer',
 };
+
+/**
+ * The form a refused bill offers instead of a wall.
+ *
+ * Only the fields that would actually clear the refusal, each carrying the
+ * reason it is being asked. Nothing is pre-filled that could not be read: a
+ * guessed invoice number a reviewer clicks past is worse than an empty box,
+ * because it reconciles against nothing and nobody knows it was invented.
+ */
+function fillForm(p: ProposalViewV, token: string): string {
+  const form = p.form;
+  if (!form || form.fields.length === 0) return '';
+
+  const box = (f: { field: string; ask: string; because: string }): string => {
+    if (f.field === 'figures') {
+      return `<div class="fillrow">
+        <label>Figures as printed <span class="muted">${esc(f.ask)}</span></label>
+        <div class="fillfigs">
+          <input data-fill="taxable" placeholder="taxable" inputmode="decimal">
+          <input data-fill="cgst" placeholder="CGST" inputmode="decimal">
+          <input data-fill="sgst" placeholder="SGST" inputmode="decimal">
+          <input data-fill="igst" placeholder="IGST" inputmode="decimal">
+          <input data-fill="total" placeholder="total" inputmode="decimal">
+        </div>
+        <div class="muted small">They must add up — taxable + tax = total — and
+          the tax must match a scheduled rate. Checked before anything posts.</div>
+      </div>`;
+    }
+    const label = f.field === 'documentNumber' ? 'Invoice number'
+      : f.field === 'billDate' ? 'Invoice date' : 'Supplier';
+    const type = f.field === 'billDate' ? 'date' : 'text';
+    return `<div class="fillrow">
+      <label>${label} <span class="muted">${esc(f.ask)}</span></label>
+      <input data-fill="${esc(f.field)}" type="${type}">
+    </div>`;
+  };
+
+  return `<div class="fill" data-index="${p.index}" data-token="${esc(token)}">
+    <div class="fillhead">This bill could not be read on its own. Fill in what
+      the document says and it will be checked the same way.</div>
+    ${form.fields.map(box).join('')}
+    ${form.unfixable.length > 0
+      ? `<div class="notes blocks"><b>A form cannot settle these:</b>
+           ${form.unfixable.map((u) => `<div>${esc(u)}</div>`).join('')}</div>`
+      : ''}
+    <div class="billactions">
+      <button class="check" data-index="${p.index}" data-token="${esc(token)}"
+        ${form.unfixable.length > 0 ? 'disabled' : ''}>Check these figures</button>
+      <span class="fillresult muted"></span>
+    </div>
+  </div>`;
+}
 
 function proposalCard(
   p: ProposalViewV, token: string,
@@ -918,13 +990,16 @@ function proposalCard(
     ${confirms}
     ${notes('warns', p.warnings)}
     ${notes('blocks', p.blockers)}
+    ${fillForm(p, token)}
     ${controls}
 
     <div class="billactions">
       ${canPost
         ? `<button class="primary post" data-index="${p.index}" data-token="${esc(token)}">
              ${p.status === 'needs_answer' ? 'Confirm & post' : 'Approve & post'}</button>`
-        : '<span class="muted">Resolve the blocker on the document, then re-upload.</span>'}
+        : (p.form && p.form.fields.length > 0 && p.form.unfixable.length === 0
+            ? '<span class="muted">Fill the fields above, check them, then post.</span>'
+            : '<span class="muted">Resolve the blocker on the document, then re-upload.</span>')}
     </div>
   </div>`;
 }
@@ -1009,7 +1084,59 @@ if (run) run.onclick = async () => {
   } catch (e) { say(false, String(e)); run.disabled = false; run.textContent = 'Read them'; }
 };
 
-document.querySelectorAll('button.post').forEach((btn) => {
+/*
+ * Reading the form back off the card.
+ *
+ * Blank fields are omitted rather than sent as empty strings: an absent answer
+ * means "still unread", and an empty string would look like a value someone
+ * chose to leave blank.
+ */
+function readFill(card) {
+  const fill = card.querySelector('.fill');
+  if (!fill) return undefined;
+  const manual = {};
+  const figures = {};
+  fill.querySelectorAll('[data-fill]').forEach((el) => {
+    const v = el.value.trim();
+    if (v === '') return;
+    const k = el.dataset.fill;
+    if (['taxable','cgst','sgst','igst','cess','total'].includes(k)) figures[k] = v;
+    else manual[k] = v;
+  });
+  if (figures.taxable !== undefined && figures.total !== undefined) {
+    manual.figures = figures;
+  }
+  return Object.keys(manual).length > 0 ? manual : undefined;
+}
+
+document.querySelectorAll('button.check').forEach((btn) => {
+  btn.onclick = async () => {
+    const card = btn.closest('.billcard');
+    const out = card.querySelector('.fillresult');
+    const manual = readFill(card);
+    if (!manual) { out.textContent = 'Nothing filled in yet.'; return; }
+    btn.disabled = true; out.textContent = 'Checking…';
+    const r = await post('/api/bills/fill', {
+      token: btn.dataset.token, index: Number(btn.dataset.index), manual });
+    btn.disabled = false;
+    if (!r.ok) { out.textContent = r.error || 'could not check'; return; }
+    if (r.ready) {
+      out.innerHTML = '<span class="good">These hold together — you can post now.</span>';
+      const actions = card.querySelector('.billactions:last-of-type');
+      if (actions && !actions.querySelector('button.post')) {
+        actions.innerHTML =
+          '<button class="primary post" data-index="' + btn.dataset.index +
+          '" data-token="' + btn.dataset.token + '">Approve & post</button>';
+        wirePost(actions.querySelector('button.post'));
+      }
+    } else {
+      out.innerHTML = '<span class="bad">' +
+        (r.blockers || []).map((b) => b.replace(/</g, '&lt;')).join(' ') + '</span>';
+    }
+  };
+});
+
+function wirePost(btn) {
   btn.onclick = async () => {
     const card = btn.closest('.billcard');
     const confirm = {};
@@ -1028,6 +1155,9 @@ document.querySelectorAll('button.post').forEach((btn) => {
       token: btn.dataset.token, index: Number(btn.dataset.index), confirm,
       lineAccounts,
       blockItc: noitc ? noitc.checked : false,
+      // The same answers the check ran against, so the bill posted is the bill
+      // the reviewer was shown.
+      manual: readFill(card),
     });
     if (r.ok) {
       card.classList.add('done');
@@ -1038,7 +1168,9 @@ document.querySelectorAll('button.post').forEach((btn) => {
       btn.textContent = 'Approve & post';
     }
   };
-});
+}
+
+document.querySelectorAll('button.post').forEach(wirePost);
 </script>`;
 }
 

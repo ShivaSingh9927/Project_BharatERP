@@ -17,7 +17,9 @@
  */
 
 import { withFirm } from '../db/pool.ts';
-import { proposeBills, postProposal, type ProposeInput, type BillProposal }
+import { formFor, type BillFormView } from './billForm.ts';
+import { proposeBills, postProposal, type ProposeInput, type BillProposal,
+         type ManualEntry }
   from './billProposal.ts';
 import type { CreatedBill } from './bills.ts';
 import { llmClientFromEnv } from '../parse/llmTable.ts';
@@ -160,9 +162,17 @@ function assembleInput(
 export async function previewBills(
   firmId: string, clientId: string, expenseAccountId: string,
   createdBy: string, file: Buffer, readers: ReviewReaders,
+  /**
+   * A re-preview with the form filled in, so the reviewer sees the bill their
+   * answers produce before they post it — and the same gates refuse a typo
+   * here rather than at the moment of posting.
+   */
+  manual?: ManualEntry,
 ): Promise<BillProposal[]> {
-  return proposeBills(firmId,
-    assembleInput(clientId, expenseAccountId, createdBy, file, readers));
+  return proposeBills(firmId, {
+    ...assembleInput(clientId, expenseAccountId, createdBy, file, readers),
+    ...(manual === undefined ? {} : { manual }),
+  });
 }
 
 /**
@@ -181,12 +191,21 @@ export async function postReviewedBill(
   overrides: {
     expenseAccountId?: string; lineAccounts?: Array<string | null>;
     blockItc?: boolean;
+    /**
+     * What the reviewer filled in on the form, when the document could not be
+     * read. Threaded into the PROPOSAL rather than applied after it, so the
+     * answers face the same gates as any reading and the input is built by the
+     * same code either way.
+     */
+    manual?: ManualEntry;
   } = {},
 ): Promise<CreatedBill> {
   // Proposed with the default account — the account changes no figure and no
   // confirmation, so this reproduces exactly the proposal the reviewer saw.
-  const proposals = await proposeBills(firmId,
-    assembleInput(clientId, defaultAccountId, approvedBy, file, readers));
+  const proposals = await proposeBills(firmId, {
+    ...assembleInput(clientId, defaultAccountId, approvedBy, file, readers),
+    ...(overrides.manual === undefined ? {} : { manual: overrides.manual }),
+  });
   const proposal = proposals.find((p) => p.index === index);
   if (proposal === undefined || proposal.input === null) {
     throw new Error(`document ${index} is no longer ready to post`);
@@ -245,6 +264,8 @@ export interface ProposalView {
   }>;
   warnings: string[];
   blockers: string[];
+  /** What to ask for, when the bill was refused — empty on one that posts. */
+  form?: BillFormView;
   confirmations: BillProposal['confirmations'];
 }
 
@@ -272,5 +293,7 @@ export function proposalView(p: BillProposal): ProposalView {
       description: l.description, amount: l.unitPrice, hsn: l.hsnSac ?? null,
     })),
     warnings: p.warnings, blockers: p.blockers, confirmations: p.confirmations,
+    // What to ask for, when it was refused. Empty on a bill that posts.
+    form: formFor(p),
   };
 }

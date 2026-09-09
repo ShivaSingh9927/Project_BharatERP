@@ -365,6 +365,57 @@ describe('what will not be posted', () => {
     expect(p.blockers.join(' ')).toMatch(/cannot collect it/);
   });
 
+  it('accepts figures a reviewer typed when the document could not be read', async () => {
+    /*
+     * The form. A refusal is a bad end when the pipeline knows exactly which
+     * fact defeated it and a CA can read that fact off the paper in seconds.
+     */
+    const unreadable = page([w('nothing', 40, 100), w('here', 90, 100)]);
+    const p = await propose(doc(SAME_STATE, 'FORM1', 'IGST 18 %'), unreadable,
+      undefined, { manual: { figures: {
+        taxable: '1000.00', igst: '180.00', total: '1180.00' } } });
+    expect(p.blockers).toEqual([]);
+    expect(p.readBy).toBe('entered');
+    expect(p.input?.claimedTotals?.grandTotal).toBe('1180.00');
+    // And it says so, because nothing here has seen those figures on the paper.
+    expect(p.warnings.join(' ')).toMatch(/a reviewer entered them/);
+  });
+
+  it('holds a reviewer to the same arithmetic as a model', async () => {
+    // A person in a hurry is quite capable of typing figures that do not add
+    // up, and the gate does not care who produced the numbers.
+    const unreadable = page([w('nothing', 40, 100), w('here', 90, 100)]);
+    const p = await propose(doc(SAME_STATE, 'FORM2', 'IGST 18 %'), unreadable,
+      undefined, { manual: { figures: {
+        taxable: '1000.00', igst: '180.00', total: '9999.00' } } });
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/figures entered do not hold together/);
+  });
+
+  it('takes an invoice number and a date from the reviewer, and records that', async () => {
+    const p = await propose(
+      splitDocuments('Tax Invoice\nGSTIN - ' + SAME_STATE + '\nIGST 18 %\n')[0]!,
+      interStateTable('1000.00', '180.00', '1180.00'),
+      undefined, { manual: { documentNumber: 'HAND/1', billDate: '2026-08-27' } });
+    expect(p.blockers).toEqual([]);
+    expect(p.input?.billNumber).toBe('HAND/1');
+    expect(p.billDate).toBe('2026-08-27');
+    expect(p.warnings.join(' ')).toMatch(/was entered by a reviewer/);
+  });
+
+  it('will not attach a bill to a party belonging to another client', async () => {
+    /*
+     * An id arriving from a form is untrusted input, and a party from another
+     * client would post the bill into the wrong books entirely. RLS does not
+     * cover this on its own: a firm's own two clients are both visible to it.
+     */
+    const p = await propose(doc(UNKNOWN, 'FORM3', 'IGST 18 %'),
+      interStateTable('1000.00', '180.00', '1180.00'),
+      undefined, { manual: { partyId: randomUUID() } });
+    expect(p.input).toBeNull();
+    expect(p.blockers.join(' ')).toMatch(/no supplier is on file with GSTIN/);
+  });
+
   it('refuses when the table did not tie', async () => {
     const p = await propose(doc(SAME_STATE, 'P4', 'IGST 18 %'),
       interStateTable('1000.00', '180.00', '9999.00'));

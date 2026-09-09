@@ -56,7 +56,8 @@ import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts'
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
 import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
-import { readInvoiceTableFromWords, type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
+import { readInvoiceTableFromWords, gradeTable,
+         type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
 import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
@@ -119,7 +120,8 @@ export interface BillProposal {
    * should be able to see was used. `charges` means the same for a document
    * that wrote its charges out in words instead of ruling them into a table.
    */
-  readBy: 'coordinates' | 'candidates' | 'docling' | 'llm' | 'summary' | 'charges';
+  readBy: 'coordinates' | 'candidates' | 'docling' | 'llm' | 'summary'
+         | 'charges' | 'entered';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
@@ -186,6 +188,40 @@ export interface Confirmation {
   question: string;
 }
 
+/**
+ * What a reviewer filled in on the form, when a document could not be read.
+ *
+ * A refusal is a bad end to a bill. The pipeline knows exactly WHICH field
+ * defeated it — a number, a date, the supplier, the figures — and a CA can
+ * usually supply that field in seconds by looking at the paper. Turning the
+ * refusal into a part-filled form is the difference between software that
+ * blocks and software that asks.
+ *
+ * Nothing here bypasses a gate. Figures a human types are assembled into a
+ * one-row table and handed to `gradeTable`, exactly as `summaryInvoice` and
+ * `chargeBlock` hand theirs over, so taxable + tax must still equal the total
+ * and the tax must still match a scheduled rate. A reviewer in a hurry is
+ * quite capable of typing figures that do not add up, and the whole point of
+ * the gate is that it does not care who produced the numbers.
+ *
+ * Every value supplied here is recorded as ENTERED, never as read, so the
+ * provenance trail never claims the document said something a person did.
+ */
+export interface ManualEntry {
+  /** The supplier's own number, when none could be read. */
+  documentNumber?: string;
+  /** ISO date, when none could be read. */
+  billDate?: string;
+  /** A supplier the reviewer identified, when matching failed. */
+  partyId?: string;
+  /** The figures, when no reader could produce a set that ties. */
+  figures?: {
+    taxable: string;
+    cgst?: string; sgst?: string; igst?: string; cess?: string;
+    total: string;
+  };
+}
+
 export interface ProposeInput {
   clientId: string;
   file: Buffer;
@@ -215,6 +251,8 @@ export interface ProposeInput {
    * any strategy can see. It ranks nothing — `gradeCandidates` decides.
    */
   parser?: ParserClient;
+  /** What a reviewer filled in after a refusal — see `ManualEntry`. */
+  manual?: ManualEntry;
   /**
    * A layout model that returns real tables from a photograph, where OCR rows
    * cannot be reassembled into one. Sends the document to a third party, so it
@@ -814,6 +852,42 @@ export async function proposeFromDocument(
   }
 
   /*
+   * Figures a reviewer typed, when no reader could produce a set that ties.
+   *
+   * Assembled into a one-row table and handed to the SAME grader, because a
+   * person is no more exempt from the arithmetic than a model is: taxable +
+   * tax must equal the total, and `createBill`'s PB-4 will still recompute the
+   * tax from the rate. A reviewer who mistypes a digit gets the same refusal
+   * the document would have got.
+   */
+  if (!table.readable && input.manual?.figures) {
+    const f = input.manual.figures;
+    const header = ['Description', 'Taxable Value'];
+    const row = ['Entered by the reviewer', f.taxable];
+    for (const [k, caption] of [['cgst', 'CGST'], ['sgst', 'SGST'],
+                                ['igst', 'IGST'], ['cess', 'Cess']] as const) {
+      const v = f[k];
+      if (v !== undefined && v !== '') { header.push(caption); row.push(v); }
+    }
+    header.push('Total');
+    row.push(f.total);
+
+    const graded = gradeTable(header, [row], [f.total], profile.charged);
+    if (graded.readable) {
+      table = graded;
+      readBy = 'entered';
+      warnings.push(
+        'these figures were not read from the document — a reviewer entered ' +
+        'them after it could not be read. They passed the same arithmetic ' +
+        'checks as any reading, but nothing here has seen them on the paper.');
+    } else {
+      blockers.push(
+        `the figures entered do not hold together: ${graded.reason} ` +
+        'Check them against the invoice.');
+    }
+  }
+
+  /*
    * Charges written out in words rather than ruled into a grid — a travel
    * agent's "Add: IGST@18%" over a "Total Payable". Same reasoning as above:
    * the shape is declared by the document, and the figures face the same
@@ -896,6 +970,19 @@ export async function proposeFromDocument(
    * the PDF, and one PDF has one generator.
    */
   const dateRead = extractInvoiceDate(seg.text, fileText);
+  if (dateRead.date === undefined && input.manual?.billDate) {
+    /*
+     * Supplied, not read. Recorded as such: the date decides the return
+     * period, and a provenance trail claiming the paper said it when a person
+     * did would be the most quietly misleading entry in the file.
+     */
+    dateRead.date = input.manual.billDate;
+    dateRead.reason = 'entered by the reviewer; no date could be read from the document';
+    warnings.push(
+      `the bill date ${input.manual.billDate} was entered by a reviewer — no ` +
+      'date could be read from this document. It decides which return period ' +
+      'the bill falls in.');
+  }
   if (dateRead.date === undefined) {
     blockers.push(`the invoice date could not be read — ${dateRead.reason}`);
   } else if (dateRead.alternative !== undefined) {
@@ -929,7 +1016,17 @@ export async function proposeFromDocument(
    * Not worth guessing at. GSTR-2B matches on this number, and an invented one
    * reconciles against nothing.
    */
-  if (seg.documentNumber === null) {
+  let documentNumber = seg.documentNumber;
+  if (documentNumber === null && input.manual?.documentNumber) {
+    // Read off the paper by a person, which is a different fact from read off
+    // the paper by this software, and is recorded as one.
+    documentNumber = input.manual.documentNumber;
+    warnings.push(
+      `the invoice number ${documentNumber} was entered by a reviewer — none ` +
+      'could be read from this document. GSTR-2B matches on it, so a typo ' +
+      'here shows up as an unmatched invoice rather than as an error.');
+  }
+  if (documentNumber === null) {
     blockers.push(
       'no invoice number could be read from this document. GSTR-2B matches on ' +
       "the supplier's own number, so it cannot be left out or made up.");
@@ -938,6 +1035,24 @@ export async function proposeFromDocument(
   // --- supplier ------------------------------------------------------------
   let partyId: string | null = null;
   let partyName: string | null = null;
+
+  /**
+   * A supplier the reviewer picked, when matching failed.
+   *
+   * Verified against the client's own parties rather than trusted: an id
+   * arriving from a form is untrusted input, and a party from another client
+   * would post this bill into the wrong books entirely. The `client_id` test
+   * is the whole check, and RLS is not enough on its own because a firm's own
+   * two clients are both visible to it.
+   */
+  const namedParty = input.manual?.partyId === undefined ? null
+    : await withFirm(firmId, async (c) => {
+        const r = await c.query<{ id: string; name: string }>(
+          `SELECT id, name FROM parties
+            WHERE id = $1 AND client_id = $2 AND party_type = 'supplier' AND is_active`,
+          [input.manual!.partyId, input.clientId]);
+        return r.rows[0] ?? null;
+      });
   let registration: GstinRecord | null = null;
 
   /** True once the supplier is identified as an unregistered Indian one. */
@@ -969,7 +1084,13 @@ export async function proposeFromDocument(
      * answer a question the books already know.
      */
     const found = await findOverseasSupplier(firmId, input.clientId, pageText);
-    if (found === 'none') {
+    if (found === 'none' && namedParty) {
+      partyId = namedParty.id; partyName = namedParty.name;
+      domesticUnregistered = true;
+      warnings.push(
+        `this document names no supplier this software recognises; a reviewer ` +
+        `attached it to ${namedParty.name}. No GST is posted on it.`);
+    } else if (found === 'none') {
       blockers.push(
         'no supplier GSTIN appears on this document and no supplier on file ' +
         'is named on it. Add the vendor first — as ' +
@@ -1077,7 +1198,19 @@ export async function proposeFromDocument(
 
       const found = await findSupplier(firmId, input.clientId, seg.supplierGstin);
       if (found) { partyId = found.id; partyName = found.name; }
-      else {
+      else if (namedParty) {
+        /*
+         * The reviewer said which vendor this is. Their word, not the GSTIN's
+         * — so it is recorded, and loudly, because it is the one place a form
+         * can attach a bill to a supplier the document does not identify.
+         */
+        partyId = namedParty.id; partyName = namedParty.name;
+        warnings.push(
+          `no supplier is on file with GSTIN ${seg.supplierGstin}; a reviewer ` +
+          `attached this bill to ${namedParty.name}. The document's GSTIN and ` +
+          'the party on file do not agree, so GSTR-2B will not match it ' +
+          'automatically.');
+      } else {
         blockers.push(
           `no supplier is on file with GSTIN ${seg.supplierGstin}. Add the ` +
           'vendor first — a party carries a state and a ledger account, and ' +
@@ -1289,7 +1422,7 @@ export async function proposeFromDocument(
       for (const [i, { row, taxable: tv }] of items.entries()) {
         lines.push({
           description: row.by.description?.trim()
-            || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
+            || (documentNumber ? `Purchase per ${documentNumber}` : 'Purchase'),
           hsnSac: row.by.hsn?.replace(/^\D+/, '').trim() || undefined,
           unitPrice: tv,
           quantity: '1',
@@ -1359,7 +1492,7 @@ export async function proposeFromDocument(
       for (const { row, taxable: tv } of postable) {
         lines.push({
           description: row.by.description?.trim()
-            || (seg.documentNumber ? `Purchase per ${seg.documentNumber}` : 'Purchase'),
+            || (documentNumber ? `Purchase per ${documentNumber}` : 'Purchase'),
           hsnSac: row.by.hsn?.replace(/^\D+/, '').trim() || undefined,
           unitPrice: rcm ? toRupees(tv, fxRate!) : tv,
           quantity: '1',
@@ -1450,14 +1583,14 @@ export async function proposeFromDocument(
   const ready = blockers.length === 0;
   return {
     index: seg.index, pages: seg.pages,
-    documentNumber: seg.documentNumber, supplierGstin: seg.supplierGstin,
+    documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName, registration,
     blockers, warnings, confirmations, readBy, llmProvenance, crossChecked,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {
       clientId: input.clientId,
       partyId: partyId!,
-      billNumber: seg.documentNumber!,
+      billNumber: documentNumber!,
       billDate: dateRead.date!,          // a blocker above if it could not be read
       isReverseCharge: profile.reverseCharge === true || rcm,
       lines,

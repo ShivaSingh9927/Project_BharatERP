@@ -494,6 +494,41 @@ A first cell BEGINNING "Grand Total" is therefore a totals row too. "Grand" is
 required rather than a bare "total": an item description starting "Total" is
 imaginable, one starting "Grand Total" is not.
 
+**BE-34 — Never refuse when you can ask. A blocked bill becomes a form.**
+
+The pipeline always knows exactly WHICH fact defeated it — a number, a date,
+the supplier, the figures — and a CA can usually read that fact off the paper
+in seconds. Showing them a wall instead is a choice, and the wrong one.
+
+A refused proposal therefore offers a form: the fields that would clear the
+refusal, each carrying the reason it is being asked, alongside everything that
+WAS read so the reviewer is checking rather than transcribing.
+
+The rules that keep it honest:
+
+- **Answers face the same gates.** Figures a person types are assembled into a
+  one-row table and handed to `gradeTable`, exactly as `summaryInvoice` and
+  `chargeBlock` hand theirs over. Taxable + tax must equal the total, and the
+  tax must still match a scheduled rate — a reviewer who types ₹13 of tax on
+  ₹100 is refused, tie or no tie. The gate does not care who produced a number.
+- **Every answer is recorded as ENTERED, never as read.** A provenance trail
+  claiming the document said something a person did would be the most quietly
+  misleading entry in the file.
+- **Nothing is pre-filled that could not be read.** A guessed invoice number a
+  reviewer clicks past is worse than an empty box: it reconciles against
+  nothing and nobody knows it was invented.
+- **No form for a blocker a form cannot fix.** "Two independent readings
+  disagree" needs the document read, not a field typed; an unregistered
+  supplier charging GST needs the master record corrected. Those stay refusals
+  and are listed separately, so filling in the rest cannot look like clearing
+  everything.
+- **A reviewer-named supplier is verified, not trusted.** An id arriving from a
+  form is untrusted input, and a party belonging to another client would post
+  the bill into the wrong books. RLS is not enough on its own: a firm's own two
+  clients are both visible to it, so the `client_id` is checked explicitly.
+- **The answers are threaded into the PROPOSAL, not applied after it**, so the
+  input is built by the same code either way and preview and post still agree.
+
 ---
 
 ## 5. Extraction — the AI pipeline
