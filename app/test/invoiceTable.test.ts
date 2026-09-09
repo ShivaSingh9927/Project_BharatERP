@@ -545,3 +545,72 @@ describe('a stated total that agrees with the parts, not the column', () => {
     expect(t.roundOff).toBe('-0.03');         // ...against parts of 95.03
   });
 });
+
+/**
+ * A taxable value the document never prints — bills-and-expenses.md BE-32.
+ *
+ * Some invoices give what a thing costs and how many, and leave the
+ * multiplication to the reader. Three separate readers extract those cells
+ * perfectly and all were refused, because the gate had nothing to tie.
+ */
+describe('deriving the taxable value from quantity and price', () => {
+  const HEADER = ['S.N.', 'PART DESCRIPTION', 'HSN', 'Qty.', 'Unit', 'Price',
+                  'IGST Rate', 'IGST Amount', 'Amount (`)'];
+  const row = (qty: string, price: string, tax: string, amount: string) =>
+    ['1.', 'PIN BLOCK & T/M CASE', '87089900', qty, 'NOS', price, '28.00 %', tax, amount];
+
+  it('derives it, and only believes it because the arithmetic then ties', () => {
+    // 246.00 x 1.36 = 334.56, and 334.56 + 93.68 = 428.24, which is the
+    // document's own Amount column. A test, not an assumption.
+    const t = gradeTable(HEADER, [row('246.00', '1.36', '93.68', '428.24')], [], 'yes');
+    expect(t.readable).toBe(true);
+    expect(t.sums.taxable).toBe('334.56');
+    expect(t.sums.total).toBe('428.24');
+    expect(t.warnings?.join(' ')).toMatch(/quantity x unit price/);
+  });
+
+  it('refuses when the derivation does not reconcile', () => {
+    // Pick the wrong pair of columns and it does not tie. That is the point.
+    const t = gradeTable(HEADER, [row('246.00', '1.36', '93.68', '999.00')], [], 'yes');
+    expect(t.readable).toBe(false);
+    expect(t.sums.taxable).toBeUndefined();
+  });
+
+  it('never runs on a document that charges no tax', () => {
+    /*
+     * With no tax, "taxable + tax = total" collapses to "the amount column
+     * equals quantity x price" — a multiplication confirmed and nothing else.
+     * The untaxed path demands a total stated independently on the page,
+     * because with no tax nothing in the arithmetic can notice a row that was
+     * never read. Measured: allowed here, this accepted two documents the
+     * untaxed gate had been refusing, one of them stating no total at all.
+     */
+    const untaxed = ['S.N.', 'Description', 'Qty.', 'Price', 'Amount'];
+    const t = gradeTable(untaxed, [['1.', 'Thing', '2', '5.00', '10.00']], []);
+    expect(t.warnings?.join(' ') ?? '').not.toMatch(/quantity x unit price/);
+  });
+
+  it('leaves a document that prints its own taxable value alone', () => {
+    const withTaxable = ['Qty.', 'Price', 'Taxable', 'IGST', 'Total'];
+    const t = gradeTable(withTaxable,
+      [['2', '500.00', '1000.00', '180.00', '1180.00']], [], 'yes');
+    expect(t.sums.taxable).toBe('1000.00');
+    expect(t.warnings?.join(' ') ?? '').not.toMatch(/quantity x unit price/);
+  });
+
+  it('treats a merged "Grand Total ..." cell as the totals row, not an item', () => {
+    /*
+     * Read from its ruling lines, the totals row is ONE cell holding the whole
+     * block — "Grand Total 246.00 NOS ₹ 428.24 Tax Rate ... 93.68 Rupees Four
+     * Hundred..." — because the grid draws no separators inside it. Counted as
+     * an item, the amount column summed to twice the invoice.
+     */
+    const t = gradeTable(HEADER, [
+      row('246.00', '1.36', '93.68', '428.24'),
+      ['Grand Total 246.00 NOS ₹ 428.24 Tax Rate Taxable Amt. 28% 334.56 93.68',
+       '', '', '', '', '', '', '', '428.24'],
+    ], [], 'yes');
+    expect(t.readable).toBe(true);
+    expect(t.sums.total).toBe('428.24');
+  });
+});

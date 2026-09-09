@@ -453,6 +453,47 @@ the first token on it of at least two characters. No vendor issues a
 one-character invoice number, and losing one if they did is cheaper than
 posting noise as the identifier GSTR-2B matches on.
 
+**BE-32 — Where the document prints no taxable value, derive it — and let the
+gate decide whether the derivation was right.**
+
+Some invoices give what a thing costs and how many, and leave the
+multiplication to the reader. Aspee's item row is `Qty 246.00 · Price 1.36 ·
+IGST 93.68 · Amount 428.24`; the taxable value 334.56 appears nowhere in it.
+Three separate readers — coordinates, ruling lines, and a layout model — all
+extracted those four cells perfectly and all were refused, because the gate had
+nothing to tie.
+
+Two things are inferred together: that Price is a UNIT price rather than a line
+total, and that a column headed only "Amount" is the line total. Either alone
+is a guess; both at once, checked against the tie **and** against the tax being
+a scheduled rate of the result, is a measurement — a wrong pairing does not
+reconcile.
+
+- **Uniqueness guards it**, as it does `deriveGstRate`: where two columns could
+  serve as the total and both tie, none is chosen and the document is refused.
+- **Never on an untaxed document.** With no tax, `taxable + tax = total`
+  collapses to "the amount column equals quantity × price" — a multiplication
+  confirmed and nothing else. The untaxed path demands a total stated
+  independently on the page, because with no tax nothing in the arithmetic can
+  notice a row that was never read. Measured: allowed to run there, this
+  accepted two documents the untaxed gate had been refusing, one stating no
+  total at all. The derivation adds a check; it does not solve the missing-row
+  problem, and must not be a way round the gate that does.
+- **Never where the document prints its own taxable value.**
+- The posted bill says the figure was derived and asks for it to be confirmed.
+
+**BE-33 — A merged cell can swallow a whole totals block.**
+
+Read from its ruling lines, Aspee's totals row is a single cell holding
+"Grand Total 246.00 NOS ₹ 428.24 Tax Rate Taxable Amt. IGST Amt. Total Tax 28%
+334.56 93.68 93.68 Rupees Four Hundred…", because the grid draws no separators
+inside it. A totals-row test wanting a cell that IS a caption counted that as a
+second ITEM, and the amount column summed to twice the invoice.
+
+A first cell BEGINNING "Grand Total" is therefore a totals row too. "Grand" is
+required rather than a bare "total": an item description starting "Total" is
+imaginable, one starting "Grand Total" is not.
+
 ---
 
 ## 5. Extraction — the AI pipeline

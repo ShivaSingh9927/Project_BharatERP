@@ -167,7 +167,15 @@ function roleOf(label: string): ColumnRole {
 
   if (/\btaxable\b/.test(t))                    return 'taxable';
   if (/\bdiscount\b|\bdisc\.?\b/.test(t))       return 'discount';
-  if (/\bgross\b|\bmrp\b|\bunit price\b/.test(t)) return 'gross';
+  /*
+   * A bare "Price" is a UNIT price. It takes no part in any sum — `gross` is
+   * not a tie addend — so the only thing this changes is that
+   * `deriveTaxableFromQuantity` can find it on a table that prints quantity
+   * and rate but never the taxable value they multiply out to.
+   */
+  if (/\bgross\b|\bmrp\b|\bunit\s+price\b|\bprice\b|\brate\s*\/\s*unit\b/.test(t)) {
+    return 'gross';
+  }
   /*
    * Only an actual "total" is a total.
    *
@@ -220,6 +228,25 @@ const HEADER_HINTS = [
  * swallow them.
  */
 const TOTAL_ROW = /^\s*(?:grand\s+)?total\b\s*:?\s*(?:\([^)]*\))?\s*$/i;
+
+/**
+ * A totals caption that ran on, because a merged cell swallowed the block.
+ *
+ * Read from its ruling lines, Aspee's totals row is a single cell holding
+ * "Grand Total 246.00 NOS ₹ 428.24 Tax Rate Taxable Amt. IGST Amt. Total Tax
+ * 28% 334.56 93.68 93.68 Rupees Four Hundred..." — the grid draws no
+ * separators inside it. `TOTAL_ROW` wants a cell that IS a caption, so the row
+ * counted as a second ITEM and the amount column summed to twice the invoice.
+ *
+ * "Grand" is required rather than a bare "total": an item description starting
+ * "Total" is imaginable, one starting "Grand Total" is not.
+ */
+const RUNAWAY_TOTAL_ROW = /^\s*grand\s+total\b/i;
+
+/** Whether a row is the table's totals row, however the cell was merged. */
+function isTotalsRow(cells: readonly string[]): boolean {
+  return cells.some((c) => TOTAL_ROW.test(c)) || RUNAWAY_TOTAL_ROW.test(cells[0] ?? '');
+}
 
 /**
  * Where the table stops — decided by geometry, not by a list of words.
@@ -632,17 +659,15 @@ export function gradeTable(
    * and then "Grand Total" — but the first row after it that is NOT a totals
    * row starts something else.
    */
-  const firstTotal = table.rows.findIndex((r) =>
-    r.cells.some((c) => TOTAL_ROW.test(c)));
+  const firstTotal = table.rows.findIndex((r) => isTotalsRow(r.cells));
   if (firstTotal >= 0) {
     let end = firstTotal;
     while (end + 1 < table.rows.length
-           && table.rows[end + 1]!.cells.some((c) => TOTAL_ROW.test(c))) end++;
+           && isTotalsRow(table.rows[end + 1]!.cells)) end++;
     table.rows = table.rows.slice(0, end + 1);
   }
 
-  const totalsRows: TableRow[] = table.rows.filter((r) =>
-    r.cells.some((c) => TOTAL_ROW.test(c)));
+  const totalsRows: TableRow[] = table.rows.filter((r) => isTotalsRow(r.cells));
   table.totals = totalsRows[0] ?? null;
 
   let itemRows = table.rows.filter((r) => !totalsRows.includes(r));
@@ -698,6 +723,23 @@ export function gradeTable(
   }
 
   table.sums = sumByRole(itemRows, roles);
+
+  /*
+   * Some invoices never print a taxable value — they print what a thing costs
+   * and how many, and leave the multiplication to the reader.
+   *
+   * Aspee's item table is Qty 246.00, Price 1.36, IGST 93.68, Amount 428.24.
+   * The taxable value, 334.56, appears nowhere in that row; it appears only in
+   * a tax summary elsewhere on the page. Three separate readers — coordinates,
+   * ruling lines, and a layout model — all extract those four cells perfectly
+   * and all were refused, because the gate had nothing to tie.
+   *
+   * So derive it, and let the SAME gate decide whether the derivation was
+   * right. 246.00 x 1.36 = 334.56, and 334.56 + 93.68 = 428.24 is the
+   * document's own Amount column. That is a test, not an assumption: pick the
+   * wrong pair of columns and it does not tie.
+   */
+  deriveTaxableFromQuantity(table, roles, itemRows);
 
   // ── Gate 2: the arithmetic ties ──────────────────────────────────────────
   const tie = checkTie(table.sums);
@@ -960,6 +1002,105 @@ function sumByRole(
   const out: Partial<Record<ColumnRole, string>> = {};
   for (const [role, v] of acc) out[role] = money(v);
   return out;
+}
+
+/**
+ * A taxable value the document never printed, worked out from quantity and
+ * unit price — and believed only if the arithmetic then ties.
+ *
+ * Two things have to be inferred together on a table like this: that Price is
+ * a UNIT price rather than a line total, and that a column headed only
+ * "Amount" is the line total rather than one of the several other things
+ * "Amount" can mean. Either alone is a guess. Both at once, checked against
+ * the tie AND against the tax being a scheduled rate of the result, is a
+ * measurement — a wrong pairing does not reconcile.
+ *
+ * Uniqueness is the guard, as it is for `deriveGstRate`: where two different
+ * columns could serve as the total and BOTH tie, nothing here can say which is
+ * meant, so none is chosen and the document is refused by the ordinary gate.
+ *
+ * Runs only when the table prints no taxable value at all. A document that has
+ * one is never second-guessed.
+ */
+function deriveTaxableFromQuantity(
+  table: InvoiceTable, roles: ColumnRole[], itemRows: TableRow[],
+): void {
+  if (table.sums.taxable !== undefined || itemRows.length === 0) return;
+
+  const qtyCol = roles.indexOf('qty');
+  const priceCol = roles.indexOf('gross');
+  if (qtyCol < 0 || priceCol < 0) return;
+
+  // Quantity x unit price, per row, rounded per row as a vendor's system does.
+  let derived = 0n;
+  for (const row of itemRows) {
+    const q = Number((row.cells[qtyCol] ?? '').replace(/,/g, ''));
+    let unit: bigint;
+    try { unit = paise(parseAmount(row.cells[priceCol] ?? '').value); }
+    catch { return; }
+    if (!Number.isFinite(q) || q <= 0 || unit <= 0n) return;
+    derived += BigInt(Math.round(Number(unit) * q));
+  }
+  if (derived <= 0n) return;
+
+  const tax = (['cgst', 'sgst', 'igst', 'cess'] as const)
+    .reduce((t, k) => t + paise(table.sums[k] ?? '0'), 0n);
+
+  /*
+   * Only where the document actually charges tax.
+   *
+   * With no tax, "taxable + tax = total" collapses to "the amount column
+   * equals quantity x price" — which confirms a multiplication and nothing
+   * else. The untaxed path deliberately demands more than that: a total stated
+   * independently somewhere on the page, because with no tax there is nothing
+   * in the arithmetic that can notice a row that was never read.
+   *
+   * Measured: allowed to run on untaxed documents this accepted two that the
+   * untaxed gate had been refusing, including one stating no total at all. The
+   * derivation adds a check; it does not solve the missing-row problem, and it
+   * must not be a way around the gate that does.
+   */
+  if (tax <= 0n) return;
+
+  /*
+   * Candidate totals: the column already called one, else every bare "Amount"
+   * that holds money. The pairing is accepted only if exactly one candidate
+   * equals derived + tax.
+   */
+  const candidates: Array<{ col: number; value: bigint }> = [];
+  const named = roles.indexOf('total');
+  if (named >= 0) {
+    candidates.push({ col: named, value: paise(table.sums.total ?? '0') });
+  } else {
+    const bare = /^\s*(?:amount|value)\b/iu;
+    for (let c = 0; c < roles.length; c++) {
+      if (roles[c] !== 'other' || !bare.test(table.header[c] ?? '')) continue;
+      let sum = 0n;
+      let sawMoney = false;
+      for (const row of itemRows) {
+        const cell = (row.cells[c] ?? '').trim();
+        if (cell === '') continue;
+        try { sum += paise(parseAmount(cell).value); sawMoney = true; } catch { return; }
+      }
+      if (sawMoney) candidates.push({ col: c, value: sum });
+    }
+  }
+
+  const fits = candidates.filter((x) => x.value === derived + tax);
+  if (fits.length !== 1) return;
+
+  const chosen = fits[0]!;
+  if (roles[chosen.col] !== 'total') roles[chosen.col] = 'total';
+  table.sums.taxable = money(derived);
+  table.sums.total = money(chosen.value);
+  table.warnings = [
+    ...(table.warnings ?? []),
+    `this document prints no taxable value, so it was worked out as quantity ` +
+    `x unit price: ${money(derived)}. Adding the ${money(tax)} of tax it ` +
+    `charges gives ${money(chosen.value)}, which is the ` +
+    `"${table.header[chosen.col] ?? 'amount'}" column — so the derivation is ` +
+    'checked, not assumed. Confirm it against the invoice before approving.',
+  ];
 }
 
 /**
