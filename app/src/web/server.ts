@@ -37,6 +37,7 @@ import { renderGstr3b } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
+import { setPartyRcmRate } from '../domain/partyRcm.ts';
 import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
@@ -302,6 +303,33 @@ async function handle(
         blockers: p.blockers, warnings: p.warnings,
         form: formFor(p),
       });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/parties/rcm-rate') {
+    /*
+     * Master data, written on a named user's decision.
+     *
+     * Separate from `/api/bills/fill` on purpose: that endpoint answers
+     * questions about one document, this one sets a rate that will price every
+     * future bill from this supplier. `setPartyRcmRate` checks the party
+     * belongs to this client and that its category can carry a reverse-charge
+     * rate at all — a body arriving from a browser is untrusted input, and RLS
+     * alone would not stop a firm's own other client's supplier being named.
+     */
+    const body = JSON.parse(await readBody(req));
+    try {
+      await setPartyRcmRate(session.firmId, {
+        clientId: session.clientId, partyId: body.partyId,
+        rate: String(body.rate), provision: body.provision,
+        supply: String(body.supply ?? ''),
+        effectiveFrom: String(body.effectiveFrom),
+        ...(body.notification ? { notification: String(body.notification) } : {}),
+        setBy: session.userId,
+      });
+      return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }

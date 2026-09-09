@@ -12,6 +12,7 @@
  *     built by being checkable, not by being confident (provenance PR-9, PR-11)
  */
 
+import { STATUTORY_RATES } from '../domain/tax.ts';
 import type { QueueItem, MatchProposal } from '../domain/matching.ts';
 import type { Brs } from '../domain/brs.ts';
 
@@ -148,6 +149,12 @@ tr.done { opacity: .5; }
 .fill { margin-top: 12px; padding: 12px; border: 1px solid var(--line);
         border-radius: 6px; background: #fbfaf7; }
 .fillhead { font-weight: 600; margin-bottom: 10px; }
+/* Master data, kept visually apart from the per-bill form: saving here prices
+   every future bill from this supplier, not just the one on screen. */
+.partyrcm { margin-top: 12px; padding: 12px; border: 1px solid var(--line);
+        border-left: 3px solid #8a6d3b; border-radius: 6px; background: #fdfaf3; }
+.partyrcm select { padding: 6px 8px; border: 1px solid var(--line);
+        border-radius: 4px; font: inherit; }
 .fillrow { margin-bottom: 12px; }
 .fillrow label { display: block; font-size: 13px; margin-bottom: 4px; }
 .fillrow label .muted { font-weight: 400; }
@@ -836,6 +843,8 @@ interface ProposalViewV {
   tax: string | null;
   total: string | null;
   registrationStatus: string | null;
+  /** Null when no supplier could be matched — nothing to hang master data on. */
+  partyId: string | null;
   lines: Array<{ description: string; amount: string; hsn: string | null;
     suggestedAccountId?: string }>;
   warnings: string[];
@@ -884,7 +893,8 @@ function fillForm(p: ProposalViewV, token: string): string {
       </div>`;
     }
     const label = f.field === 'documentNumber' ? 'Invoice number'
-      : f.field === 'billDate' ? 'Invoice date' : 'Supplier';
+      : f.field === 'billDate' ? 'Invoice date'
+      : f.field === 'fxRate' ? 'Exchange rate' : 'Supplier';
     const type = f.field === 'billDate' ? 'date' : 'text';
     return `<div class="fillrow">
       <label>${label} <span class="muted">${esc(f.ask)}</span></label>
@@ -904,6 +914,66 @@ function fillForm(p: ProposalViewV, token: string): string {
       <button class="check" data-index="${p.index}" data-token="${esc(token)}"
         ${form.unfixable.length > 0 ? 'disabled' : ''}>Check these figures</button>
       <span class="fillresult muted"></span>
+    </div>
+  </div>`;
+}
+
+/**
+ * The blocker that says a supplier's standing reverse-charge rate is missing.
+ * Pinned to the wording in `billProposal`; a test holds the two together.
+ */
+const NEEDS_PARTY_RCM = /Set the rate on .+ party record/i;
+
+/**
+ * Setting the supplier's standing reverse-charge rate, from the blocked bill.
+ *
+ * Deliberately NOT part of the fill-in form above, and the separation is the
+ * point. That form answers questions about THIS document and its answers are
+ * recorded as entered on this bill. This writes MASTER DATA: it will price
+ * every future bill from this supplier, including ones nobody reviews as
+ * carefully as the one on screen. So it is its own block, with its own button,
+ * and it asks what the supply is rather than taking a bare number — the rate
+ * is the one figure on a reverse-charge bill that no arithmetic can check, so
+ * the reason for it is the only evidence there will ever be.
+ */
+function partyRcmForm(p: ProposalViewV, token: string): string {
+  if (p.partyId === null) return '';
+  const blocker = p.blockers.find((b) => NEEDS_PARTY_RCM.test(b));
+  if (blocker === undefined) return '';
+
+  // Which provision, from the branch that raised it. An overseas supplier is
+  // s.5(3) of the IGST Act; a domestic one can only be s.9(3).
+  const provision = /outside India/i.test(blocker) ? 'igst_5_3' : 'cgst_9_3';
+  const rates = STATUTORY_RATES
+    .map((r) => `<option value="${r}"${r === '18' ? ' selected' : ''}>${r}%</option>`)
+    .join('');
+
+  return `<div class="partyrcm" data-index="${p.index}" data-token="${esc(token)}"
+       data-party="${esc(p.partyId)}" data-provision="${provision}">
+    <div class="fillhead">This supplier's supplies are taxed in your client's
+      hands, and the rate is not on the document — it never is, because the
+      supplier charges none. Set it once here and it applies to every bill from
+      ${esc(p.partyName ?? 'this supplier')}, this one included.</div>
+    <div class="fillrow">
+      <label>Rate <span class="muted">The rate this supply would attract in
+        India in the ordinary way.</span></label>
+      <select data-rcm="rate">${rates}</select>
+    </div>
+    <div class="fillrow">
+      <label>What they supply <span class="muted">In the notification's own
+        words — "legal services by an advocate", "goods transport agency",
+        "cloud hosting". This is the justification for the rate.</span></label>
+      <input data-rcm="supply" type="text">
+    </div>
+    <div class="fillrow">
+      <label>In force from <span class="muted">Bills dated before this are
+        unaffected — an older bill keeps the rate that priced it.</span></label>
+      <input data-rcm="effectiveFrom" type="date"
+        value="${esc(p.billDate ?? '')}">
+    </div>
+    <div class="billactions">
+      <button class="setrcm">Save on ${esc(p.partyName ?? 'supplier')}</button>
+      <span class="rcmresult muted"></span>
     </div>
   </div>`;
 }
@@ -990,6 +1060,7 @@ function proposalCard(
     ${confirms}
     ${notes('warns', p.warnings)}
     ${notes('blocks', p.blockers)}
+    ${partyRcmForm(p, token)}
     ${fillForm(p, token)}
     ${controls}
 
@@ -999,7 +1070,11 @@ function proposalCard(
              ${p.status === 'needs_answer' ? 'Confirm & post' : 'Approve & post'}</button>`
         : (p.form && p.form.fields.length > 0 && p.form.unfixable.length === 0
             ? '<span class="muted">Fill the fields above, check them, then post.</span>'
-            : '<span class="muted">Resolve the blocker on the document, then re-upload.</span>')}
+            : p.blockers.some((b) => NEEDS_PARTY_RCM.test(b)) && p.partyId !== null
+              // The block above IS the way through, and saving it re-reads the
+              // bill in place. Telling them to re-upload would be wrong.
+              ? '<span class="muted">Set the rate above and this bill is re-read on the spot.</span>'
+              : '<span class="muted">Resolve the blocker on the document, then re-upload.</span>')}
     </div>
   </div>`;
 }
@@ -1108,6 +1183,45 @@ function readFill(card) {
   }
   return Object.keys(manual).length > 0 ? manual : undefined;
 }
+
+document.querySelectorAll('button.setrcm').forEach((btn) => {
+  btn.onclick = async () => {
+    const box = btn.closest('.partyrcm');
+    const out = box.querySelector('.rcmresult');
+    const body = { partyId: box.dataset.party, provision: box.dataset.provision };
+    box.querySelectorAll('[data-rcm]').forEach((el) => {
+      body[el.dataset.rcm] = el.value.trim();
+    });
+    if (!body.supply) { out.textContent = 'Say what they supply first.'; return; }
+    if (!body.effectiveFrom) { out.textContent = 'Say from when it applies.'; return; }
+    btn.disabled = true; out.textContent = 'Saving…';
+    const r = await post('/api/parties/rcm-rate', body);
+    if (!r.ok) { btn.disabled = false; out.textContent = r.error || 'could not save'; return; }
+
+    // Re-read the document with the rate now on file, so the reviewer sees
+    // what it produces rather than being told to upload it again.
+    const card = btn.closest('.billcard');
+    out.textContent = 'Saved. Re-reading the bill…';
+    const f = await post('/api/bills/fill', {
+      token: box.dataset.token, index: Number(box.dataset.index),
+      manual: readFill(card) });
+    btn.disabled = false;
+    if (!f.ok) { out.textContent = f.error || 'saved, but could not re-read'; return; }
+    if (f.ready) {
+      out.innerHTML = '<span class="good">Saved — this bill now posts.</span>';
+      const actions = card.querySelector('.billactions:last-of-type');
+      if (actions && !actions.querySelector('button.post')) {
+        actions.innerHTML =
+          '<button class="primary post" data-index="' + box.dataset.index +
+          '" data-token="' + box.dataset.token + '">Approve & post</button>';
+        wirePost(actions.querySelector('button.post'));
+      }
+    } else {
+      out.innerHTML = '<span class="bad">Saved. Still outstanding: ' +
+        (f.blockers || []).map((b) => b.replace(/</g, '&lt;')).join(' ') + '</span>';
+    }
+  };
+});
 
 document.querySelectorAll('button.check').forEach((btn) => {
   btn.onclick = async () => {

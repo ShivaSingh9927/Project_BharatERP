@@ -13,6 +13,21 @@
 
 import { ValidationError } from './types.ts';
 
+/**
+ * Every GST rate the schedule has actually carried.
+ *
+ * Used two ways, and both need the same list: to search for the rate that
+ * reproduces a document's stated tax, and to refuse a rate somebody typed
+ * that is not a rate at all.
+ *
+ * 12 and 28 were collapsed by the 2025-09-22 rationalisation (G-19b) and are
+ * kept deliberately: a bill for an earlier period was charged at the rate in
+ * force then, and both uses have to be able to recognise it.
+ */
+export const STATUTORY_RATES = [
+  '0', '0.25', '1.5', '3', '5', '12', '18', '28',
+] as const;
+
 export type GstTreatment = 'taxable' | 'zero_rated' | 'nil_rated' | 'exempt' | 'non_gst';
 
 export interface TaxableLineInput {

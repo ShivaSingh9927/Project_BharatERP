@@ -45,7 +45,8 @@
 
 import { withFirm } from '../db/pool.ts';
 import { validateGstin } from './gstin.ts';
-import { paise, money } from './tax.ts';
+import { paise, money, STATUTORY_RATES } from './tax.ts';
+import { partyRcmRate, PROVISION_TEXT, type RcmProvision } from './partyRcm.ts';
 import { parseAmount } from '../parse/values.ts';
 import { createBill, contentHash, type CreateBillInput, type BillLineInput,
          type CreatedBill } from './bills.ts';
@@ -214,6 +215,16 @@ export interface ManualEntry {
   billDate?: string;
   /** A supplier the reviewer identified, when matching failed. */
   partyId?: string;
+  /**
+   * Rupees per unit of the document's currency, for a foreign bill.
+   *
+   * A per-bill answer and not a master one, however often the same supplier
+   * bills: Rule 34(2) fixes it as the rate applicable on the date of the time
+   * of supply, so a figure held against the party would be the wrong rate for
+   * every bill but one. The reviewer supplies it and the evidence for it
+   * belongs in the file.
+   */
+  fxRate?: string;
   /** The figures, when no reader could produce a set that ties. */
   figures?: {
     taxable: string;
@@ -413,14 +424,10 @@ export function compareReadings(
  * recomputes tax from whatever comes back here, so a rate that is merely close
  * would produce a bill disagreeing with the paper by a rounding error nobody
  * could explain a year later.
- */
-const STATUTORY_RATES = [
-  '0', '0.25', '1.5', '3', '5', '12', '18', '28',
-] as const;
-/*
- * 12 and 28 were collapsed by the 2025-09-22 rationalisation (G-19b) and are
- * kept deliberately: a bill for an earlier period was charged at the rate in
- * force then, and this function has to be able to recognise it.
+ *
+ * The schedule itself lives in `tax.ts` — `STATUTORY_RATES` — because setting
+ * a rate against a supplier has to refuse a number that is not a rate, using
+ * the same list this search draws its candidates from.
  */
 
 /**
@@ -1055,8 +1062,64 @@ export async function proposeFromDocument(
       });
   let registration: GstinRecord | null = null;
 
-  /** True once the supplier is identified as an unregistered Indian one. */
-  let domesticUnregistered = false;
+  /**
+   * The reverse-charge decision for THIS document, once it has been settled.
+   *
+   * Null until a party branch below establishes both that the recipient owes
+   * the tax and at what rate — so `rcm` further down is structural rather than
+   * a flag anyone can set. That matters: the old test was
+   * `input.reverseCharge !== undefined`, which meant a folder ingested with
+   * one `--rcm-rate` would raise IGST on the local carpenter's bill unless a
+   * separate domestic-unregistered flag caught it afterwards. That flag is
+   * gone: nothing can set this but the branch that knows the supplier.
+   *
+   * `origin` is the sentence a reviewer reads about where the rate came from.
+   * The rate is the one figure here no arithmetic can check, so saying who
+   * decided it is the only evidence there will ever be.
+   */
+  let rcmSpec: {
+    rate: string; provision: RcmProvision; origin: string;
+    exchangeRate?: string; paymentDate?: string;
+  } | null = null;
+
+  /**
+   * The rate on file for a supplier, as of this bill's date.
+   *
+   * A rate the caller passed in wins: `--rcm-rate` and the review form are a
+   * filer's decision about the document in front of them, and the master is
+   * the standing default for when nobody made one. Either way the origin
+   * travels with it.
+   */
+  const resolveRcmRate = async (
+    party: { id: string; name: string }, fallbackProvision: RcmProvision,
+  ): Promise<'none' | 'ambiguous' | {
+    rate: string; provision: RcmProvision; origin: string; paymentDate?: string;
+  }> => {
+    if (input.reverseCharge !== undefined) {
+      return {
+        rate: input.reverseCharge.rate, provision: fallbackProvision,
+        origin: 'supplied by the filer for this document, not read from it',
+        ...(input.reverseCharge.paymentDate === undefined ? {}
+            : { paymentDate: input.reverseCharge.paymentDate }),
+      };
+    }
+    // No date, no lookup: the rate is resolved AS OF the bill's date, and a
+    // document whose date could not be read is already blocked for that.
+    const asOf = dateRead.date;
+    if (asOf === undefined) return 'none';
+    const onFile = await partyRcmRate(firmId, input.clientId, party.id, asOf);
+    if (onFile === 'none' || onFile === 'ambiguous') return onFile;
+    return {
+      rate: onFile.rate, provision: onFile.provision,
+      origin:
+        `taken from ${party.name}'s party record — ${onFile.supply}, ` +
+        `${PROVISION_TEXT[onFile.provision]}, ${onFile.rate}% in force from ` +
+        `${onFile.effectiveFrom}` +
+        (onFile.notification ? ` per ${onFile.notification}` : '') +
+        (onFile.setByName ? `, set by ${onFile.setByName}` : '') +
+        `. It was not read from this document, which charges no tax`,
+    };
+  };
 
   if (seg.supplierGstin === null) {
     /*
@@ -1086,7 +1149,6 @@ export async function proposeFromDocument(
     const found = await findOverseasSupplier(firmId, input.clientId, pageText);
     if (found === 'none' && namedParty) {
       partyId = namedParty.id; partyName = namedParty.name;
-      domesticUnregistered = true;
       warnings.push(
         `this document names no supplier this software recognises; a reviewer ` +
         `attached it to ${namedParty.name}. No GST is posted on it.`);
@@ -1105,7 +1167,14 @@ export async function proposeFromDocument(
         'one it is from cannot be settled from the paper. Post it by hand.');
     } else if (found.category === 'overseas') {
       partyId = found.id; partyName = found.name;
-      if (input.reverseCharge === undefined) {
+      const resolved = await resolveRcmRate(found, 'igst_5_3');
+      if (resolved === 'ambiguous') {
+        blockers.push(
+          `${found.name}'s party record holds more than one reverse-charge ` +
+          'rate covering this bill\'s date, so which one prices it is ' +
+          'genuinely undecided. Close the range that no longer applies — ' +
+          'picking one here would be inventing the rate.');
+      } else if (resolved === 'none') {
         blockers.push(
           `${found.name} is on file as a supplier outside India, so this is an ` +
           'import of service and the GST is owed by the recipient under ' +
@@ -1115,7 +1184,11 @@ export async function proposeFromDocument(
             ? `. Its figures are in ${currency.currency}, so a rupee value ` +
               'needs an exchange rate as well'
             : '') +
-          '. Supply the rate to post it.');
+          `. Set the rate on ${found.name}'s party record — it is the same ` +
+          'rate on every bill from them — and it will apply to this one and ' +
+          'every future one.');
+      } else {
+        rcmSpec = { ...resolved };
       }
     } else {
       /*
@@ -1124,7 +1197,6 @@ export async function proposeFromDocument(
        * and nothing more.
        */
       partyId = found.id; partyName = found.name;
-      domesticUnregistered = true;
       if (tableChargesTax(table)) {
         blockers.push(
           `${found.name} is on file as unregistered, but this document charges ` +
@@ -1132,6 +1204,50 @@ export async function proposeFromDocument(
           'supplier has since registered and the master record is stale, or ' +
           'this is not their document. Neither is safe to claim credit on.');
       } else {
+        /*
+         * Unless this supplier's own record says the tax is owed here.
+         *
+         * s.9(3) is the live provision and it does not care about the
+         * supplier's registration: an advocate's fee is taxed in the client's
+         * hands whether or not the advocate is registered, and treating it as
+         * a plain expense understates a liability the client pays in cash.
+         *
+         * Only from the PARTY RECORD, never from the caller's flag. An
+         * advocate is an advocate on every bill, so the decision is a standing
+         * one somebody made deliberately — where a folder-wide `--rcm-rate`
+         * would sweep every small domestic supplier into it, which is the bug
+         * the old domestic-unregistered guard existed to stop.
+         */
+        const asOf = dateRead.date;
+        const onFile = input.reverseCharge !== undefined || asOf === undefined
+          ? 'none'
+          : await partyRcmRate(firmId, input.clientId, found.id, asOf);
+
+        if (onFile !== 'none' && onFile !== 'ambiguous'
+            && onFile.provision === 'cgst_9_3') {
+          rcmSpec = {
+            rate: onFile.rate, provision: 'cgst_9_3',
+            origin:
+              `taken from ${found.name}'s party record — ${onFile.supply}, ` +
+              `${PROVISION_TEXT.cgst_9_3}, ${onFile.rate}% in force from ` +
+              `${onFile.effectiveFrom}` +
+              (onFile.notification ? ` per ${onFile.notification}` : '') +
+              (onFile.setByName ? `, set by ${onFile.setByName}` : '') +
+              '. It was not read from this document, which charges no tax',
+          };
+          warnings.push(
+            `${found.name} is on file as an unregistered Indian supplier whose ` +
+            'supplies are taxed in the recipient\'s hands under s.9(3), so the ' +
+            'GST on this bill is owed by the client even though the supplier ' +
+            'charged none — correctly, since they cannot.');
+        } else {
+        if (onFile === 'ambiguous') {
+          blockers.push(
+            `${found.name}'s party record holds more than one reverse-charge ` +
+            'rate covering this bill\'s date, so which one prices it is ' +
+            'genuinely undecided. Close the range that no longer applies.');
+        }
+
         warnings.push(
           `${found.name} is on file as an unregistered Indian supplier, so no ` +
           'GST arises on this bill and there is no input credit to claim — ' +
@@ -1158,8 +1274,11 @@ export async function proposeFromDocument(
               'more — are taxed in the recipient\'s hands under s.9(3) whatever ' +
               'the supplier\'s registration. I have treated it as an ordinary ' +
               'expense with no tax. Please confirm that is right, or post it ' +
-              'by hand with the rate.',
+              'by hand with the rate. If every bill from them is taxed this ' +
+              `way, set the rate on ${found.name}'s party record and it will ` +
+              'stop asking.',
           });
+        }
         }
       }
     }
@@ -1274,17 +1393,24 @@ export async function proposeFromDocument(
   if (table.warnings) warnings.push(...table.warnings);
 
   /*
-   * This document is being treated as an import of service: no GSTIN on it,
-   * the supplier is on file as being outside India, and the caller has named
-   * the rate its supply attracts.
+   * This document is taxed in the recipient's hands.
    *
-   * The party's category is part of the test, not just the caller's flag. A
-   * folder ingested with `--rcm-rate` would otherwise sweep a domestic
-   * unregistered supplier into the import path and raise IGST on a bill that
-   * owes none.
+   * Structural rather than a flag: `rcmSpec` is set only inside a party branch
+   * above, which has already established both that the recipient owes the tax
+   * — an import of service under s.5(3), or a notified service under s.9(3) —
+   * and at what rate. Nothing a caller passes can turn it on for a supplier
+   * whose record does not support it, which is what the old
+   * domestic-unregistered guard was patching after the fact.
    */
-  const rcm = seg.supplierGstin === null && input.reverseCharge !== undefined
-              && !domesticUnregistered;
+  const rcm = rcmSpec !== null;
+  /*
+   * Rupees per unit of the document's currency — from the caller, or from what
+   * the reviewer typed on the form. Per document either way: Rule 34(2) ties
+   * it to the date of the time of supply, so it can never be a master default
+   * the way the rate can.
+   */
+  const exchangeRate =
+    input.reverseCharge?.exchangeRate ?? input.manual?.fxRate;
   let fxRate: string | null = 'skip';
 
   if (rcm) {
@@ -1305,7 +1431,7 @@ export async function proposeFromDocument(
           'taken as rupees. Check that before approving — a foreign supplier ' +
           'billing without a symbol would post at a fraction of its value.');
       }
-    } else if (input.reverseCharge!.exchangeRate === undefined) {
+    } else if (exchangeRate === undefined) {
       blockers.push(
         `this document is in ${currency.currency} and no exchange rate was ` +
         'given. Rule 34(2) fixes the rate as the one applicable under GAAP on ' +
@@ -1314,7 +1440,7 @@ export async function proposeFromDocument(
         'not invent one.');
       fxRate = null;
     } else {
-      fxRate = input.reverseCharge!.exchangeRate;
+      fxRate = exchangeRate;
       warnings.push(
         `the rupee figures on this bill were converted from ${currency.currency} ` +
         `at ${fxRate}, a rate supplied by the filer and not read from the ` +
@@ -1380,7 +1506,7 @@ export async function proposeFromDocument(
      * what the supplier charged and false of what is owed.
      */
     const rate = rcm
-      ? input.reverseCharge!.rate
+      ? rcmSpec!.rate
       : deriveGstRate(
           lineTaxables.length > 0 ? lineTaxables : taxable,
           tax, profile.rates, profile.taxKind === 'intra');
@@ -1564,8 +1690,24 @@ export async function proposeFromDocument(
    * the sixtieth day after the supplier's invoice, it is payable in cash
    * rather than out of credit, and the credit comes back only once it is paid.
    */
+  if (rcm) {
+    /*
+     * Where the rate came from, on the bill itself.
+     *
+     * Every other figure on a purchase bill is provable against the paper.
+     * This one is not and never can be — the supplier charged no tax, so there
+     * is nothing to check it against. What replaces the check is saying whose
+     * decision it was, which is why this warning is not optional and not
+     * conditional on anything.
+     */
+    warnings.push(
+      `the ${rcmSpec!.rate}% reverse-charge rate on this bill was ` +
+      `${rcmSpec!.origin}. It is the one figure here no arithmetic can ` +
+      'confirm, so it stands on that decision alone.');
+  }
+
   if (rcm && dateRead.date) {
-    const paid = input.reverseCharge!.paymentDate;
+    const paid = rcmSpec!.paymentDate;
     const tos = paid === undefined
       ? timeOfSupply(dateRead.date)
       : timeOfSupply(dateRead.date, paid);

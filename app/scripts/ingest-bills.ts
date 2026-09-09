@@ -31,6 +31,7 @@ import { doclingClientFromEnv } from '../src/parse/doclingTable.ts';
 import { parserClientFromEnv } from '../src/parse/candidateTables.ts';
 import { glmOcrClientFromEnv } from '../src/parse/glmOcr.ts';
 import { closePools } from '../src/db/pool.ts';
+import { paise, money } from '../src/domain/tax.ts';
 
 const [firmId, clientId, expenseAccountId, dir] = process.argv.slice(2);
 const post = process.argv.includes('--post');
@@ -43,6 +44,13 @@ const post = process.argv.includes('--post');
  * money attached, which no amount of reading the paper can make.
  *
  *   --rcm-rate=18 --fx=USD:88.20,EUR:96.50
+ *
+ * The rate is better set on the SUPPLIER — `scripts/set-party-rcm.ts`, or the
+ * block on the blocked bill's card — which records who decided it and applies
+ * it to every future bill from them. This flag remains for a folder whose
+ * suppliers have no rate on file yet, and it never applies to a domestic
+ * unregistered supplier: s.9(3) is a standing decision about a party, not a
+ * property of an ingest run.
  */
 const flag = (n: string) =>
   process.argv.find((a) => a.startsWith(`--${n}=`))?.split('=').slice(1).join('=');
@@ -112,19 +120,27 @@ for (const file of readdirSync(dir).filter((f) => READABLE.test(f)).sort()) {
      * already parsed, and only documents actually blocked for want of a rate
      * come back through.
      */
-    if (rcmRate !== undefined && fx.size > 0) {
+    if (fx.size > 0) {
       const needs = proposals.some((p) =>
         p.blockers.some((b) => /no exchange rate was given/.test(b)));
       if (needs) {
         const cur = [...fx.keys()].find((c) =>
           proposals.some((p) => p.blockers.some((b) => b.includes(`in ${c} `))));
         if (cur !== undefined) {
+          /*
+           * The rate can now come from the party master, so an exchange rate
+           * is supplied on its own — passed as manual entry, which is what a
+           * reviewer typing it on the form does. The `--rcm-rate` route is
+           * kept for a run where no master rate is on file yet.
+           */
           proposals = await proposeBills(firmId, {
             clientId, file: readFileSync(join(dir, file)),
             createdBy: approvedBy ?? '00000000-0000-0000-0000-000000000000',
             expenseAccountId, llm, gstinLookup, docling, parser, glmOcr,
             sourceUri: `file://${join(dir, file)}`,
-            reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! },
+            ...(rcmRate === undefined
+              ? { manual: { fxRate: fx.get(cur)! } }
+              : { reverseCharge: { rate: rcmRate, exchangeRate: fx.get(cur)! } }),
           });
         }
       }
@@ -168,9 +184,26 @@ for (const file of readdirSync(dir).filter((f) => READABLE.test(f)).sort()) {
 
     ready++;
     const s = p.table.sums;
+    /*
+     * A reverse-charge bill is reported from its POSTED lines, not its table.
+     *
+     * The table holds the figures as printed, which on a foreign invoice are
+     * dollars or euros — so this line read "taxable=6.00" for a bill posting
+     * at 529.20, and the tax read zero because the supplier charged none. Both
+     * true of the paper and misleading about the entry, which is the worst
+     * combination for a dry run somebody approves from.
+     */
+    if (p.input?.isReverseCharge) {
+      const value = p.input.lines.reduce((a, l) => a + paise(l.unitPrice), 0n);
+      console.log(`  ${label} ready${via}${check}  ${p.billDate}  ` +
+                  `taxable=${money(value)} (INR) ` +
+                  `gst=reverse charge, computed at posting  ` +
+                  `printed=${s.total}`);
+    } else {
     console.log(`  ${label} ready${via}${check}  ${p.billDate}  taxable=${s.taxable} ` +
                 `gst=${[s.cgst, s.sgst, s.igst].filter(Boolean).join('+') || '0'} ` +
                 `total=${s.total}`);
+    }
     for (const wn of p.warnings) console.log(`      ! ${wn}`);
 
     if (post) {

@@ -28,7 +28,7 @@ import type { BillProposal } from './billProposal.ts';
 /** One thing to ask the reviewer for. */
 export interface FormField {
   /** Matches the key on `ManualEntry`, so an answer names what it answers. */
-  field: 'documentNumber' | 'billDate' | 'partyId' | 'figures';
+  field: 'documentNumber' | 'billDate' | 'partyId' | 'figures' | 'fxRate';
   /** Put to the reviewer in their own words. */
   ask: string;
   /** The blocker this would clear, verbatim, so the reason travels with it. */
@@ -72,6 +72,19 @@ const TRIGGERS: Array<{ field: FormField['field']; re: RegExp; ask: string }> = 
     re: /no supplier is on file with GSTIN|no supplier on file is named on it/i,
     ask: 'Which supplier this bill is from. If they are not on file yet, add '
        + 'the vendor first — a party carries a state and a ledger account.',
+  },
+  {
+    /*
+     * A foreign bill's rupee value. Asked per document and not held against
+     * the supplier, however many bills they send: Rule 34(2) fixes the rate as
+     * the one applicable on the date of the time of supply, so a master
+     * default would be the wrong rate for every bill but one.
+     */
+    field: 'fxRate',
+    re: /no exchange rate was given/i,
+    ask: 'Rupees per unit of the invoice currency, on the date of the time of '
+       + 'supply (Rule 34(2)). This is the filer\'s evidence to produce — keep '
+       + 'the source of the rate in the file with the bill.',
   },
   {
     field: 'figures',

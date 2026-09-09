@@ -529,6 +529,67 @@ The rules that keep it honest:
 - **The answers are threaded into the PROPOSAL, not applied after it**, so the
   input is built by the same code either way and preview and post still agree.
 
+**BE-35 — The reverse-charge rate is a property of the SUPPLIER, and the one
+figure here no arithmetic can ever check.**
+
+Under reverse charge the recipient owes the GST and the supplier charges none.
+So the rate is absent from the document by construction: there is no amount to
+read, no percentage printed, and nothing for the two gates to test it against.
+Every other figure in this pipeline is proved against the paper. This one
+cannot be, ever.
+
+That makes it a decision rather than a reading. It arrived first as
+`--rcm-rate=18` on an ingest command, which was wrong three ways: it applied to
+a whole folder rather than a supplier, it recorded nobody, and it was gone as
+soon as the shell history rolled over.
+
+It is held against the party instead — `party_rcm_rates`, date-ranged — and the
+rules are:
+
+- **Only the two live routes.** `igst_5_3` (import of service) or `cgst_9_3` (a
+  notified service — legal, goods transport, sponsorship, a director's fees).
+  s.9(4), reverse charge merely because the supplier is unregistered, has been
+  suspended since 13 October 2017; a row claiming it would assert a liability
+  that does not exist, and the CHECK constraint refuses it.
+- **The rate must say what it is for.** "Legal services by an advocate", "goods
+  transport agency". The reason is the only evidence this figure will ever
+  have, so a bare number is refused (PR-7).
+- **Date-ranged, resolved as of the BILL's date.** Rates move — the 2025-09-22
+  rationalisation collapsed two slabs. A column on `parties` would silently
+  reprice history the moment somebody edited the master, and leave last
+  quarter's return citing a rate no row could produce. Setting a new rate
+  CLOSES the old range; a backdated rate is closed where the next one begins,
+  so the ranges stay disjoint and the lookup is never a guess.
+- **Two ranges covering one day is a refusal, not a choice.** If it happens the
+  rate for that bill is genuinely undecided, and picking one would be inventing
+  it.
+- **The party's own category gates it.** A rate against a registered supplier
+  is refused outright: their invoice charges GST in the ordinary way, and a
+  reverse-charge rate would tax the same supply twice. A row sitting in the
+  master looking effective is worse than no row at all.
+- **Reverse charge is now STRUCTURAL, not a flag.** It is on only when a party
+  branch has established both that the recipient owes the tax and at what rate.
+  Nothing a caller passes can turn it on for a supplier whose record does not
+  support it — which is what the old `!domesticUnregistered` guard was patching
+  after the fact.
+- **A caller's rate still outranks the master for ONE document.** A flag or a
+  form answer is the filer's decision about the paper in front of them; the
+  master is the standing default for when nobody made one. Either way the
+  origin travels with the bill.
+- **Every reverse-charge bill states where its rate came from** — the supply,
+  the provision, the date it took effect, and who set it. This warning is not
+  optional and not conditional, because it is the whole of the figure's defence
+  a year later.
+- **The EXCHANGE rate is not master data.** Rule 34(2) fixes it as the rate
+  applicable on the date of the time of supply, so a figure held against the
+  party would be wrong for every bill but one. It is a per-document form field
+  (BE-34), and the RCM rate is deliberately not.
+- **Setting the master is its own act, with its own button.** The BE-34 form
+  answers questions about one document; this writes a rate that will price
+  every future bill from that supplier, including ones nobody reviews as
+  carefully as the one on screen. A form that quietly wrote it would be the
+  same mistake as creating a party from a PDF.
+
 ---
 
 ## 5. Extraction — the AI pipeline
