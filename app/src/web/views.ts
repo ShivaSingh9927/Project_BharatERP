@@ -104,6 +104,9 @@ button:disabled { opacity: .5; cursor: default; }
 textarea { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 12px; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
+/* A month whose deposit deadline has passed. Tinted rather than just
+   red-texted: it is the row a CA has to act on today. */
+.lategrp td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
 .msg { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line); margin: 10px 0; }
 .msg.bad { border-color: var(--bad); }
 .msg.good { border-color: var(--good); }
@@ -236,6 +239,7 @@ export function renderShell(a: {
     ${link('/gstr2b', 'gstr2b', 'GSTR-2B')}
     ${link('/gstr1', 'gstr1', 'GSTR-1')}
     ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
+    ${link('/tds', 'tds', 'TDS')}
   </nav>
 </header>
 <main>${a.body}</main>
@@ -1822,6 +1826,159 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// TDS — what has been withheld, what is owed to the government, and by when.
+//
+// The screen exists because BE-36 made a liability and gave nobody a deadline.
+// It leads with the two figures that cost money on a timetable — overdue tax
+// and the interest already accrued — rather than with the total deducted,
+// which is interesting and not urgent.
+
+interface TdsPositionV {
+  asOf: string;
+  months: Array<{
+    period: string; deducted: string; deposited: string; outstanding: string;
+    shortfall: string;
+    deposit: { due: string; citation: string | null } | null;
+    overdue: null | { days: number; months: number; interest: string; rate: string };
+    statement: { due: string; quarter: string } | null;
+    deductions: number; parties: number;
+  }>;
+  totalOutstanding: string;
+  totalInterest: string;
+  totalShortfall: string;
+  paymentAccounts: Array<{ id: string; name: string }>;
+}
+
+export function renderTds(a: TdsPositionV): string {
+  if (a.months.length === 0) {
+    return `<h1>TDS</h1>
+<p class="sub">Nothing has been withheld yet. A bill posted to a head that
+attracts TDS — professional fees, contract payments, rent, commission — asks
+before it posts, and what is withheld shows up here with its deposit date.</p>`;
+  }
+
+  const row = (m: TdsPositionV['months'][number]): string => {
+    const late = m.overdue !== null;
+    return `<tr class="${late ? 'lategrp' : ''}">
+      <td><b>${esc(m.period)}</b>
+        <div class="muted small">${m.deductions} deduction(s), ${m.parties} supplier(s)</div></td>
+      <td class="num">${inr(m.deducted)}</td>
+      <td class="num">${m.deposited === '0.00' ? '<span class="muted">—</span>' : inr(m.deposited)}</td>
+      <td class="num">${m.outstanding === '0.00'
+        ? '<span class="good">settled</span>' : `<b>${inr(m.outstanding)}</b>`}</td>
+      <td>${m.deposit === null
+        ? '<span class="muted">no rule on file</span>'
+        : `${esc(m.deposit.due)}${late
+            ? `<div class="bad small">${m.overdue!.days} days late — ` +
+              `${inr(m.overdue!.interest)} interest at ${esc(m.overdue!.rate)}% ` +
+              `for ${m.overdue!.months} month(s)</div>`
+            : ''}`}</td>
+      <td>${m.statement === null ? '<span class="muted">—</span>'
+        : `${esc(m.statement.due)}<div class="muted small">${esc(m.statement.quarter)}</div>`}</td>
+      <td>${m.outstanding === '0.00' ? ''
+        : `<button class="depositbtn" data-period="${esc(m.period)}"
+             data-tax="${esc(m.outstanding)}"
+             data-interest="${esc(m.overdue?.interest ?? '0.00')}">Record challan</button>`}</td>
+    </tr>`;
+  };
+
+  const accounts = a.paymentAccounts
+    .map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('');
+
+  return `<h1>TDS</h1>
+<p class="sub">Tax withheld on bills, and what is owed to the government. The
+deadline hangs off the month the tax was DEDUCTED in, not the month somebody
+gets round to paying it — so a March deduction is payable by 30 April however
+late the bill was entered.</p>
+
+<div class="tiles">
+  <div class="tile"><b class="${a.totalOutstanding === '0.00' ? 'good' : 'bad'}">${inr(a.totalOutstanding)}</b>
+    <span>owed to the government</span></div>
+  <div class="tile"><b class="${a.totalInterest === '0.00' ? '' : 'bad'}">${inr(a.totalInterest)}</b>
+    <span>interest accrued, s.201(1A)</span></div>
+  <div class="tile"><b class="${a.totalShortfall === '0.00' ? '' : 'warn'}">${inr(a.totalShortfall)}</b>
+    <span>due but not withheld</span></div>
+</div>
+
+<div class="panel mt" style="padding:0"><table>
+  <tr><th>Deducted in</th><th class="num">Withheld</th><th class="num">Deposited</th>
+      <th class="num">Owed</th><th>Deposit by</th><th>Statement by</th><th></th></tr>
+  ${a.months.map(row).join('')}
+</table></div>
+
+${a.totalShortfall === '0.00' ? '' : `
+<p class="sub"><b>Due but not withheld</b> is tax a reviewer decided against
+deducting. It is not lost: the next deduction for that supplier charges the
+running total and nets off only what was actually withheld, so the shortfall is
+caught up then. Until it is, the client owes it.</p>`}
+
+<div class="panel mt" id="challan" hidden>
+  <h2>Record a challan</h2>
+  <p class="sub">What was actually paid to the government. The tax clears the
+    liability; interest and any late fee go to their own expense head, because
+    they are the client's own cost of being late and are added back at year
+    end rather than allowed.</p>
+  <div class="row">
+    <label>Month <input id="cperiod" readonly></label>
+    <label>Paid on <input id="cdate" type="date"></label>
+    <label>Tax <input id="ctax" inputmode="decimal"></label>
+    <label>Interest <input id="cint" inputmode="decimal"></label>
+    <label>Late fee <input id="cfee" inputmode="decimal" value="0"></label>
+  </div>
+  <div class="row">
+    <label>Paid from <select id="cacct">${accounts}</select></label>
+    <label>BSR code <input id="cbsr" maxlength="7" placeholder="7 digits"></label>
+    <label>Challan serial <input id="cserial"></label>
+  </div>
+  <div class="billactions">
+    <button class="primary" id="csave">Record it</button>
+    <button id="ccancel">Cancel</button>
+    <span id="cresult" class="muted"></span>
+  </div>
+  <p class="sub">The CIN — BSR code, date and serial — is what the quarterly
+    statement quotes against each deduction. A return filed without it is
+    rejected, so it is worth entering now rather than hunting for it in July.</p>
+</div>
+
+<script>
+document.querySelectorAll('button.depositbtn').forEach((b) => {
+  b.onclick = () => {
+    const box = document.getElementById('challan');
+    box.hidden = false;
+    document.getElementById('cperiod').value = b.dataset.period;
+    document.getElementById('ctax').value = b.dataset.tax;
+    // Pre-filled with the interest accrued TO TODAY, which is what it would
+    // cost to pay now. It is editable because the challan records what was
+    // actually paid, not what we calculated.
+    document.getElementById('cint').value = b.dataset.interest;
+    document.getElementById('cdate').value = new Date().toISOString().slice(0, 10);
+    box.scrollIntoView({ behavior: 'smooth' });
+  };
+});
+const cc = document.getElementById('ccancel');
+if (cc) cc.onclick = () => { document.getElementById('challan').hidden = true; };
+const cs = document.getElementById('csave');
+if (cs) cs.onclick = async () => {
+  const out = document.getElementById('cresult');
+  const v = (id) => document.getElementById(id).value.trim();
+  out.textContent = 'Recording…';
+  const r = await fetch('/api/tds/deposit', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      period: v('cperiod'), depositedOn: v('cdate'), tax: v('ctax'),
+      interest: v('cint') || '0', lateFee: v('cfee') || '0',
+      paidFromAccountId: v('cacct'), bsrCode: v('cbsr') || undefined,
+      challanSerial: v('cserial') || undefined,
+    }),
+  }).then((x) => x.json());
+  if (!r.ok) { out.innerHTML = '<span class="bad">' + (r.error || 'could not record') + '</span>'; return; }
+  out.innerHTML = '<span class="good">Recorded ' + r.remitted + '.</span>';
+  setTimeout(() => location.reload(), 800);
+};
+</script>`;
 }
 
 // ---------------------------------------------------------------------------

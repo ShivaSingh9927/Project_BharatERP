@@ -207,6 +207,17 @@ export const INDIA_COA: CoaRoot[] = [
         expenseClass: 'non_operating',
         children: [
           { name: 'Interest on Loan', accountType: 'general', expenseClass: 'non_operating', code: '5210' },
+          /*
+           * Interest and fees for being late with a tax — s.201(1A) on TDS
+           * deposited after the due date, s.234E on a statement filed late.
+           *
+           * Its own head, not lumped into Interest on Loan, for two reasons: a
+           * tax penalty is not a cost of borrowing, and it has to be findable
+           * at year end because it is added back in the income computation
+           * rather than allowed as a business expense.
+           */
+          { name: 'Interest and Penalties on Taxes', accountType: 'general',
+            expenseClass: 'non_operating', code: '5215' },
           { name: 'Income Tax', accountType: 'general', expenseClass: 'non_operating', code: '5220' },
         ],
       },

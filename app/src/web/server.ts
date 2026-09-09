@@ -33,11 +33,12 @@ import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, 
 import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
-import { renderGstr3b } from './views.ts';
+import { renderGstr3b, renderTds } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
 import { setPartyRcmRate } from '../domain/partyRcm.ts';
+import { tdsPosition, recordTdsDeposit } from '../domain/tdsCompliance.ts';
 import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
@@ -406,6 +407,42 @@ async function handle(
         ok: true, paid: r.paid, outstandingAfter: r.outstandingAfter,
         fullySettled: r.fullySettled,
       });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/tds') {
+    /*
+     * As of TODAY, and that is the whole value of the page: interest under
+     * s.201(1A) accrues per month or part of a month, so the same unpaid
+     * deduction costs more tomorrow than it does now.
+     */
+    const asOf = new Date().toISOString().slice(0, 10);
+    const pos = await tdsPosition(session.firmId, session.clientId, asOf);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'tds',
+      body: renderTds({
+        ...pos,
+        paymentAccounts: await paymentAccounts(session.firmId, session.clientId),
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/tds/deposit') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await recordTdsDeposit(session.firmId, {
+        clientId: session.clientId, period: String(body.period),
+        depositedOn: String(body.depositedOn), tax: String(body.tax),
+        interest: body.interest ? String(body.interest) : '0',
+        lateFee: body.lateFee ? String(body.lateFee) : '0',
+        paidFromAccountId: String(body.paidFromAccountId),
+        ...(body.bsrCode ? { bsrCode: String(body.bsrCode) } : {}),
+        ...(body.challanSerial ? { challanSerial: String(body.challanSerial) } : {}),
+        createdBy: session.userId,
+      });
+      return json(res, 200, { ok: true, remitted: r.remitted });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }

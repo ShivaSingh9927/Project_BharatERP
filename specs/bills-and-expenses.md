@@ -671,6 +671,64 @@ paid before any bill exists.
   to NULL would leave every client already in the database saying no head
   attracts TDS — the feature silently off, indistinguishable from broken.
 
+**BE-37 — A deduction is a number; a DEPOSIT is a date. Both have to be
+tracked.**
+
+BE-36 put the liability in TDS Payable and stopped, which is the cheaper half.
+Tax deducted and not deposited carries 1.5% per month under s.201(1A); a
+quarterly statement not filed carries Rs 200 a day under s.234E. Both run from
+dates nothing in the software knew.
+
+- **Everything hangs off the month the tax was DEDUCTED in**, never off the
+  date somebody got round to paying it. A March deduction is payable by
+  30 April whether the bill was entered in March or in September.
+- **The dates are data, date-ranged.** Rule 30's deposit dates and Rule 31A's
+  statement dates live in `tds_deadlines` as (period) -> (offset, day) rows, so
+  the March exception is a row rather than an `if`, and a CBDT extension is an
+  insert rather than a deploy. The Q1 FY2025-26 deadline was extended by
+  circular; a hardcoded 31 July would have reported clients late for months.
+  The day is clamped to the month's length — a "31st" deadline in a 30-day
+  month means the 30th, and reporting a client late on a day they were not is
+  its own failure.
+- **Interest counts a part month as a whole month.** s.201(1A) charges "for
+  every month or part of a month": one day late is one month's interest.
+  Prorating would understate every case, and a CA checking our figure against
+  the department's would find ours short.
+- **Interest accrues on what is still UNPAID, per month.** A month deposited
+  late has had its interest crystallised on the challan that paid it; a report
+  that kept charging would bill a client for a debt they have settled. And the
+  obligation is per month with its own deadline, not one ledger balance — a
+  client who deposited April and forgot May owes nothing on a net view and is
+  two months late on one month's tax.
+- **A challan is recorded, not assumed.** Without it "outstanding" is always
+  the whole liability and the report cries wolf on every client. It is its own
+  table and not a status column, because one challan covers a month of
+  deductions across many suppliers, and one month can take two challans when
+  somebody notices a shortfall. The CIN is captured because a statement filed
+  without it is rejected.
+- **A challan cannot exceed what its month owes.** Over-depositing leaves TDS
+  Payable in credit for a liability that never existed, and the excess is
+  genuinely hard to recover from the department — so it is refused at entry
+  rather than found at reconciliation. The refusal names the likely cause: a
+  challan dated by the month it was PAID rather than the month of deduction.
+- **Interest and late fees go to their own expense head.** They are the
+  client's own cost of being late, not tax withheld from anybody, so putting
+  them in TDS Payable would stop the liability reconciling with what was
+  deducted — and they must be findable at year end, because interest on late
+  tax is added back in the income computation rather than allowed.
+- **A missing account is refused, never substituted.** `recordTdsDeposit` first
+  looked for the interest account by name and fell back to any account of that
+  type, which on a chart predating it debited a client's interest to Other
+  Income — silently. Every test tenant is built from the current chart
+  template, so every test had the account and every test passed; only a live
+  run against an older tenant showed it. The lesson is the general one: a
+  fallback that picks a neighbouring account is worse than an error.
+- **The data for Form 26Q, and deliberately not the form.** The quarter's
+  deductions are listed supplier by supplier with the PAN a return must quote
+  (read out of the GSTIN, which contains it). No certificate is generated: the
+  section codes in the master are still marked unverified, and printing them on
+  a client's Form 16A would put our guess on their letterhead.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1144,6 +1202,7 @@ In addition to the GL Engine's V-1…V-13:
 | PB-10 | TDS computed using the rate and thresholds in force on the date the deduction falls due — the credit, or the payment where that is earlier (BE-36) |
 | PB-11 | Content hash not already present (BE-2) |
 | PB-12 | A bill whose expense heads attract TDS does not post until a human has said whether to withhold; a bill already deducted on its credit cannot be deducted again on payment (BE-36) |
+| PB-13 | A TDS challan names one month of DEDUCTIONS and may not exceed what that month still owes; interest and late fees post to their own head, never to the tax liability (BE-37) |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 
