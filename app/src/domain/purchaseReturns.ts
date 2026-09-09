@@ -394,7 +394,9 @@ export async function createPurchaseReturn(
                            FROM ledger_entries le JOIN accounts a ON a.id = le.account_id
                           WHERE le.voucher_id = $1 AND a.account_type = 'payable'), 0)
                - COALESCE((SELECT SUM(s.debit - s.credit) FROM ledger_entries s
-                            WHERE s.settles_voucher_id = $1), 0))::text AS outstanding`,
+                             JOIN accounts sa ON sa.id = s.account_id
+                            WHERE s.settles_voucher_id = $1
+                              AND sa.account_type = 'payable'), 0))::text AS outstanding`,
       [input.billVoucherId]);
     const left = paise(settled.rows[0]!.outstanding);
     if (left < 0n) {

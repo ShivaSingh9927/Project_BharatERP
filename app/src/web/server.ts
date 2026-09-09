@@ -44,7 +44,8 @@ import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, 
 import { supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
-import { renderGstr3b, renderTds, renderReturns } from './views.ts';
+import { renderGstr3b, renderTds, renderReturns, renderReceivables,
+         renderStatement } from './views.ts';
 import { generateGstr3b, taxPeriods } from '../domain/gstr3b.ts';
 import { renderCockpit } from './views.ts';
 import { loadCockpit } from '../domain/firmCockpit.ts';
@@ -52,6 +53,8 @@ import { setPartyRcmRate } from '../domain/partyRcm.ts';
 import { tdsPosition, recordTdsDeposit } from '../domain/tdsCompliance.ts';
 import { createPurchaseReturn, recordSupplierCreditNote, purchaseReturns,
          billForReturn } from '../domain/purchaseReturns.ts';
+import { outstandingInvoices, recordReceipt, writeOffReceivable,
+         customerStatement, receiptAccounts } from '../domain/receivables.ts';
 import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
@@ -569,6 +572,68 @@ async function handle(
         ok: true, paid: r.paid, outstandingAfter: r.outstandingAfter,
         fullySettled: r.fullySettled,
       });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/receivables') {
+    const party = url.searchParams.get('party');
+    if (party !== null) {
+      return html(res, 200, renderShell({
+        session, accounts, active: 'receivables',
+        body: renderStatement(
+          await customerStatement(session.firmId, session.clientId, party)),
+      }));
+    }
+    return html(res, 200, renderShell({
+      session, accounts, active: 'receivables',
+      body: renderReceivables({
+        invoices: await outstandingInvoices(session.firmId, session.clientId),
+        accounts: await receiptAccounts(session.firmId, session.clientId),
+      }),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/receivables/receipt') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await recordReceipt(session.firmId, {
+        clientId: session.clientId,
+        invoiceVoucherId: String(body.invoiceVoucherId),
+        amount: String(body.amount),
+        ...(body.tdsWithheld ? { tdsWithheld: String(body.tdsWithheld) } : {}),
+        receivedIntoAccountId: String(body.receivedIntoAccountId),
+        receiptDate: String(body.receiptDate),
+        createdBy: session.userId,
+        ...(body.reference ? { reference: String(body.reference) } : {}),
+      });
+      return json(res, 200, {
+        ok: true, received: r.received, tdsWithheld: r.tdsWithheld,
+        outstandingAfter: r.outstandingAfter, fullySettled: r.fullySettled,
+        warnings: r.warnings,
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/receivables/write-off') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await writeOffReceivable(session.firmId, {
+        clientId: session.clientId,
+        invoiceVoucherId: String(body.invoiceVoucherId),
+        amount: String(body.amount),
+        reason: String(body.reason ?? ''),
+        writeOffDate: String(body.writeOffDate),
+        createdBy: session.userId,
+        // Giving up on money owed is a decision, and the person taking it is
+        // the one signed in.
+        approvedBy: session.userId,
+      });
+      return json(res, 200, {
+        ok: true, writtenOff: r.writtenOff, warnings: r.warnings });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }

@@ -253,6 +253,7 @@ export function renderShell(a: {
     ${link('/gstr1', 'gstr1', 'GSTR-1')}
     ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
     ${link('/tds', 'tds', 'TDS')}
+    ${link('/receivables', 'receivables', 'Receivables')}
     ${link('/returns', 'returns', 'Returns')}
   </nav>
   <form method="post" action="/logout" class="who">
@@ -1845,6 +1846,211 @@ ${picker}
 
 <p class="sub">This is the return, not the filing — the figure owed is settled in
 cash; lodging it with the portal is a separate step.</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Receivables — who owes the client, and collecting it.
+//
+// The screen leads with the oldest money, because that is the one that gets
+// forgotten and the one least likely to arrive. The TDS field on the receipt
+// form is the reason this page differs from Payables: ₹1,08,000 against a
+// ₹1,18,000 invoice is usually not a short payment, and treating it as one
+// leaves the invoice open forever and loses a credit the client is owed.
+
+const RBUCKET_LABEL: Record<string, string> = {
+  not_due: 'not yet due', d0_30: '1–30 days', d31_60: '31–60 days',
+  d61_90: '61–90 days', d90_plus: 'over 90 days',
+};
+
+interface OutstandingInvoiceV {
+  voucherId: string; invoiceNumber: string; partyId: string;
+  customerName: string; invoiceDate: string; dueDate: string;
+  grandTotal: string; outstanding: string; tdsWithheld: string;
+  daysOverdue: number; bucket: string;
+}
+
+export function renderReceivables(a: {
+  invoices: OutstandingInvoiceV[];
+  accounts: Array<{ id: string; name: string }>;
+}): string {
+  const buckets: Record<string, bigint> = {
+    not_due: 0n, d0_30: 0n, d31_60: 0n, d61_90: 0n, d90_plus: 0n };
+  let total = 0n;
+  for (const i of a.invoices) {
+    const p = BigInt(Math.round(Number(i.outstanding) * 100));
+    buckets[i.bucket] = (buckets[i.bucket] ?? 0n) + p;
+    total += p;
+  }
+  const rupees = (p: bigint) =>
+    inr((p / 100n).toString() + '.' + String(p % 100n).padStart(2, '0'));
+
+  const acctOptions = a.accounts.map((ac) =>
+    `<option value="${esc(ac.id)}">${esc(ac.name)}</option>`).join('');
+
+  const rows = a.invoices.map((i) => `
+    <tr class="rrow">
+      <td><a href="/receivables?party=${esc(i.partyId)}">${esc(i.customerName)}</a></td>
+      <td class="mono">${esc(i.invoiceNumber)}</td>
+      <td>${esc(i.dueDate)}</td>
+      <td class="num ${i.daysOverdue > 60 ? 'bad' : i.daysOverdue > 0 ? 'warn' : 'muted'}">${
+        i.daysOverdue > 0 ? i.daysOverdue + 'd overdue' : 'not due'}</td>
+      <td class="num"><b>${inr(i.outstanding)}</b>${
+        i.tdsWithheld === '0.00' ? ''
+          : `<div class="muted small">${inr(i.tdsWithheld)} TDS withheld</div>`}</td>
+      <td><button class="rcv" data-v="${esc(i.voucherId)}" data-out="${esc(i.outstanding)}">Receipt</button>
+        <button class="woff" data-v="${esc(i.voucherId)}" data-out="${esc(i.outstanding)}">Write off</button></td>
+    </tr>
+    <tr class="rcvform" id="rf_${esc(i.voucherId)}" hidden>
+      <td colspan="6">
+        <div class="payrow">
+          <label>Received <input type="text" class="r-amt" value="${esc(i.outstanding)}"></label>
+          <label>TDS withheld <input type="text" class="r-tds" value="0.00"></label>
+          <label>Into <select class="r-acct">${acctOptions}</select></label>
+          <label>On <input type="date" class="r-date"></label>
+          <label>Ref <input type="text" class="r-ref" size="12"></label>
+          <button class="primary r-go" data-v="${esc(i.voucherId)}">Record</button>
+          <span class="r-out muted"></span>
+        </div>
+        <div class="muted small">Enter the tax the customer withheld separately.
+          A short payment and a withholding look identical in a bank statement
+          and mean opposite things — one is still owed, the other is an asset
+          the client claims — so it is asked rather than guessed.</div>
+      </td>
+    </tr>
+    <tr class="wofform" id="wf_${esc(i.voucherId)}" hidden>
+      <td colspan="6">
+        <div class="payrow">
+          <label>Write off <input type="text" class="w-amt" value="${esc(i.outstanding)}"></label>
+          <label>On <input type="date" class="w-date"></label>
+          <label>Why <input type="text" class="w-why" size="30"
+            placeholder="struck off, untraceable, disputed and abandoned"></label>
+          <button class="w-go" data-v="${esc(i.voucherId)}">Write it off</button>
+          <span class="w-out muted"></span>
+        </div>
+        <div class="muted small">A debt given up is an expense of the business.
+          The GST on it is <b>not</b> recoverable — it became payable at the time
+          of supply and India has no bad-debt relief — so this writes off the
+          tax as well.</div>
+      </td>
+    </tr>`).join('');
+
+  return `<h1>Receivables</h1>
+<p class="sub">What customers owe, oldest first. Read from the ledger rather
+than from a status column, so a receipt, a credit note and a write-off all
+reduce it without anything being maintained by hand.</p>
+
+<div class="panel strip">
+  ${['not_due', 'd0_30', 'd31_60', 'd61_90', 'd90_plus'].map((k) =>
+    `<div class="stat"><b class="${
+      k === 'd90_plus' && buckets[k] ? 'bad' : k === 'd61_90' && buckets[k] ? 'warn' : ''
+    }">${rupees(buckets[k] ?? 0n)}</b><span>${RBUCKET_LABEL[k]}</span></div>`).join('')}
+  <div class="stat"><b>${rupees(total)}</b><span>total receivable</span></div>
+</div>
+
+${a.invoices.length === 0
+  ? '<p class="sub mt">Nothing outstanding.</p>'
+  : `<div class="panel mt" style="padding:0"><table>
+      <tr><th>Customer</th><th>Invoice</th><th>Due</th><th class="num">Age</th>
+          <th class="num">Outstanding</th><th></th></tr>
+      ${rows}
+    </table></div>`}
+
+<script>
+const toggle = (btn, prefix) => {
+  const row = document.getElementById(prefix + btn.dataset.v);
+  row.hidden = !row.hidden;
+};
+document.querySelectorAll('button.rcv').forEach((b) => {
+  b.onclick = () => {
+    toggle(b, 'rf_');
+    const d = document.querySelector('#rf_' + b.dataset.v + ' .r-date');
+    if (!d.value) d.value = new Date().toISOString().slice(0, 10);
+  };
+});
+document.querySelectorAll('button.woff').forEach((b) => {
+  b.onclick = () => {
+    toggle(b, 'wf_');
+    const d = document.querySelector('#wf_' + b.dataset.v + ' .w-date');
+    if (!d.value) d.value = new Date().toISOString().slice(0, 10);
+  };
+});
+
+document.querySelectorAll('button.r-go').forEach((b) => {
+  b.onclick = async () => {
+    const box = document.getElementById('rf_' + b.dataset.v);
+    const out = box.querySelector('.r-out');
+    const v = (cls) => box.querySelector(cls).value.trim();
+    b.disabled = true; out.textContent = 'Recording…';
+    const r = await post('/api/receivables/receipt', {
+      invoiceVoucherId: b.dataset.v, amount: v('.r-amt'),
+      tdsWithheld: v('.r-tds') || '0',
+      receivedIntoAccountId: v('.r-acct'), receiptDate: v('.r-date'),
+      reference: v('.r-ref') || undefined,
+    });
+    b.disabled = false;
+    if (!r.ok) { out.innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
+    out.innerHTML = '<span class="good">' +
+      (r.fullySettled ? 'Settled in full.' : r.outstandingAfter + ' still owed.') +
+      '</span>';
+    if ((r.warnings || []).length) {
+      out.innerHTML += '<div class="muted small">' +
+        r.warnings.map((w) => w.replace(/</g, '&lt;')).join(' ') + '</div>';
+    }
+    setTimeout(() => location.reload(), (r.warnings || []).length ? 6000 : 900);
+  };
+});
+
+document.querySelectorAll('button.w-go').forEach((b) => {
+  b.onclick = async () => {
+    const box = document.getElementById('wf_' + b.dataset.v);
+    const out = box.querySelector('.w-out');
+    const v = (cls) => box.querySelector(cls).value.trim();
+    if (!v('.w-why')) { out.textContent = 'Say why first.'; return; }
+    b.disabled = true; out.textContent = 'Writing off…';
+    const r = await post('/api/receivables/write-off', {
+      invoiceVoucherId: b.dataset.v, amount: v('.w-amt'),
+      writeOffDate: v('.w-date'), reason: v('.w-why'),
+    });
+    b.disabled = false;
+    if (!r.ok) { out.innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
+    out.innerHTML = '<div class="muted small">' +
+      (r.warnings || []).map((w) => w.replace(/</g, '&lt;')).join(' ') + '</div>';
+    setTimeout(() => location.reload(), 7000);
+  };
+});
+</script>`;
+}
+
+export function renderStatement(a: {
+  customer: string;
+  closing: string;
+  lines: Array<{ date: string; voucherType: string; reference: string;
+                 narration: string; debit: string; credit: string;
+                 balance: string }>;
+}): string {
+  return `<h1>${esc(a.customer)}</h1>
+<p class="sub">Their account with this client, oldest first. Built from the
+ledger rather than from the invoices — a statement that left out a receipt or a
+credit note would be worse than none.</p>
+
+<div class="panel strip">
+  <div class="stat"><b class="${a.closing === '0.00' ? 'good' : ''}">${inr(a.closing)}</b>
+    <span>balance owed</span></div>
+</div>
+
+<div class="panel mt" style="padding:0"><table>
+  <tr><th>Date</th><th>Document</th><th>Detail</th>
+      <th class="num">Debit</th><th class="num">Credit</th>
+      <th class="num">Balance</th></tr>
+  ${a.lines.map((l) => `<tr>
+    <td>${esc(l.date)}</td>
+    <td class="mono">${esc(l.reference)}<div class="muted small">${esc(l.voucherType)}</div></td>
+    <td class="muted small">${esc(l.narration)}</td>
+    <td class="num">${l.debit === '0.00' ? '' : inr(l.debit)}</td>
+    <td class="num">${l.credit === '0.00' ? '' : inr(l.credit)}</td>
+    <td class="num">${inr(l.balance)}</td></tr>`).join('')}
+</table></div>
+<p class="sub"><a href="/receivables">← back to receivables</a></p>`;
 }
 
 // ---------------------------------------------------------------------------

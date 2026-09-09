@@ -83,12 +83,27 @@ describe('signing in', () => {
     /*
      * A uniform failure. A different message for each turns a login form into
      * a directory of who banks with which CA.
+     *
+     * On its OWN user, because the lockout is keyed by the email tried — using
+     * the shared one made this depend on how many failures neighbouring tests
+     * had already recorded, and it eventually read 'locked' instead.
      */
-    const wrong = await login(firmUserEmail, 'not-the-password-at-all');
-    const nobody = await login('nobody@example.test', GOOD);
+    const tag = randomUUID().slice(0, 8);
+    const email = `uniform-${tag}@example.test`;
+    const u = (await ownerPool.query<{ id: string }>(
+      `INSERT INTO users (firm_id, email, display_name, role)
+       VALUES ($1,$2,'Uniform','ca_staff') RETURNING id`,
+      [t.firmId, email])).rows[0]!.id;
+    await setPassword(u, GOOD);
+
+    const wrong = await login(email, 'not-the-password-at-all');
+    const nobody = await login(`nobody-${tag}@example.test`, GOOD);
     expect(wrong.ok).toBe(false);
     expect(nobody.ok).toBe(false);
-    if (!wrong.ok && !nobody.ok) expect(wrong.reason).toBe(nobody.reason);
+    if (!wrong.ok && !nobody.ok) {
+      expect(wrong.reason).toBe('bad_credentials');
+      expect(nobody.reason).toBe('bad_credentials');
+    }
   });
 
   it('issues a session whose token is not what is stored', async () => {

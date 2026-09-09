@@ -852,6 +852,56 @@ cannot exist without a named approver — and the name it was enforcing came fro
   than none — a reset flow with a guessable token is a back door with a
   friendly name.
 
+**BE-40 — The receivable side exists, and the money a customer withheld is an
+asset, not a shortfall.**
+
+A sales invoice debited Debtors and the trail ended there: no ageing, no
+statement, no way to record a receipt except by matching a bank line. Backwards
+for the client whose books these are — "who has not paid me" is the daily
+question and "who do I owe" is the monthly one.
+
+Outstanding is read from the LEDGER, never a status column, exactly as payables
+does: the invoice's own receivable debit less everything that has since settled
+it. A credit note, a receipt and a write-off all reduce it through the same
+`settles_voucher_id` link, so none of them needs a special case.
+
+- **TDS withheld by the CUSTOMER is the case that matters.** ₹1,08,000 arriving
+  against a ₹1,18,000 invoice is usually not a short payment: the ₹10,000 is
+  tax already paid to the government in the client's name, it is an asset they
+  claim in their return, and the invoice is fully discharged. So the receipt
+  credits the receivable by cash PLUS withholding, and debits TDS Receivable
+  for the difference. Crediting only the cash leaves the invoice open forever
+  and the client chasing a debt that was already settled.
+- **It is ASKED, never inferred from the difference.** A short payment and a
+  withholding are identical in a bank statement and mean opposite things — a
+  debt still owed against an asset already earned — and only the customer's
+  advice or their Form 16A settles which it is. So a plain part-payment stays a
+  part-payment.
+- **And it is checked against 26AS before it is claimed.** A withholding the
+  customer never actually deposited is a credit the client cannot take, and
+  only Form 26AS shows whether they did.
+- **Only entries against the RECEIVABLE settle it.** The TDS leg carries the
+  invoice id so a withholding can be traced to the invoice it came off — and
+  that leg is a DEBIT, so a settlement sum that counted every tagged entry
+  subtracted it and reported the invoice ₹10,000 more outstanding than it was.
+  The same latent bug sat on the payables side, dormant only because every
+  caller happened to tag just the payable leg; both are now filtered by account
+  type, which makes the rule structural rather than a convention.
+- **Over-receipt is refused.** More than is owed leaves a credit balance the
+  ageing cannot explain. An overpayment is an advance against the next invoice,
+  which is a different document.
+- **A bad debt is an expense, not a disappearance** (Lesson 4), with a reason
+  recorded — a write-off with no reason is indistinguishable from money going
+  missing, and it is the first thing an auditor asks about.
+- **The GST on a written-off debt is NOT recoverable.** It became payable at
+  the time of supply and India has no bad-debt relief in GST, so the write-off
+  includes tax already paid on money that never arrived. Nothing is adjusted in
+  GSTR-1 or GSTR-3B, and issuing a credit note instead to recover it would be
+  a false statement that the supply was cancelled.
+- **A statement is built from the LEDGER, not from the invoices.** It is what
+  gets sent when a customer disputes what they owe, and one that omitted a
+  receipt or a credit note would be worse than none.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1333,6 +1383,10 @@ In addition to the GL Engine's V-1…V-13:
 | AU-1 | A password is at least 12 characters, stored only as a salted scrypt verifier, and an issued one is good for a single sign-in (BE-39) |
 | AU-2 | Every request resolves its own session; a client-scoped user cannot leave their client and no user can leave their firm (BE-39) |
 | AU-3 | Every state-changing request is same-origin; sign-in, sign-out and password changes are audited (BE-39) |
+| RV-1 | A receipt or write-off points at an invoice with a receivable, of this client (BE-40) |
+| RV-2 | A receipt and a write-off are for a positive amount; money going the other way is a refund or a credit note |
+| RV-3 | Cash plus tax withheld does not exceed what the invoice still owes; an overpayment is an advance, not a receipt |
+| RV-4 | A write-off states why the debt is uncollectable, and includes the GST, which is not recoverable (BE-40) |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 

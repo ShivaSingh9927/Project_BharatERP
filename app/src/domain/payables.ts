@@ -75,9 +75,20 @@ export async function outstandingBills(
             WHERE le.voucher_id = pb.voucher_id AND a.account_type = 'payable'
          ) orig ON true
          LEFT JOIN LATERAL (
+           /*
+            * Only entries against the PAYABLE itself settle it.
+            *
+            * Dormant here today because every caller tags only the payable
+            * leg — and a landmine for that reason. The receivables side hit it
+            * for real: a TDS leg tagged with the invoice so the withholding
+            * could be traced back to it was counted as a settlement of the
+            * wrong sign. The account test makes the rule structural rather
+            * than a convention every future caller has to know.
+            */
            SELECT SUM(le.debit - le.credit) AS amt
-             FROM ledger_entries le
+             FROM ledger_entries le JOIN accounts a ON a.id = le.account_id
             WHERE le.settles_voucher_id = pb.voucher_id
+              AND a.account_type = 'payable'
          ) setl ON true
         WHERE pb.client_id = $1
           AND (orig.amt - COALESCE(setl.amt, 0)) > 0.005
@@ -165,7 +176,9 @@ export async function recordPayment(
       `SELECT le.account_id, le.party_id, pb.bill_number, pt.pan, pt.gstin,
               (COALESCE(SUM(le.credit - le.debit) OVER (), 0)
                - COALESCE((SELECT SUM(s.debit - s.credit) FROM ledger_entries s
-                            WHERE s.settles_voucher_id = pb.voucher_id), 0))::text
+                             JOIN accounts sa ON sa.id = s.account_id
+                            WHERE s.settles_voucher_id = pb.voucher_id
+                              AND sa.account_type = 'payable'), 0))::text
                 AS outstanding
          FROM ledger_entries le
          JOIN accounts a ON a.id = le.account_id
