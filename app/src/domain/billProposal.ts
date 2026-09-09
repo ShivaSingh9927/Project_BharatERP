@@ -47,6 +47,7 @@ import { withFirm } from '../db/pool.ts';
 import { validateGstin } from './gstin.ts';
 import { paise, money, STATUTORY_RATES } from './tax.ts';
 import { partyRcmRate, PROVISION_TEXT, type RcmProvision } from './partyRcm.ts';
+import { assessTdsOnBill, type TdsAssessment } from './tdsOnBill.ts';
 import { parseAmount } from '../parse/values.ts';
 import { createBill, contentHash, type CreateBillInput, type BillLineInput,
          type CreatedBill } from './bills.ts';
@@ -110,6 +111,15 @@ export interface BillProposal {
    * question cannot be clicked past.
    */
   confirmations: Confirmation[];
+  /**
+   * Whether this bill attracts TDS, and how much (BE-36).
+   *
+   * Computed on the accounts the proposal CURRENTLY points at, which on a
+   * fresh upload is the default expense head — so it is a heads-up rather than
+   * the last word. The binding check is in `createBill`, after the reviewer has
+   * classified the lines, because classification is what picks the section.
+   */
+  tds: TdsAssessment | null;
   /** Present only when `blockers` is empty. */
   input: CreateBillInput | null;
   /**
@@ -264,6 +274,19 @@ export interface ProposeInput {
   parser?: ParserClient;
   /** What a reviewer filled in after a refusal — see `ManualEntry`. */
   manual?: ManualEntry;
+  /**
+   * The account each line posts to, as the reviewer classified it.
+   *
+   * Threaded into the PROPOSAL rather than applied to it afterwards, because
+   * two things hang off the account and both were being decided later than
+   * they were shown: whether input credit is claimable, and which TDS section
+   * applies. A bill reclassified from Purchases to Professional Fees attracts
+   * 10% that the card never mentioned until the post was refused.
+   *
+   * Shorter than the line count, or holding nulls, is fine — those lines fall
+   * back to `expenseAccountId`.
+   */
+  lineAccounts?: Array<string | null>;
   /**
    * A layout model that returns real tables from a photograph, where OCR rows
    * cannot be reassembled into one. Sends the document to a third party, so it
@@ -649,6 +672,22 @@ async function findOverseasSupplier(
  */
 const NOTIFIED_RCM_SERVICE =
   /\b(?:advocate|advocates|legal\s+(?:service|fee|consultanc)|goods\s+transport|\bGTA\b|transport\s+agency|sponsorship|arbitral|security\s+service|director(?:'?s)?\s+(?:fee|remuneration|sitting)|recovery\s+agent|insurance\s+agent)/i;
+
+/**
+ * The account a line posts to: what the reviewer chose for it, else the
+ * whole-bill default.
+ *
+ * `lines.length` is the index of the line about to be pushed, so the reviewer's
+ * nth pick lands on the nth line. That alignment holds because the proposal is
+ * deterministic in its inputs — the re-run at post time produces the lines in
+ * the same order the reviewer saw them.
+ */
+function accountForLine(
+  input: { expenseAccountId: string; lineAccounts?: Array<string | null> },
+  index: number,
+): string {
+  return input.lineAccounts?.[index] ?? input.expenseAccountId;
+}
 
 /** A PDF, by its own first bytes rather than by what the upload claimed. */
 function isPdf(file: Buffer): boolean {
@@ -1553,7 +1592,7 @@ export async function proposeFromDocument(
           unitPrice: tv,
           quantity: '1',
           gstRate: perLine[i]!,
-          expenseAccountId: input.expenseAccountId,
+          expenseAccountId: accountForLine(input, lines.length),
           chargedTax: chargedOn(row),
         });
       }
@@ -1623,7 +1662,7 @@ export async function proposeFromDocument(
           unitPrice: rcm ? toRupees(tv, fxRate!) : tv,
           quantity: '1',
           gstRate: rate,
-          expenseAccountId: input.expenseAccountId,
+          expenseAccountId: accountForLine(input, lines.length),
           /*
            * The tax as printed on this very row, so the ledger records the
            * supplier's figure rather than our re-derivation of it.
@@ -1722,12 +1761,67 @@ export async function proposeFromDocument(
       'self-invoice is not generated yet and has to be raised separately.');
   }
 
+  /*
+   * Does this bill attract TDS?
+   *
+   * Asked here so the reviewer sees it on the card rather than discovering it
+   * when the post is refused. It is deliberately NOT the gate: the accounts
+   * these lines point at are still the default head, and the reviewer is about
+   * to reclassify them — which is the act that picks the section. `createBill`
+   * re-assesses on the final accounts and refuses an undecided deduction
+   * there, so nothing can slip through by changing an account after this.
+   *
+   * A failure here is swallowed. A bill that reads perfectly must not be
+   * blocked because a fiscal year is missing or a TDS master row is absent —
+   * both surface with their own message further down.
+   */
+  let tds: TdsAssessment | null = null;
+  if (partyId !== null && dateRead.date && lines.length > 0) {
+    try {
+      tds = await withFirm(firmId, async (c) => {
+        const fy = await c.query<{ fy: string }>(
+          'SELECT resolve_open_fiscal_year($1, $2) AS fy',
+          [input.clientId, dateRead.date!]);
+        return assessTdsOnBill(c, {
+          clientId: input.clientId, partyId: partyId!,
+          fiscalYearId: fy.rows[0]!.fy, billDate: dateRead.date!,
+          lines: lines.map((l) => ({
+            expenseAccountId: l.expenseAccountId, taxableValue: l.unitPrice,
+          })),
+        });
+      });
+    } catch { tds = null; }
+  }
+
+  if (tds !== null) {
+    if (tds.computation !== null && paise(tds.computation.tdsAmount) > 0n) {
+      /*
+       * A CONFIRMATION, not a warning and not a silent deduction.
+       *
+       * Silent would be wrong twice over: it withholds a supplier's money on a
+       * classification this software chose, and it hides the one decision a CA
+       * is actually paid to make. A warning would be worse than either — this
+       * bill already carries five, and the fifth is not read.
+       */
+      confirmations.push({
+        field: 'tds_deduction',
+        chose: `withhold ${tds.computation.tdsAmount}`,
+        instead: 'post gross, deducting nothing',
+        question: tds.question,
+      });
+    } else if (tds.computation === null) {
+      // A mixed-head or turnover-gated bill: nothing computed, and the reason
+      // has to reach the reviewer or it looks like no TDS was due.
+      warnings.push(tds.question);
+    }
+  }
+
   const ready = blockers.length === 0;
   return {
     index: seg.index, pages: seg.pages,
     documentNumber, supplierGstin: seg.supplierGstin,
     fileHash, taxProfile: profile, table, partyId, partyName, registration,
-    blockers, warnings, confirmations, readBy, llmProvenance, crossChecked,
+    blockers, warnings, confirmations, readBy, llmProvenance, crossChecked, tds,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {
       clientId: input.clientId,
@@ -1784,6 +1878,14 @@ export async function postProposal(
      * the alternative.
      */
     confirm?: Record<string, string>;
+    /**
+     * The TDS decision, when the reviewer classified the lines AFTER the
+     * proposal was made and so answered a question this proposal never asked.
+     *
+     * Outranks the confirmation answer: it is the later decision, made against
+     * the accounts actually being posted to.
+     */
+    tds?: { category: string; deduct: boolean };
   },
 ): Promise<CreatedBill> {
   if (proposal.input === null) {
@@ -1816,11 +1918,28 @@ export async function postProposal(
         'a different edit, and belongs on the bill rather than here.', 'PB-8');
     }
   }
+  /*
+   * The TDS answer becomes the posting decision (BE-36).
+   *
+   * The confirmation offered two readings — withhold, or post gross — and
+   * whichever was chosen has to reach `createBill`, because that is where the
+   * deduction is computed and the gate lives. An answer of "post gross" is
+   * carried EXPLICITLY rather than by omission: omitting it would look
+   * identical to nobody having been asked, and the gate would refuse.
+   */
+  const tdsQuestion = proposal.confirmations.find((c) => c.field === 'tds_deduction');
+  const tdsDecision = tdsQuestion === undefined || proposal.tds === null
+    ? undefined
+    : { category: proposal.tds.category,
+        deduct: answers['tds_deduction'] === tdsQuestion.chose };
+
   const bill = await createBill(firmId, {
     ...proposal.input,
     // A confirmed answer outranks what was read; an explicit override outranks
     // both, because a reviewer can see things neither could.
     billDate: opts.billDate ?? answers['billDate'] ?? proposal.input.billDate,
+    ...(tdsDecision === undefined ? {} : { tds: tdsDecision }),
+    ...(opts.tds === undefined ? {} : { tds: opts.tds }),
     approvedBy: opts.approvedBy,
   });
 

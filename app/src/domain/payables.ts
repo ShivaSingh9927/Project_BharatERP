@@ -19,6 +19,8 @@ import { withFirm } from '../db/pool.ts';
 import { postVoucher } from './posting.ts';
 import { paise, money } from './tax.ts';
 import { ValidationError } from './types.ts';
+import { resolveAndComputeTds, type EntityType, type TdsComputation } from './tds.ts';
+import { entityTypeFromPan, recordTdsDeduction } from './tdsOnBill.ts';
 
 export type AgeBucket = 'not_due' | 'd0_30' | 'd31_60' | 'd61_90' | 'd90_plus';
 
@@ -114,6 +116,9 @@ export interface PaymentResult {
   paid: string;
   outstandingAfter: string;
   fullySettled: boolean;
+  /** Withheld on this payment, when the bill did not deduct on credit. */
+  tds: string | null;
+  warnings: string[];
 }
 
 /**
@@ -134,15 +139,30 @@ export async function recordPayment(
     clientId: string; billVoucherId: string; amount: string;
     paidFromAccountId: string; paymentDate: string;
     createdBy: string; reference?: string;
+    /**
+     * Withhold TDS on THIS payment, for a bill that did not deduct on credit.
+     *
+     * The usual path is that it did — s.194 charges the deduction at the
+     * earlier of credit and payment, and booking the bill is the credit
+     * (BE-36). This is the second limb, for a bill posted before that existed
+     * or one a reviewer knowingly posted gross and is now correcting.
+     *
+     * A bill that already deducted CANNOT deduct again: the unique index on
+     * `tds_deductions.bill_voucher_id` refuses it, and this refuses it first
+     * with something a human can read.
+     */
+    tds?: { category: string; entityType?: EntityType };
   },
 ): Promise<PaymentResult> {
   return withFirm(firmId, async (c) => {
     // The bill's payable line — its account, its party, and what is still owed.
     const r = await c.query<{
       account_id: string; party_id: string; bill_number: string;
-      outstanding: string;
+      outstanding: string; pan: string | null; gstin: string | null;
     }>(
-      `SELECT le.account_id, le.party_id, pb.bill_number,
+      // The supplier's PAN comes along for the ride: TDS rates split on the
+      // payee's constitution, and a GSTIN carries the PAN inside it.
+      `SELECT le.account_id, le.party_id, pb.bill_number, pt.pan, pt.gstin,
               (COALESCE(SUM(le.credit - le.debit) OVER (), 0)
                - COALESCE((SELECT SUM(s.debit - s.credit) FROM ledger_entries s
                             WHERE s.settles_voucher_id = pb.voucher_id), 0))::text
@@ -150,6 +170,7 @@ export async function recordPayment(
          FROM ledger_entries le
          JOIN accounts a ON a.id = le.account_id
          JOIN purchase_bills pb ON pb.voucher_id = le.voucher_id
+         JOIN parties pt ON pt.id = pb.party_id
         WHERE le.voucher_id = $1 AND a.account_type = 'payable'
         LIMIT 1`,
       [input.billVoucherId]);
@@ -163,6 +184,39 @@ export async function recordPayment(
     const outstanding = paise(bill.outstanding);
     const amount = paise(input.amount);
 
+    /*
+     * Was this bill already deducted, on its credit?
+     *
+     * Checked before the amount, because "you cannot deduct twice" tells a
+     * caller something they did not know, while "that exceeds the outstanding"
+     * is the symptom — on a bill already settled net of tax, both are true and
+     * only the first is useful.
+     *
+     * Worth SAYING even when no deduction was asked for: a reviewer looking at
+     * ₹1,62,000 outstanding on a ₹1,77,000 invoice needs to know the missing
+     * ₹15,000 is tax already withheld and not a hole in the ageing.
+     */
+    const already = await c.query<{ tds_amount: string; code: string }>(
+      `SELECT d.tds_amount::text, s.code FROM tds_deductions d
+         JOIN tds_sections s ON s.id = d.section_id
+        WHERE d.bill_voucher_id = $1`, [input.billVoucherId]);
+    const priorDeduction = already.rows[0];
+    const warnings: string[] = [];
+
+    if (input.tds && priorDeduction && paise(priorDeduction.tds_amount) > 0n) {
+      throw new ValidationError(
+        `bill ${bill.bill_number} already had TDS of ${priorDeduction.tds_amount} ` +
+        `withheld under ${priorDeduction.code} when it was booked, and the ` +
+        'supplier is credited net of it. Withholding again here would deduct ' +
+        'twice on one credit and short-pay the supplier.', 'PB-12');
+    }
+    if (priorDeduction && paise(priorDeduction.tds_amount) > 0n) {
+      warnings.push(
+        `TDS of ${priorDeduction.tds_amount} was already withheld on this bill ` +
+        `under ${priorDeduction.code}, so the outstanding is net of it — this ` +
+        'payment settles what the supplier is owed, not the invoice total.');
+    }
+
     if (amount <= 0n) {
       throw new ValidationError('a payment must be greater than zero.', 'BV-3');
     }
@@ -173,11 +227,63 @@ export async function recordPayment(
         'balance the ageing cannot explain.', 'BV-4');
     }
 
+    // --- TDS, on the payment limb ------------------------------------------
+    let withheld = 0n;
+    let computation: TdsComputation | null = null;
+
+    if (input.tds) {
+      const fy = await c.query<{ fy: string }>(
+        'SELECT resolve_open_fiscal_year($1, $2) AS fy',
+        [input.clientId, input.paymentDate]);
+      computation = await resolveAndComputeTds(c, {
+        clientId: input.clientId, partyId: bill.party_id,
+        fiscalYearId: fy.rows[0]!.fy,
+        category: input.tds.category,
+        entityType: input.tds.entityType ?? entityTypeFromPan(bill.pan ?? bill.gstin?.slice(2, 12)),
+        paymentAmount: input.amount, paymentDate: input.paymentDate,
+      });
+      if (computation === null) {
+        throw new ValidationError(
+          `no TDS section covers "${input.tds.category}" on ` +
+          `${input.paymentDate}. Nothing has been withheld and nothing has ` +
+          'been posted.', 'PB-10');
+      }
+      withheld = paise(computation.tdsAmount);
+      if (withheld >= amount) {
+        throw new ValidationError(
+          `TDS of ${computation.tdsAmount} is at least the ${money(amount)} ` +
+          'being paid, which would leave the supplier nothing. That happens ' +
+          'when the threshold-crossing deduction lands on a small payment — ' +
+          'it is correct arithmetic and the wrong payment to take it from. ' +
+          'Deduct it on the bill instead.', 'PB-12');
+      }
+      if (withheld > 0n) {
+        warnings.push(
+          `TDS of ${computation.tdsAmount} was withheld on this PAYMENT rather ` +
+          `than on the bill's credit — ${computation.explanation}. Deducting ` +
+          'on the credit is the earlier of the two limbs and the one the ' +
+          'section normally bites on; this is late if the bill was booked in ' +
+          'an earlier month.');
+      }
+    }
+
+    /*
+     * The payable is cleared by the FULL amount; the bank parts with the net.
+     *
+     *   Creditors    Dr  amount
+     *       TDS Payable      Cr  withheld
+     *       Bank             Cr  amount − withheld
+     *
+     * The debit is the whole `amount` because that is what the supplier's
+     * account is being relieved of — the withheld part is now owed to the
+     * government instead, not still owed to them.
+     */
     const posted = await postVoucher(firmId, {
       clientId: input.clientId,
       voucherType: 'payment',
       postingDate: input.paymentDate,
       narration: `Payment against bill ${bill.bill_number}` +
+        (withheld > 0n && computation ? `, TDS ${computation.code} withheld` : '') +
         (input.reference ? ` (${input.reference})` : ''),
       createdBy: input.createdBy,
       createdVia: 'ui',
@@ -187,9 +293,24 @@ export async function recordPayment(
           partyType: 'supplier', partyId: bill.party_id,
           settlesVoucherId: input.billVoucherId,
         },
-        { accountId: input.paidFromAccountId, credit: money(amount) },
+        ...(withheld > 0n
+          ? [{ accountId: await tdsPayableAccount(c, input.clientId),
+               credit: money(withheld) }]
+          : []),
+        { accountId: input.paidFromAccountId, credit: money(amount - withheld) },
       ],
     });
+
+    if (computation) {
+      await recordTdsDeduction(c, {
+        firmId, clientId: input.clientId, voucherId: posted.id,
+        billVoucherId: input.billVoucherId, partyId: bill.party_id,
+        fiscalYearId: (await c.query<{ fy: string }>(
+          'SELECT resolve_open_fiscal_year($1, $2) AS fy',
+          [input.clientId, input.paymentDate])).rows[0]!.fy,
+        deductedOn: 'payment', computation,
+      });
+    }
 
     const after = outstanding - amount;
     return {
@@ -197,6 +318,20 @@ export async function recordPayment(
       paid: money(amount),
       outstandingAfter: money(after),
       fullySettled: after === 0n,
+      tds: withheld > 0n && computation ? computation.tdsAmount : null,
+      warnings,
     };
   });
+}
+
+async function tdsPayableAccount(
+  c: import('pg').PoolClient, clientId: string,
+): Promise<string> {
+  const r = await c.query<{ id: string }>(
+    `SELECT id FROM accounts WHERE client_id = $1
+       AND account_type = 'tds_payable' AND NOT is_group LIMIT 1`, [clientId]);
+  if (r.rowCount === 0) {
+    throw new ValidationError('TDS Payable account not in chart', 'PB-10');
+  }
+  return r.rows[0]!.id;
 }

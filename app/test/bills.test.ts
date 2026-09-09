@@ -544,48 +544,172 @@ describe('bill creation and GL posting (§9)', () => {
 });
 
 // ---------------------------------------------------------------------------
-describe('supplier payment with TDS (Lesson 6)', () => {
-  it('withholds TDS and pays the net amount', async () => {
-    await createBill(t.firmId, {
+describe('TDS on the bill, at the point of credit (BE-36, Lesson 6)', () => {
+  let billVoucher: string;
+
+  it('refuses to post a bill that attracts TDS without a decision', async () => {
+    /*
+     * The hole this closes. This bill used to post in full and be paid in
+     * full, and nothing anywhere mentioned the tax the client was required to
+     * keep back — discovered, if ever, by a notice.
+     */
+    await expect(createBill(t.firmId, {
       clientId: t.clientId, partyId: contractor,
-      billNumber: 'GC/2026/001', billDate: '2026-06-01',
-      lines: [{ description: 'Site works', unitPrice: '150000', gstRate: '18',
+      billNumber: 'GC/2026/000', billDate: '2026-06-01',
+      lines: [{ description: 'Consultancy', unitPrice: '150000', gstRate: '18',
                 expenseAccountId: A('Professional Fees') }],
       createdBy: t.userId,
-    });
+    })).rejects.toThrow(/PB-12.*15000\.00 is deductible/s);
+  });
 
-    const pay = await paySupplier(t.firmId, {
-      clientId: t.clientId, partyId: contractor, paymentDate: '2026-06-15',
-      amount: '150000', bankAccountId: A('Bank Accounts'),
+  it('withholds on the credit and credits the supplier net', async () => {
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: contractor,
+      billNumber: 'GC/2026/001', billDate: '2026-06-01',
+      lines: [{ description: 'Consultancy', unitPrice: '150000', gstRate: '18',
+                expenseAccountId: A('Professional Fees') }],
       createdBy: t.userId,
-      tdsCategory: 'Professional Fees', entityType: 'company',
+      tds: { category: 'Professional Fees', deduct: true },
     });
+    billVoucher = bill.voucherId;
 
-    expect(pay.tds).toBe('15000.00');            // 10% of 150,000
-    expect(pay.net).toBe('135000.00');
-    expect(pay.tdsComputation?.thresholdCrossed).toBe(true);
+    // 10% of the TAXABLE value — not of the 1,77,000 grand total. TDS is
+    // deducted excluding GST where the GST is shown separately (Circular
+    // 23/2017); on the total it would over-withhold by 2,700.
+    expect(bill.tds?.amount).toBe('15000.00');
+    expect(bill.tds?.category).toBe('Professional Fees');
 
     const rows = await withFirm(t.firmId, (c) => c.query(
       `SELECT a.name, le.debit::text, le.credit::text
        FROM ledger_entries le JOIN accounts a ON a.id = le.account_id
-       WHERE le.voucher_id = $1`, [pay.voucherId]));
+       WHERE le.voucher_id = $1`, [bill.voucherId]));
     const byName = Object.fromEntries(rows.rows.map((r) => [r.name, r]));
 
-    expect(byName['Creditors'].debit).toBe('150000.00');
+    // 1,50,000 + 27,000 GST = 1,77,000, less 15,000 withheld.
+    expect(byName['Creditors'].credit).toBe('162000.00');
     expect(byName['TDS Payable'].credit).toBe('15000.00');
-    expect(byName['Bank Accounts'].credit).toBe('135000.00');
+    expect(byName['Professional Fees'].debit).toBe('150000.00');
   });
 
-  it('accumulates cumulative totals across payments to the same party', async () => {
-    const second = await paySupplier(t.firmId, {
-      clientId: t.clientId, partyId: contractor, paymentDate: '2026-07-15',
+  it('shows the supplier owed the NET on the ageing', async () => {
+    // The ageing reads the payable actually posted, so it needs no special
+    // case — but a reviewer must not read 1,62,000 as a mistake.
+    const open = await outstandingBills(t.firmId, t.clientId);
+    const gc = open.find((b) => b.billNumber === 'GC/2026/001');
+    expect(gc?.outstanding).toBe('162000.00');
+  });
+
+  it('pays the net without deducting a second time', async () => {
+    const pay = await recordPayment(t.firmId, {
+      clientId: t.clientId, billVoucherId: billVoucher, amount: '162000',
+      paidFromAccountId: A('Bank Accounts'), paymentDate: '2026-06-15',
+      createdBy: t.userId,
+    });
+    expect(pay.tds).toBeNull();
+    expect(pay.fullySettled).toBe(true);
+    // And it says why the payment is not the invoice total.
+    expect(pay.warnings.join(' ')).toMatch(/already withheld on this bill/);
+  });
+
+  it('refuses to withhold again on a bill already deducted', async () => {
+    await expect(recordPayment(t.firmId, {
+      clientId: t.clientId, billVoucherId: billVoucher, amount: '1',
+      paidFromAccountId: A('Bank Accounts'), paymentDate: '2026-06-16',
+      createdBy: t.userId,
+      tds: { category: 'Professional Fees' },
+    })).rejects.toThrow(/already had TDS/);
+  });
+
+  it('records a declined deduction as a shortfall rather than hiding it', async () => {
+    /*
+     * A reviewer may know something the chart does not. Posting gross is
+     * allowed; posting gross INVISIBLY is not — a bill with no row would look
+     * exactly like one attracting no TDS, and the shortfall would surface as
+     * interest under s.201(1A).
+     */
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: contractor,
+      billNumber: 'GC/2026/002', billDate: '2026-08-01',
+      lines: [{ description: 'Consultancy', unitPrice: '20000', gstRate: '18',
+                expenseAccountId: A('Professional Fees') }],
+      createdBy: t.userId,
+      tds: { category: 'Professional Fees', deduct: false },
+    });
+    expect(bill.tds).toBeNull();                      // nothing withheld
+    expect(bill.warnings.join(' ')).toMatch(/was NOT withheld/);
+    expect(bill.warnings.join(' ')).toMatch(/s\.40\(a\)\(ia\)/);
+
+    const row = await withFirm(t.firmId, (c) => c.query<{
+      computed: string; taken: string; on: string }>(
+      `SELECT tds_computed::text AS computed, tds_amount::text AS taken,
+              deducted_on AS on
+         FROM tds_deductions WHERE bill_voucher_id = $1`, [bill.voucherId]));
+    expect(row.rows[0]!.computed).toBe('2000.00');    // what was due
+    expect(row.rows[0]!.taken).toBe('0.00');          // what was taken
+    expect(row.rows[0]!.on).toBe('credit');
+  });
+
+  it('takes the punitive rate when no PAN can be found', async () => {
+    // s.206AA, and not a penalty this software invented for missing data. The
+    // supplier here has neither a PAN nor a GSTIN to read one out of.
+    const noPan = await withFirm(t.firmId, async (c) => (await c.query<{ id: string }>(
+      `INSERT INTO parties (firm_id, client_id, party_type, name, legal_name,
+                            gstin, gst_category, state_code, ledger_account_id, created_by)
+       VALUES ($1,$2,'supplier','Anon Consulting','Anon Consulting',NULL,
+               'unregistered','27',$3,$4) RETURNING id`,
+      [t.firmId, t.clientId, A('Creditors'), t.userId])).rows[0]!.id);
+
+    await expect(createBill(t.firmId, {
+      clientId: t.clientId, partyId: noPan,
+      billNumber: 'AC/1', billDate: '2026-06-01',
+      lines: [{ description: 'Advice', unitPrice: '100000', gstRate: '0',
+                expenseAccountId: A('Professional Fees') }],
+      createdBy: t.userId,
+    })).rejects.toThrow(/20\.000%.*punitive/s);
+  });
+
+  it('does not deduct on a head that attracts no TDS', async () => {
+    // The default and the common case: most bills attract nothing, and this
+    // feature has to stay silent on them or it becomes a prompt on groceries.
+    const bill = await createBill(t.firmId, {
+      clientId: t.clientId, partyId: contractor,
+      billNumber: 'GC/2026/003', billDate: '2026-08-02',
+      lines: [{ description: 'Steel', unitPrice: '500000', gstRate: '18',
+                expenseAccountId: A('Raw Materials') }],
+      createdBy: t.userId,
+    });
+    expect(bill.tds).toBeNull();
+    expect(bill.warnings.join(' ')).not.toMatch(/TDS/);
+  });
+
+  it('still withholds on a direct payment with no bill behind it', async () => {
+    /*
+     * The OTHER limb. The section charges at the earlier of credit and
+     * payment, and an advance is paid before any bill exists — so
+     * `paySupplier` keeps its own deduction for that case.
+     */
+    const pay = await paySupplier(t.firmId, {
+      clientId: t.clientId, partyId: contractor, paymentDate: '2026-09-15',
       amount: '50000', bankAccountId: A('Bank Accounts'),
       createdBy: t.userId,
       tdsCategory: 'Professional Fees', entityType: 'company',
     });
-    // Threshold already crossed, so only this payment is charged: 10% of 50,000.
-    expect(second.tds).toBe('5000.00');
-    expect(second.tdsComputation?.cumulativeBefore).toBe('150000.00');
+    /*
+     * 7,000, not 5,000 — and the difference is the point.
+     *
+     * The running total is 1,70,000: the June bill's 1,50,000 plus the August
+     * bill's 20,000, whose base was recorded even though the reviewer declined
+     * to withhold on it. So the charge is 10% of 2,20,000 = 22,000, less the
+     * 15,000 actually withheld = 7,000. The 2,000 nobody deducted in August is
+     * caught up here.
+     *
+     * That is what recording a declined deduction buys: the shortfall does not
+     * disappear, it lands on the next deduction — which is exactly how the
+     * cumulative charge is meant to work.
+     */
+    expect(pay.tds).toBe('7000.00');
+    expect(pay.net).toBe('43000.00');
+    expect(pay.tdsComputation?.cumulativeBefore).toBe('170000.00');
   });
 });
 
@@ -717,6 +841,8 @@ describe('integrity after purchase activity', () => {
     expect(find('Input CGST Credit')!.rootType).toBe('asset');
     expect(Number(find('Input CGST Credit')!.debit)).toBeGreaterThan(0);
     expect(find('TDS Payable')!.rootType).toBe('liability');
-    expect(Number(find('TDS Payable')!.credit)).toBe(20000);   // 15,000 + 5,000
+    // 15,000 withheld on the June bill's credit + 7,000 on the September
+    // advance, the second of which caught up the 2,000 declined in August.
+    expect(Number(find('TDS Payable')!.credit)).toBe(22000);
   });
 });

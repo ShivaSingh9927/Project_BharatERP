@@ -7,6 +7,7 @@ import type { PoolClient } from 'pg';
 import { withFirm, ownerPool } from '../db/pool.ts';
 import { INDIA_COA, defaultNormalBalance, type CoaNode, type CoaRoot } from './indiaChartOfAccounts.ts';
 import type { RootType } from '../domain/types.ts';
+import { seedTdsHeads } from './tdsSections.ts';
 
 export interface SeededTenant {
   firmId: string;
@@ -151,6 +152,16 @@ export async function seedTenant(opts: {
   const { firmId, clientId, userId } = await createTenant(opts);
   const fiscalYearId = await createFiscalYear(firmId, clientId, opts.startYear);
   const accounts = await seedChartOfAccounts(firmId, clientId, userId);
+  /*
+   * Tagging the chart is part of creating it, not an optional extra.
+   *
+   * `seedItcEligibility` is still called separately by callers that want it,
+   * but the TDS heads are folded in here on purpose: a chart whose
+   * "Professional Fees" account does not know it is s.194J work will post a
+   * ₹2,00,000 bill with no mention of the ₹20,000 the client had to deduct,
+   * and nothing in the tests or the UI would look wrong.
+   */
+  await seedTdsHeads(clientId);
   return { firmId, clientId, userId, fiscalYearId, accounts };
 }
 

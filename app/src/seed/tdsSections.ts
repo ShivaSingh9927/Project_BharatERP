@@ -159,6 +159,53 @@ const ITC_RULES: Array<{
   { account: 'Insurance', eligibility: 'conditional', category: 'rent_a_cab_insurance' },
 ];
 
+/**
+ * Which TDS section each expense head falls under.
+ * Spec: bills-and-expenses.md BE-36
+ *
+ * The nature of the spend decides the section, and the chart of accounts is
+ * where the nature of the spend already lives — the same reasoning that puts
+ * `itc_eligibility` here. A reviewer classifying a bill to "Professional Fees"
+ * is choosing s.194J work at 10%; classifying it to "Contract Payments" is
+ * choosing 1% or 2%. That choice is the deduction, which is why it is theirs.
+ *
+ * The list is deliberately SHORT. Every account left untagged attracts no TDS,
+ * and that is the right default: the sections are a closed list and the chart
+ * is not.
+ */
+const TDS_HEADS: Array<{ account: string; category: string }> = [
+  { account: 'Professional Fees', category: 'Professional Fees' },
+  { account: 'Contract Payments', category: 'Contractor Payments' },
+  { account: 'Commission and Brokerage', category: 'Commission or Brokerage' },
+  { account: 'Office Rent', category: 'Rent on Land / Building' },
+];
+
+/*
+ * Two heads deliberately NOT tagged, both because tagging them would deduct
+ * where nothing is due:
+ *
+ *   Interest on Loan — s.194A excludes interest paid to a bank or a notified
+ *   financial institution, which is what nearly every entry in this account
+ *   is. Tagging it would withhold 10% of every EMI's interest component from
+ *   a bank that is owed all of it.
+ *
+ *   Salary — deducted at the employee's own average rate on estimated annual
+ *   income, which needs payroll. There is no row for it in `tds_sections` and
+ *   the comment above `SECTIONS` explains why.
+ */
+
+export async function seedTdsHeads(clientId: string): Promise<void> {
+  await ownerPool.query(
+    `UPDATE accounts SET tds_category = NULL
+      WHERE client_id = $1 AND root_type = 'expense' AND NOT is_group`,
+    [clientId]);
+  for (const h of TDS_HEADS) {
+    await ownerPool.query(
+      `UPDATE accounts SET tds_category = $2 WHERE client_id = $1 AND name = $3`,
+      [clientId, h.category, h.account]);
+  }
+}
+
 export async function seedItcEligibility(clientId: string): Promise<void> {
   // Everything is claimable until a rule says otherwise. Starting from
   // "eligible" and narrowing is the right default for an expense ledger: the

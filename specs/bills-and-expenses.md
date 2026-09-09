@@ -590,6 +590,87 @@ rules are:
   carefully as the one on screen. A form that quietly wrote it would be the
   same mistake as creating a party from a PDF.
 
+**BE-36 — TDS is deducted on the CREDIT, and a bill that attracts it cannot
+post without a decision.**
+
+The engine could compute a deduction and withhold one on a direct payment, but
+nothing noticed that a BILL attracted TDS. So a Rs 2,00,000 professional-fees
+bill posted in full, was paid in full, and nothing mentioned the Rs 20,000 the
+client was required to keep back. That is not a missing feature — the software
+was confidently silent about a liability, which is the failure this whole spec
+exists to prevent.
+
+**The deduction point is the credit, not the payment.** Every section in the
+master charges it "at the time of credit of such sum to the account of the
+payee or at the time of payment, whichever is earlier", and booking the bill IS
+the credit. For a March bill paid in May, deducting at payment is not late
+bookkeeping: the deduction was due in March, the deposit in April, and interest
+under s.201(1A) runs from March. `paySupplier` keeps the other limb, for money
+paid before any bill exists.
+
+- **The section comes from the CHART, the rate from the PAYEE.**
+  `accounts.tds_category` says what the spend is — Professional Fees is s.194J
+  work, Contract Payments is 194C — for the same reason `itc_eligibility` lives
+  there. The payee's constitution comes from the fourth character of their PAN,
+  which the rate tables split on: 1% for an individual or HUF, 2% for anyone
+  else. A GSTIN carries the PAN inside it, so a registered supplier's is
+  already on file; without reading it out, every registered vendor would take
+  the s.206AA punitive rate.
+- **No PAN means the punitive rate, and that is the law** (s.206AA), not a
+  penalty invented for missing data. It is also the safe direction:
+  over-deducting is recoverable by the payee in their return, while
+  under-deducting is the client's own liability plus interest.
+- **The base is the taxable value, excluding GST** (Circular 23/2017), and only
+  the lines whose own head attracts TDS. On the grand total, Rs 1,00,000 + 18%
+  at 10% over-withholds by Rs 1,800 every bill; on a bill mixing fees with
+  reimbursed travel, it would withhold tax on a reimbursement that bears none.
+- **The GATE is in `createBill`, not in the proposal.** The section follows from
+  how the lines are CLASSIFIED, and classification happens on the review screen
+  after the document has been read — a line moved from Purchases to
+  Professional Fees is the moment 10% becomes due. So the assessment runs on
+  every bill at posting, against the accounts actually being posted to, and a
+  deduction that is due with nobody having said yes or no does not post
+  (PB-12). The proposal asks the question early as a courtesy; it is not what
+  makes it unskippable.
+- **A confirmation, never a silent deduction.** Silent would withhold a
+  supplier's money on a classification this software chose. A warning would be
+  worse than either: the bill already carries five and the fifth is not read.
+- **A declined deduction is RECORDED, not hidden.** A reviewer may know
+  something the chart does not, and posting gross is allowed — posting gross
+  invisibly is not. The row carries what was due alongside what was taken, so
+  the shortfall can be listed; and because only what was actually withheld
+  counts as "already deducted", the next deduction catches it up. A nil
+  deduction is recorded for the same reason: the payment that crosses the
+  annual threshold charges tax on everything credited before it (BE-10), so a
+  below-threshold credit leaving no row would be invisible to the crossing.
+- **Deducted once. `tds_deductions.bill_voucher_id` is unique**, so a bill
+  withheld on credit cannot be withheld again on payment whatever the payment
+  path attempts — and `recordPayment` refuses first, with a sentence rather
+  than a constraint violation.
+- **The ageing needs no special case.** It reads the payable credit actually
+  posted, so a bill credited net of TDS shows the supplier owed the net — the
+  same property that already made reverse charge come out right. What it does
+  need is to SAY so, or Rs 1,62,000 outstanding on a Rs 1,77,000 invoice reads
+  as a hole in the ledger.
+- **Two heads on one bill is reported, not half-deducted.** Each would resolve
+  its own section, rate and running threshold, and nothing downstream —
+  certificate, return, challan — is built for one credit carrying two
+  deductions.
+- **s.194Q is never proposed.** TDS on the purchase of goods applies only where
+  our own client's preceding-year turnover exceeded Rs 10 crore. We do not hold
+  that figure and almost no client of this size crosses it, so proposing it
+  would put a deduction on every goods purchase a kirana shop makes. The
+  category stays usable by a caller who knows the test is met; what is refused
+  is guessing.
+- **Two heads are deliberately untagged.** Interest on Loan, because s.194A
+  excludes interest paid to a bank and that is what the account holds — tagging
+  it would withhold 10% of every EMI from a bank owed all of it. And Salary,
+  which is deducted at the employee's own average rate on estimated annual
+  income and needs payroll, not a rate table.
+- **Existing charts are backfilled by the migration.** A new column defaulting
+  to NULL would leave every client already in the database saying no head
+  attracts TDS — the feature silently off, indistinguishable from broken.
+
 ---
 
 ## 5. Extraction — the AI pipeline
@@ -1060,8 +1141,9 @@ In addition to the GL Engine's V-1…V-13:
 | PB-7 | ITC not claimed where `itc_eligibility = blocked` |
 | PB-8 | ITC not claimed where 2B status is `missing_in_2b`, unless CA explicitly overrides with a reason |
 | PB-9 | RCM bills post both liability and credit legs (§7.1) |
-| PB-10 | TDS computed using rate and thresholds effective on the payment date |
+| PB-10 | TDS computed using the rate and thresholds in force on the date the deduction falls due — the credit, or the payment where that is earlier (BE-36) |
 | PB-11 | Content hash not already present (BE-2) |
+| PB-12 | A bill whose expense heads attract TDS does not post until a human has said whether to withhold; a bill already deducted on its credit cannot be deducted again on payment (BE-36) |
 | PB-12 | AI-originated bill has a non-null approver (AT-13) |
 | PB-13 | Posting date in an open period |
 

@@ -18,6 +18,7 @@ const proposal = (blockers: string[], over: Partial<BillProposal> = {}): BillPro
                 resolvedKind: 'tax_invoice', reason: 'test' },
   table: { readable: false, roles: [], header: [], rows: [], totals: null, sums: {} },
   partyId: null, partyName: null, registration: null,
+  tds: null,
   blockers, warnings: [], confirmations: [], input: null,
   readBy: 'coordinates', crossChecked: 'off',
   ...over,

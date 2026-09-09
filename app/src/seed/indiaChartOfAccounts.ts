@@ -174,6 +174,15 @@ export const INDIA_COA: CoaRoot[] = [
           { name: 'Travel Expenses', accountType: 'general', expenseClass: 'opex', code: '5140' },
           { name: 'Utility Expenses', accountType: 'general', expenseClass: 'opex', code: '5150' },
           { name: 'Professional Fees', accountType: 'general', expenseClass: 'opex', code: '5160' },
+          /*
+           * Two heads that exist so a TDS section has something to attach to
+           * (BE-36) — the same argument as the conditional-ITC accounts below.
+           * A contractor's bill and a commission note are deducted under
+           * different sections at different rates, and a chart that posts both
+           * to "Professional Fees" would deduct 10% where 1% or 5% was due.
+           */
+          { name: 'Contract Payments', accountType: 'general', expenseClass: 'opex', code: '5165' },
+          { name: 'Commission and Brokerage', accountType: 'general', expenseClass: 'opex', code: '5166' },
           { name: 'Print and Stationery', accountType: 'general', expenseClass: 'opex', code: '5170' },
           { name: 'Bank Charges', accountType: 'general', expenseClass: 'opex', code: '5180' },
           { name: 'Depreciation', accountType: 'general', expenseClass: 'opex', code: '5190' },

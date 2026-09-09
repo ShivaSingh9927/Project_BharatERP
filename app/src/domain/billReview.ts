@@ -168,10 +168,20 @@ export async function previewBills(
    * here rather than at the moment of posting.
    */
   manual?: ManualEntry,
+  /**
+   * The reviewer's per-line classification, so the re-preview reflects it.
+   *
+   * Which account a line posts to decides whether input credit is claimable
+   * and which TDS section applies. Both were resolved at POST time, after the
+   * card had already been drawn — so a line moved to Professional Fees
+   * attracted 10% the reviewer was never shown until the post was refused.
+   */
+  lineAccounts?: Array<string | null>,
 ): Promise<BillProposal[]> {
   return proposeBills(firmId, {
     ...assembleInput(clientId, expenseAccountId, createdBy, file, readers),
     ...(manual === undefined ? {} : { manual }),
+    ...(lineAccounts === undefined ? {} : { lineAccounts }),
   });
 }
 
@@ -192,6 +202,11 @@ export async function postReviewedBill(
     expenseAccountId?: string; lineAccounts?: Array<string | null>;
     blockItc?: boolean;
     /**
+     * The TDS decision, when the reviewer answered it on the card rather than
+     * through a confirmation raised on the first read.
+     */
+    tds?: { category: string; deduct: boolean };
+    /**
      * What the reviewer filled in on the form, when the document could not be
      * read. Threaded into the PROPOSAL rather than applied after it, so the
      * answers face the same gates as any reading and the input is built by the
@@ -205,6 +220,11 @@ export async function postReviewedBill(
   const proposals = await proposeBills(firmId, {
     ...assembleInput(clientId, defaultAccountId, approvedBy, file, readers),
     ...(overrides.manual === undefined ? {} : { manual: overrides.manual }),
+    // Into the proposal, not applied after it. The TDS question is raised
+    // during the proposal and depends on these accounts, so passing them
+    // afterwards would ask about the wrong ones — or not ask at all.
+    ...(overrides.lineAccounts === undefined ? {}
+        : { lineAccounts: overrides.lineAccounts }),
   });
   const proposal = proposals.find((p) => p.index === index);
   if (proposal === undefined || proposal.input === null) {
@@ -226,6 +246,7 @@ export async function postReviewedBill(
 
   const bill = await postProposal(firmId, proposal, {
     approvedBy, confirm, sourceUri: 'review-upload',
+    ...(overrides.tds === undefined ? {} : { tds: overrides.tds }),
   });
 
   // Learn from what was just approved — but only what a human actually decided.
@@ -264,6 +285,12 @@ export interface ProposalView {
   }>;
   warnings: string[];
   blockers: string[];
+  /**
+   * The TDS position, when this bill has one — so the card can show the
+   * question with its derivation rather than a bare rate.
+   */
+  tds: { category: string; amount: string; code: string; rate: string;
+         question: string } | null;
   /** What to ask for, when the bill was refused — empty on one that posts. */
   form?: BillFormView;
   confirmations: BillProposal['confirmations'];
@@ -293,6 +320,11 @@ export function proposalView(p: BillProposal): ProposalView {
       description: l.description, amount: l.unitPrice, hsn: l.hsnSac ?? null,
     })),
     warnings: p.warnings, blockers: p.blockers, confirmations: p.confirmations,
+    tds: p.tds?.computation == null ? null : {
+      category: p.tds.category, amount: p.tds.computation.tdsAmount,
+      code: p.tds.computation.code, rate: p.tds.computation.rate,
+      question: p.tds.question,
+    },
     // What to ask for, when it was refused. Empty on a bill that posts.
     form: formFor(p),
   };

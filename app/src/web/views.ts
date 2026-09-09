@@ -850,6 +850,9 @@ interface ProposalViewV {
   warnings: string[];
   blockers: string[];
   confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
+  /** The TDS position, when this bill has one. */
+  tds: { category: string; amount: string; code: string; rate: string;
+         question: string } | null;
   /** What to ask for, when the bill was refused — see `billForm.ts`. */
   form?: {
     fields: Array<{ field: string; ask: string; because: string }>;
@@ -1166,6 +1169,19 @@ if (run) run.onclick = async () => {
  * means "still unread", and an empty string would look like a value someone
  * chose to leave blank.
  */
+/**
+ * Which account the reviewer picked for each line.
+ *
+ * Sent with a re-read as well as with the post, because the account decides
+ * the TDS section and whether input credit is claimable — so a re-read that
+ * ignored it would answer about the default head, not the chosen one.
+ */
+function readLineAccounts(card) {
+  const out = [];
+  card.querySelectorAll('.lineacct').forEach((sel) => out.push(sel.value || null));
+  return out.length > 0 ? out : undefined;
+}
+
 function readFill(card) {
   const fill = card.querySelector('.fill');
   if (!fill) return undefined;
@@ -1183,6 +1199,53 @@ function readFill(card) {
   }
   return Object.keys(manual).length > 0 ? manual : undefined;
 }
+
+/*
+ * Reclassifying a line can create a TDS liability, so the card has to ask
+ * before the post is refused.
+ *
+ * Moving a line from Purchases to Professional Fees is the moment 10% becomes
+ * due — the account is what picks the section. The proposal is re-read with the
+ * chosen accounts and, if a deduction is now due, the question is inserted as
+ * an ordinary confirmation block, which wirePost already collects generically —
+ * so once it is on the page it posts like any other answered question.
+ */
+function tdsBlock(c) {
+  const div = document.createElement('div');
+  div.className = 'confirm tdsask';
+  div.dataset.field = c.field;
+  div.innerHTML =
+    '<p>' + c.question.replace(/</g, '&lt;') + '</p>' +
+    '<label class="pick"><input type="radio" name="' + c.field +
+      '" value="' + c.chose.replace(/"/g, '&quot;') + '"> ' +
+      c.chose.replace(/</g, '&lt;') + '</label>' +
+    '<label class="pick"><input type="radio" name="' + c.field +
+      '" value="' + c.instead.replace(/"/g, '&quot;') + '"> ' +
+      c.instead.replace(/</g, '&lt;') + '</label>';
+  return div;
+}
+
+document.querySelectorAll('select.lineacct').forEach((sel) => {
+  sel.onchange = async () => {
+    const card = sel.closest('.billcard');
+    const token = card.querySelector('[data-token]');
+    if (!token) return;
+    const r = await post('/api/bills/fill', {
+      token: token.dataset.token, index: Number(token.dataset.index),
+      manual: readFill(card), lineAccounts: readLineAccounts(card) });
+    if (!r.ok) return;
+
+    const asked = (r.confirmations || []).find((c) => c.field === 'tds_deduction');
+    const shown = card.querySelector('.confirm[data-field="tds_deduction"]');
+    // Gone: the head no longer attracts TDS, so the question is stale and
+    // leaving it would collect an answer to something nobody asked.
+    if (!asked && shown && shown.classList.contains('tdsask')) shown.remove();
+    if (asked && !shown) {
+      const anchor = card.querySelector('.lines') || card.querySelector('.billactions');
+      anchor.parentNode.insertBefore(tdsBlock(asked), anchor);
+    }
+  };
+});
 
 document.querySelectorAll('button.setrcm').forEach((btn) => {
   btn.onclick = async () => {
@@ -1231,7 +1294,8 @@ document.querySelectorAll('button.check').forEach((btn) => {
     if (!manual) { out.textContent = 'Nothing filled in yet.'; return; }
     btn.disabled = true; out.textContent = 'Checking…';
     const r = await post('/api/bills/fill', {
-      token: btn.dataset.token, index: Number(btn.dataset.index), manual });
+      token: btn.dataset.token, index: Number(btn.dataset.index), manual,
+      lineAccounts: readLineAccounts(card) });
     btn.disabled = false;
     if (!r.ok) { out.textContent = r.error || 'could not check'; return; }
     if (r.ready) {

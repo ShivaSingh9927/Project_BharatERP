@@ -17,6 +17,7 @@ import { validateGstin, isIntraState, isValidStateCode } from './gstin.ts';
 import { computeInvoice, verifyTaxLines, money, paise } from './tax.ts';
 import { decideItc, type ItcEligibility } from './itc.ts';
 import { resolveAndComputeTds, type EntityType, type TdsComputation } from './tds.ts';
+import { assessTdsOnBill, recordTdsDeduction } from './tdsOnBill.ts';
 
 export interface BillLineInput {
   description: string;
@@ -71,6 +72,30 @@ export interface CreateBillInput {
    * account-blocked line already is.
    */
   forceBlockItc?: boolean;
+  /**
+   * The reviewer's decision to withhold TDS on this bill (BE-36).
+   *
+   * Absent means no deduction, which is the right default: most bills attract
+   * none, and the ones that do carry a classification decision — professional
+   * fees at 10% against a contractor at 1% — that only a human can make.
+   * `assessTdsOnBill` computes what WOULD be deducted and puts it as a
+   * question; this is the answer coming back.
+   *
+   * Deducting here rather than at payment is the point. The section charges
+   * the deduction at the earlier of credit and payment, and booking this bill
+   * IS the credit.
+   */
+  tds?: {
+    /** Matches `accounts.tds_category` and `tds_sections.category_name`. */
+    category: string;
+    /**
+     * False when the reviewer decided NOT to withhold — they know something
+     * the chart does not. The bill posts gross, and the shortfall is recorded
+     * rather than hidden: a declined deduction that left no trace would look
+     * exactly like a bill attracting no TDS at all.
+     */
+    deduct: boolean;
+  };
 }
 
 /**
@@ -100,6 +125,15 @@ export interface CreatedBill {
   /** Per-line detail, so a reviewer can see which line lost its credit. */
   itcLines: Array<{ lineNo: number; account: string; eligibility: ItcEligibility;
                     gst: string; reason: string }>;
+  /**
+   * What was withheld under s.194, and why. Null when nothing was.
+   *
+   * On the bill rather than on the payment because that is where the law puts
+   * it, and the supplier is credited NET of it — so a reviewer reading the
+   * creditor balance needs this to explain why it is not the invoice total.
+   */
+  tds: { amount: string; code: string; rate: string; category: string;
+         explanation: string } | null;
   warnings: string[];
 }
 
@@ -494,6 +528,107 @@ export async function createBill(
         ]);
     }
 
+    /*
+     * --- TDS, on the credit limb ------------------------------------------
+     *
+     * Computed here rather than taken from the caller: the caller decided the
+     * CLASSIFICATION — which section this spend falls under — and the amount
+     * follows from the rate, the thresholds in force on the bill date, and how
+     * much has already been credited to this supplier this year. A number
+     * passed in from a browser would be a number nobody could re-derive.
+     *
+     * The base is the taxable value of the lines under that head, excluding
+     * GST (Circular 23/2017), which `assessTdsOnBill` works out.
+     */
+    let tdsRecorded: CreatedBill['tds'] = null;
+    let withheld = 0n;
+    /*
+     * Assessed on EVERY bill, not only when the caller mentions TDS.
+     *
+     * This is the gate, and it has to sit here rather than in the proposal
+     * because the classification that decides the section is made LATER — a
+     * reviewer moves a line from Purchases to Professional Fees on the review
+     * screen, and only at that moment does 10% become due. A check upstream
+     * would be looking at the wrong account.
+     *
+     * So: if a deduction is due and nobody has said yes or no, the bill does
+     * not post. That is the difference between this and the version that
+     * silently posted a ₹2,00,000 professional-fees bill in full.
+     */
+    const assessed = await assessTdsOnBill(c, {
+      clientId: input.clientId, partyId: input.partyId, fiscalYearId,
+      billDate: input.billDate,
+      lines: resolved.map((l, i) => ({
+        expenseAccountId: l.expenseAccountId,
+        taxableValue: money(totals.lines[i]!.taxableValue),
+      })),
+    });
+    const due = assessed?.computation === null || assessed === null
+      ? 0n : paise(assessed.computation.tdsAmount);
+
+    if (due > 0n && input.tds === undefined) {
+      throw new ValidationError(
+        `${assessed!.question} Nothing has been posted: withholding tax is a ` +
+        'decision, and this bill cannot be filed without it either way.',
+        'PB-12');
+    }
+    if (input.tds && assessed !== null && input.tds.category !== assessed.category) {
+      // Answering about one section while the bill falls under another means
+      // the accounts changed after the question was put. Re-ask rather than
+      // withhold at a rate nobody chose.
+      throw new ValidationError(
+        `this bill falls under "${assessed.category}" for TDS, but the answer ` +
+        `given was about "${input.tds.category}". The expense heads changed ` +
+        'after the question was asked — check the classification and answer ' +
+        'again.', 'PB-12');
+    }
+
+    if (assessed?.computation != null) {
+      withheld = input.tds?.deduct === true ? due : 0n;
+      if (withheld > 0n) {
+        tdsRecorded = {
+          amount: assessed.computation.tdsAmount,
+          code: assessed.computation.code,
+          rate: assessed.computation.rate,
+          category: assessed.category,
+          explanation: assessed.computation.explanation,
+        };
+        warnings.push(
+          `TDS of ${assessed.computation.tdsAmount} was withheld on this bill ` +
+          `under ${assessed.computation.code} (${assessed.category}, ` +
+          `${assessed.computation.rate}%), so ${sup.legal_name ?? sup.name} is ` +
+          `credited net. ${assessed.computation.explanation}. It is deducted ` +
+          'on the credit, which is this bill\'s date — the deposit is due by ' +
+          'the 7th of the following month, and interest under s.201(1A) runs ' +
+          'from here, not from when the bill is paid.');
+      } else if (due > 0n) {
+        warnings.push(
+          `TDS of ${assessed.computation.tdsAmount} was due on this bill under ` +
+          `${assessed.computation.code} and was NOT withheld — ` +
+          `${input.createdBy} decided against it. The supplier is credited in ` +
+          'full. If that decision is wrong the client owes the tax anyway, ' +
+          'plus interest under s.201(1A) from this date, and the expense can ' +
+          'be disallowed under s.40(a)(ia). Recorded as a shortfall.');
+      }
+      /*
+       * The row is written in ALL THREE cases — deducted, declined, or nothing
+       * due — and that is not pedantry.
+       *
+       * The payment that finally crosses the annual threshold charges tax on
+       * everything credited before it. A below-threshold credit that left no
+       * row would be invisible to that crossing and the client would
+       * under-deduct at exactly the moment it mattered (BE-10). A declined one
+       * that left no row would be indistinguishable from a bill attracting no
+       * TDS at all.
+       */
+      await recordTdsDeduction(c, {
+        firmId, clientId: input.clientId, voucherId,
+        billVoucherId: voucherId, partyId: input.partyId, fiscalYearId,
+        deductedOn: 'credit', computation: assessed.computation,
+        withheld: money(withheld),
+      });
+    }
+
     // --- GL posting ---------------------------------------------------------
     await postBillToLedger(c, {
       firmId, clientId: input.clientId, voucherId, postingDate, fiscalYearId,
@@ -509,6 +644,7 @@ export async function createBill(
       grandTotal: totals.grandTotal,
       roundOff: totals.roundOff,
       isReverseCharge: input.isReverseCharge ?? false,
+      tdsWithheld: withheld,
     });
 
     await c.query(
@@ -540,6 +676,7 @@ export async function createBill(
       itcBlockedValue: money(itcBlockedValue),
       itcClaimable: itcClaimableValue > 0n,
       itcLines,
+      tds: tdsRecorded,
       warnings,
     };
   });
@@ -566,6 +703,8 @@ async function postBillToLedger(
     lines: Array<{ accountId: string; taxableValue: bigint; cgst: bigint;
                    sgst: bigint; igst: bigint; itc: ItcEligibility }>;
     grandTotal: bigint; roundOff: bigint; isReverseCharge: boolean;
+    /** Withheld under s.194 on the credit — the supplier is credited net. */
+    tdsWithheld?: bigint;
   },
 ): Promise<void> {
   const taxAccount = async (accountType: string, name: string) => {
@@ -608,10 +747,22 @@ async function postBillToLedger(
     // and the credit is only claimable after that payment, so both legs have
     // to exist and be tracked.
     const supplierValue = a.lines.reduce((s, l) => s + l.taxableValue, 0n);
+    /*
+     * And TDS comes off this leg too, because the two provisions coincide more
+     * often than they look: an unregistered advocate's fee is GST in the
+     * client's hands under s.9(3) AND income tax withheld under s.194J. The
+     * supplier is credited the taxable value less the tax deducted; the GST is
+     * not part of the base either way (Circular 23/2017), and here the
+     * supplier never charged it.
+     */
+    const rcmTds = a.tdsWithheld ?? 0n;
     entries.push({
-      accountId: a.creditorAccountId, credit: supplierValue,
+      accountId: a.creditorAccountId, credit: supplierValue - rcmTds,
       partyType: 'supplier', partyId: a.partyId,
     });
+    if (rcmTds > 0n) {
+      entries.push({ accountId: await taxAccount('tds_payable', 'TDS Payable'), credit: rcmTds });
+    }
     if (inputCgst > 0n) {
       entries.push({ accountId: await taxAccount('tax_output', 'Output CGST Payable'), credit: inputCgst });
       entries.push({ accountId: await taxAccount('tax_output', 'Output SGST Payable'), credit: inputSgst });
@@ -620,10 +771,32 @@ async function postBillToLedger(
       entries.push({ accountId: await taxAccount('tax_output', 'Output IGST Payable'), credit: inputIgst });
     }
   } else {
+    /*
+     * TDS withheld on the credit splits the payable in two.
+     *
+     *   Purchases        Dr  1,00,000
+     *   Input GST        Dr     18,000
+     *       TDS Payable      Cr   10,000
+     *       Creditors        Cr  1,08,000
+     *
+     * The supplier is credited NET, which is the whole point: ₹10,000 of what
+     * the invoice asks for is no longer owed to them — it is owed to the
+     * government, and the ageing must show the supplier as owed ₹1,08,000 or
+     * the client will pay the full invoice and be short by the tax they were
+     * required to keep back.
+     *
+     * The payables ageing needs no change for this: it reads the payable
+     * credit actually posted, so it picks the net figure up for free — the
+     * same property that already made reverse charge come out right.
+     */
+    const tds = a.tdsWithheld ?? 0n;
     entries.push({
-      accountId: a.creditorAccountId, credit: a.grandTotal,
+      accountId: a.creditorAccountId, credit: a.grandTotal - tds,
       partyType: 'supplier', partyId: a.partyId,
     });
+    if (tds > 0n) {
+      entries.push({ accountId: await taxAccount('tds_payable', 'TDS Payable'), credit: tds });
+    }
   }
 
   // Round-off polarity is INVERTED relative to sales, and that is not a
@@ -660,7 +833,7 @@ async function postBillToLedger(
 }
 
 /**
- * Pay a supplier, withholding TDS where the section requires it.
+ * Pay a supplier with no bill behind it — an advance — withholding TDS.
  *
  *   Creditors    Dr  gross
  *       TDS Payable      Cr  withheld
@@ -668,6 +841,18 @@ async function postBillToLedger(
  *
  * The withheld amount is not ours — it is a liability owed to the government
  * until deposited (Lesson 6).
+ *
+ * ── Why this is not the main path any more (BE-36) ────────────────────────
+ *
+ * The section charges the deduction at the earlier of CREDIT and payment, and
+ * booking a bill is the credit — so a bill's TDS is now withheld in
+ * `createBill`, and paying that bill goes through `recordPayment`, which
+ * allocates against it and refuses to deduct a second time.
+ *
+ * What is left for this function is the case where payment genuinely IS the
+ * earlier limb: money paid before any bill exists. The debit is deliberately
+ * NOT allocated to a bill, because there is no bill — it sits as a debit on
+ * the supplier's account until one arrives, which is what an advance is.
  */
 export async function paySupplier(
   firmId: string,

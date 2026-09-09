@@ -295,12 +295,17 @@ async function handle(
     try {
       const proposals = await previewBills(
         session.firmId, session.clientId, expenseAccountId, session.userId,
-        stashed.file, readers, body.manual);
+        stashed.file, readers, body.manual, body.lineAccounts);
       const p = proposals.find((x) => x.index === body.index);
       if (p === undefined) return json(res, 200, { ok: false, error: 'no such document' });
+      const view = proposalView(p);
       return json(res, 200, {
         ok: true, ready: p.blockers.length === 0,
         blockers: p.blockers, warnings: p.warnings,
+        // The reviewer's line classification came in with this request, so the
+        // TDS position reflects it — which is the whole reason to re-read.
+        tds: view.tds,
+        confirmations: p.confirmations,
         form: formFor(p),
       });
     } catch (e) {
@@ -346,7 +351,8 @@ async function handle(
         session.firmId, session.clientId, expenseAccountId,
         stashed.file, body.index, body.confirm ?? {}, session.userId, readers,
         { lineAccounts: body.lineAccounts, expenseAccountId: body.expenseAccountId,
-          blockItc: body.blockItc === true, manual: body.manual });
+          blockItc: body.blockItc === true, manual: body.manual,
+          tds: body.tds });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });

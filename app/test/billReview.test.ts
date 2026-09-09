@@ -16,6 +16,7 @@ const base = (over: Partial<BillProposal> = {}): BillProposal => ({
   table: { readable: true, roles: [], header: [], rows: [], totals: null,
     sums: { taxable: '100.00', igst: '18.00', total: '118.00' } } as never,
   partyId: 'p', partyName: 'ACME', registration: { status: 'Active' } as never,
+  tds: null,
   blockers: [], warnings: [], confirmations: [],
   input: { lines: [
     { description: 'Item A', unitPrice: '60.00', hsnSac: '1234', expenseAccountId: 'x' },
