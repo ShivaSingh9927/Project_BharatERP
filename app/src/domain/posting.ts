@@ -120,14 +120,15 @@ export async function postVoucher(
       `INSERT INTO vouchers
          (firm_id, client_id, voucher_type, voucher_number, posting_date,
           fiscal_year_id, narration, created_via, created_by, approved_by,
-          ai_proposal_id, source_document_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          ai_proposal_id, source_document_id, external_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING id`,
       [
         firmId, input.clientId, input.voucherType, number, input.postingDate,
         fiscalYearId, input.narration ?? null, input.createdVia ?? 'ui',
         input.createdBy, input.approvedBy ?? null,
         input.aiProposalId ?? null, input.sourceDocumentId ?? null,
+        input.externalId ?? null,
       ],
     );
     const voucherId = v.rows[0]!.id;
@@ -169,6 +170,7 @@ export async function postVoucher(
           posting_date: input.postingDate,
           lines: input.lines.length,
           created_via: input.createdVia ?? 'ui',
+          external_id: input.externalId ?? null,
         }),
         input.createdBy,
         input.actorType ?? (input.createdVia === 'ai_proposal' ? 'ai_agent' : 'human'),

@@ -15,6 +15,7 @@
 import { STATUTORY_RATES } from '../domain/tax.ts';
 import type { QueueItem, MatchProposal } from '../domain/matching.ts';
 import type { Brs } from '../domain/brs.ts';
+import type { SalesDesk, SalesInvoiceDetail } from '../domain/sales.ts';
 
 const esc = (v: unknown): string =>
   String(v ?? '').replace(/[&<>"']/g, (ch) =>
@@ -61,6 +62,37 @@ nav a {
 }
 nav a:hover { background: var(--sel); }
 nav a.on { background: var(--accent); color: #fff; }
+.ask-toggle { white-space: nowrap; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.ask-shade { position: fixed; inset: 0; z-index: 19; background: rgba(0,0,0,.38); }
+.ask-drawer { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0;
+  width: min(390px, 94vw); box-sizing: border-box; display: flex; flex-direction: column;
+  background: var(--bg); border-left: 3px solid var(--accent);
+  box-shadow: -18px 0 45px rgba(0,0,0,.28); }
+.ask-drawer[hidden], .ask-shade[hidden] { display: none; }
+.ask-head { padding: 16px 16px 13px; border-bottom: 1px solid var(--line);
+  display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.ask-head h2 { margin: 0 0 3px; font-size: 17px; }
+.ask-close { padding: 3px 9px; font-size: 18px; line-height: 1; }
+.ask-context { color: var(--muted); font-size: 12px; }
+.ask-quick { padding: 12px 16px; display: flex; gap: 6px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--line); }
+.ask-quick button { font-size: 12px; text-align: left; background: var(--panel); }
+.ask-messages { flex: 1; overflow-y: auto; padding: 15px 16px; }
+.ask-msg { margin: 0 0 14px; max-width: 92%; line-height: 1.45; }
+.ask-msg.user { margin-left: auto; padding: 9px 11px; border-radius: 9px 9px 2px 9px;
+  background: var(--accent); color: #fff; }
+.ask-msg.bharat { padding-left: 11px; border-left: 2px solid var(--line); }
+.ask-proof { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.ask-proof span + span::before { content: ' · '; }
+.ask-action { display: inline-block; margin-top: 8px; color: var(--accent); font-size: 12px; }
+.ask-compose { border-top: 1px solid var(--line); padding: 12px 16px 16px; }
+.ask-compose form { display: flex; gap: 7px; }
+.ask-compose input { flex: 1; min-width: 0; background: var(--panel); }
+.ask-compose .why { margin-top: 7px; }
+@media (prefers-reduced-motion: no-preference) {
+  .ask-drawer { animation: ask-in .16s ease-out; }
+  @keyframes ask-in { from { transform: translateX(18px); opacity: .7; } }
+}
 main { padding: 18px; max-width: 1180px; }
 h1 { font-size: 17px; margin: 0 0 4px; }
 h2 { font-size: 14px; margin: 22px 0 8px; }
@@ -165,13 +197,23 @@ tr.done { opacity: .5; }
 .warns li { color: var(--muted); }
 .blocks li { color: var(--bad); }
 .billactions { margin-top: 12px; }
+.banksetup { max-width: 760px; margin-top: 14px; border-left: 3px solid var(--accent); }
+.banksetup .formgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px; }
+.banksetup label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.banksetup input, .banksetup select { width: 100%; box-sizing: border-box; }
+.banksetup .billactions { display: flex; align-items: center; gap: 10px; }
+@media (max-width: 620px) { .banksetup .formgrid { grid-template-columns: 1fr; } }
 .fill { margin-top: 12px; padding: 12px; border: 1px solid var(--line);
-        border-radius: 6px; background: #fbfaf7; }
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+        color: var(--ink); }
 .fillhead { font-weight: 600; margin-bottom: 10px; }
 /* Master data, kept visually apart from the per-bill form: saving here prices
    every future bill from this supplier, not just the one on screen. */
 .partyrcm { margin-top: 12px; padding: 12px; border: 1px solid var(--line);
-        border-left: 3px solid #8a6d3b; border-radius: 6px; background: #fdfaf3; }
+        border-left: 3px solid var(--warn); border-radius: 6px;
+        background: color-mix(in srgb, var(--warn) 7%, var(--panel)); }
 .partyrcm select { padding: 6px 8px; border: 1px solid var(--line);
         border-radius: 4px; font: inherit; }
 .fillrow { margin-bottom: 12px; }
@@ -182,6 +224,19 @@ tr.done { opacity: .5; }
 .fillfigs { display: flex; gap: 6px; flex-wrap: wrap; }
 .fillfigs input { min-width: 0; width: 108px; text-align: right;
                   font-variant-numeric: tabular-nums; }
+.expenseonly { margin-top: 12px; padding: 14px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
+.expenseonly h3 { margin: 0 0 4px; font-size: 16px; }
+.expenseonly .expensegrid { display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) auto;
+  gap: 10px; align-items: end; margin-top: 12px; }
+.expenseonly label { display: flex; flex-direction: column; gap: 4px;
+  color: var(--muted); font-size: 12px; }
+.expenseonly input, .expenseonly select { width: 100%; background: var(--panel); }
+.manualalternative { margin-top: 10px; color: var(--muted); }
+.manualalternative summary { cursor: pointer; font-size: 13px; }
+@media (max-width: 720px) { .expenseonly .expensegrid { grid-template-columns: 1fr; } }
 .small { font-size: 12px; }
 .billctl { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
   margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -217,6 +272,57 @@ a.tile:hover { border-color: var(--accent); }
   border-radius: 6px; }
 tr.payform td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
+.sales-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 18px; margin-bottom: 14px; }
+.sales-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 14px; }
+.invoice-meta { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px; margin-bottom: 14px; }
+.invoice-meta label, .customer-form label { display: flex; flex-direction: column;
+  gap: 4px; color: var(--muted); font-size: 12px; }
+.invoice-meta input, .invoice-meta select, .customer-form input, .customer-form select {
+  width: 100%; color: var(--ink); background: var(--bg); }
+.entry-table th { white-space: nowrap; }
+.entry-table input, .entry-table select { width: 100%; min-width: 68px;
+  background: var(--bg); }
+.entry-table .desc { min-width: 210px; }
+.entry-table .hsn { min-width: 90px; }
+.entry-table .account { min-width: 150px; }
+.entry-table .remove { padding: 5px 8px; color: var(--bad); }
+.ledger-proof { position: sticky; top: 58px; border-top: 3px solid var(--accent); }
+.ledger-proof h2 { margin-top: 0; }
+.proof-line { display: flex; justify-content: space-between; gap: 12px;
+  padding: 5px 0; border-bottom: 1px solid var(--line); }
+.proof-line b { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.proof-total { font-size: 16px; padding-top: 10px; border-bottom: 0; }
+.customer-form { display: grid; grid-template-columns: 1.2fr 1.2fr 1fr .8fr 1.5fr auto;
+  gap: 10px; align-items: end; }
+.quick-due { display: flex; align-items: center; gap: 6px; margin-top: -6px;
+  margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.quick-due button { padding: 3px 8px; }
+.invoice-shortcuts { color: var(--muted); font-size: 12px; }
+.invoice-share { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.invoice-share a { margin-left: 0; }
+.sales-actions { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin-top: 12px; }
+.invoice-paper { max-width: 850px; margin: 0 auto; }
+.invoice-title { display: flex; justify-content: space-between; gap: 20px;
+  padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+.invoice-total { font-size: 22px; font-family: var(--mono); }
+@media (max-width: 900px) {
+  header { flex-wrap: wrap; }
+  nav { order: 3; width: 100%; overflow-x: auto; }
+  .sales-grid { grid-template-columns: 1fr; }
+  .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+  .customer-form { grid-template-columns: 1fr 1fr; }
+  .ledger-proof { position: static; }
+  .entry-scroll { overflow-x: auto; }
+}
+@media print {
+  header, .no-print { display: none !important; }
+  body, main { background: #fff; color: #000; }
+  main { padding: 0; max-width: none; }
+  .invoice-paper { border: 0; }
+}
 `;
 
 // ---------------------------------------------------------------------------
@@ -231,6 +337,22 @@ export function renderShell(a: {
   const q = a.accountId ? `?account=${encodeURIComponent(a.accountId)}` : '';
   const link = (href: string, key: string, label: string): string =>
     `<a href="${href}" class="${a.active === key ? 'on' : ''}">${label}</a>`;
+  const prompts: Record<string, string[]> = {
+    bills: ['How does this page work?', 'What needs attention?'],
+    payables: ['How much do we owe suppliers?', 'What needs attention?'],
+    receivables: ['How much do customers owe?', 'What needs attention?'],
+    reconcile: ['Prepare reconciliation review', 'How many bank transactions need reconciliation?'],
+    gstr2b: ['How much GST credit is at risk?', 'How does this page work?'],
+    gstr1: ['What is our GST position?', 'What needs attention?'],
+    gstr3b: ['What is our GST position?', 'What needs attention?'],
+    firm: ['What needs attention?', 'How much do we owe suppliers?'],
+    home: ['What needs attention?', 'How much GST credit is at risk?'],
+  };
+  const quick = prompts[a.active] ?? ['What needs attention?', 'How does this page work?'];
+  const pageName = a.active === 'gstr2b' ? 'GSTR-2B'
+    : a.active === 'gstr1' ? 'GSTR-1'
+    : a.active === 'gstr3b' ? 'GSTR-3B'
+    : a.active.charAt(0).toUpperCase() + a.active.slice(1);
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -243,8 +365,11 @@ export function renderShell(a: {
   <span class="client">${esc(a.session.clientName)}</span>
   <nav>
     ${link('/firm', 'firm', 'Firm')}
+    ${link('/assistant-runs', 'assistant-runs', 'AI log')}
     ${link('/', 'home', 'Home')}
     ${link('/accounts', 'accounts', 'Accounts')}
+    ${link('/sales', 'sales', 'Sales')}
+    ${link('/tally', 'tally', 'Tally import')}
     ${link('/bills', 'bills', 'Bills')}
     ${link('/payables', 'payables', 'Payables')}
     ${link('/suppliers', 'suppliers', 'Suppliers')}
@@ -260,23 +385,124 @@ export function renderShell(a: {
     ${link('/assets', 'assets', 'Assets')}
     ${link('/returns', 'returns', 'Returns')}
   </nav>
+  <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
+    aria-expanded="false">Ask Bharat</button>
   <form method="post" action="/logout" class="who">
     <span title="${esc(a.session.email ?? '')}">${esc(a.session.displayName ?? '')}</span>
     <button type="submit">Sign out</button>
   </form>
 </header>
 <main>${a.body}</main>
+<div class="ask-shade" id="ask-shade" hidden></div>
+<aside class="ask-drawer" id="ask-drawer" aria-label="Ask Bharat" hidden>
+  <div class="ask-head">
+    <div><h2>Ask Bharat</h2>
+      <div class="ask-context">${esc(a.session.clientName)} · ${esc(pageName)}</div></div>
+    <button type="button" class="ask-close" id="ask-close" aria-label="Close Ask Bharat">×</button>
+  </div>
+  <div class="ask-quick">
+    ${quick.map((prompt) => `<button type="button" data-ask="${esc(prompt)}">${esc(prompt)}</button>`).join('')}
+  </div>
+  <div class="ask-messages" id="ask-messages" aria-live="polite">
+    <div class="ask-msg bharat">Ask about these books. I will show the records behind every figure.</div>
+  </div>
+  <div class="ask-compose">
+    <form id="ask-form">
+      <input id="ask-input" maxlength="500" autocomplete="off" placeholder="Ask about this client…"
+        aria-label="Question for Ask Bharat">
+      <button class="primary" id="ask-send" type="submit">Ask</button>
+    </form>
+    <div class="why">Read-only preview. It cannot post or change the books.</div>
+  </div>
+</aside>
+<script>
+(() => {
+  const toggle = document.getElementById('ask-toggle');
+  const drawer = document.getElementById('ask-drawer');
+  const shade = document.getElementById('ask-shade');
+  const close = document.getElementById('ask-close');
+  const form = document.getElementById('ask-form');
+  const input = document.getElementById('ask-input');
+  const send = document.getElementById('ask-send');
+  const messages = document.getElementById('ask-messages');
+  const setOpen = (open) => {
+    drawer.hidden = !open; shade.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+    if (open) input.focus(); else toggle.focus();
+  };
+  const add = (role, text, evidence, action) => {
+    const box = document.createElement('div'); box.className = 'ask-msg ' + role;
+    const copy = document.createElement('div'); copy.textContent = text; box.appendChild(copy);
+    if (evidence && evidence.length) {
+      const proof = document.createElement('div'); proof.className = 'ask-proof';
+      evidence.forEach((item) => { const span = document.createElement('span'); span.textContent = item; proof.appendChild(span); });
+      box.appendChild(proof);
+    }
+    if (action && typeof action.href === 'string' && action.href.startsWith('/')) {
+      const link = document.createElement('a'); link.className = 'ask-action';
+      link.href = action.href; link.textContent = action.label; box.appendChild(link);
+    }
+    messages.appendChild(box); messages.scrollTop = messages.scrollHeight;
+  };
+  const ask = async (question) => {
+    const q = String(question || '').trim(); if (!q) return;
+    add('user', q); input.value = ''; send.disabled = true;
+    try {
+      const response = await fetch('/api/assistant', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: q, page: '${esc(a.active)}' }),
+      });
+      const r = await response.json();
+      if (!r.ok) throw new Error(r.error || 'could not answer');
+      add('bharat', r.answer, r.evidence, r.action);
+    } catch (error) {
+      add('bharat', String(error.message || error));
+    } finally { send.disabled = false; input.focus(); }
+  };
+  toggle.onclick = () => setOpen(true); close.onclick = () => setOpen(false);
+  shade.onclick = () => setOpen(false);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !drawer.hidden) setOpen(false);
+  });
+  form.onsubmit = (event) => { event.preventDefault(); ask(input.value); };
+  document.querySelectorAll('[data-ask]').forEach((button) => {
+    button.onclick = () => { setOpen(true); ask(button.dataset.ask); };
+  });
+})();
+</script>
 </body></html>`;
 }
 
 // ---------------------------------------------------------------------------
 
+export function renderAssistantRuns(runs: Array<{
+  question: string; page: string; routingMode: string; intent: string | null;
+  provider: string | null; model: string | null; answer: string; evidence: string[];
+  supported: boolean; durationMs: number; createdAt: string;
+}>): string {
+  const route = (r: typeof runs[number]) => r.routingMode === 'deepseek'
+    ? `DeepSeek · ${esc(r.intent ?? 'unsupported')}`
+    : r.routingMode === 'deepseek_fallback' ? 'DeepSeek unavailable · local fallback'
+    : 'Local deterministic tool';
+  return `<section class="card wide"><h1>Ask Bharat AI log</h1>
+    <p class="muted">A read-only record of what was asked, what route was used, and the evidence shown to this client.</p>
+    ${runs.length === 0 ? '<p>No Ask Bharat questions have been recorded for this client yet.</p>' :
+      `<table><thead><tr><th>When</th><th>Question and answer</th><th>Route</th><th>Evidence</th></tr></thead>
+      <tbody>${runs.map((r) => `<tr>
+        <td>${esc(new Date(r.createdAt).toLocaleString('en-IN'))}<br><small>${r.durationMs} ms</small></td>
+        <td><strong>${esc(r.question)}</strong><br>${esc(r.answer)}${r.supported ? '' : '<br><small>Unsupported question</small>'}</td>
+        <td>${route(r)}${r.model ? `<br><small>${esc(r.model)}</small>` : ''}</td>
+        <td>${r.evidence.map(esc).join('<br>')}</td>
+      </tr>`).join('')}</tbody></table>`}
+  </section>`;
+}
+
 export function renderAccounts(
   accounts: Array<{ id: string; bank_name: string; last4: string; kind: string }>,
+  today = new Date().toISOString().slice(0, 10),
 ): string {
   if (accounts.length === 0) {
-    return `<h1>Bank accounts</h1>
-      <p class="empty">None yet. Seed a client and add a bank account to begin.</p>`;
+    return renderBankAccountSetup(today, '/accounts');
   }
   return `<h1>Bank accounts</h1>
   <p class="sub">Account numbers are stored as last-four plus a hash only (BR-2).</p>
@@ -290,7 +516,485 @@ export function renderAccounts(
         <a href="/reconcile?account=${esc(a.id)}"><button>Reconcile</button></a>
         <a href="/brs?account=${esc(a.id)}"><button>BRS</button></a>
       </td></tr>`).join('')}
-  </table></div>`;
+  </table></div>
+  <details style="margin-top:16px"><summary>Add another bank account</summary>
+    ${bankAccountForm(today, '/accounts')}
+  </details>`;
+}
+
+function bankAccountForm(today: string, returnTo: string): string {
+  return `<div class="panel banksetup">
+    <div class="formgrid">
+      <label>Bank name
+        <input id="bank-name" placeholder="e.g. HDFC Bank" autocomplete="organization">
+      </label>
+      <label>Account number
+        <input id="account-number" placeholder="Full account number" inputmode="numeric"
+          autocomplete="off">
+        <span class="muted small">We keep only the last four digits and a one-way fingerprint.</span>
+      </label>
+      <label>IFSC <span class="muted">optional</span>
+        <input id="ifsc" placeholder="HDFC0001234" autocapitalize="characters">
+      </label>
+      <label>Account type
+        <select id="bank-kind">
+          <option value="current">Current</option><option value="savings">Savings</option>
+          <option value="od">Overdraft</option><option value="cc">Credit card</option>
+          <option value="fd">Fixed deposit</option>
+        </select>
+      </label>
+      <label>Opening balance in your books
+        <input id="opening-balance" value="0.00" inputmode="decimal">
+      </label>
+      <label>Balance date
+        <input id="opening-date" type="date" value="${esc(today)}">
+      </label>
+    </div>
+    <div class="billactions">
+      <button class="primary" id="save-bank">Save bank account</button>
+      <span id="bank-result" class="muted" aria-live="polite"></span>
+    </div>
+  </div>
+  <script>
+  document.getElementById('save-bank').onclick = async () => {
+    const btn = document.getElementById('save-bank');
+    const out = document.getElementById('bank-result');
+    btn.disabled = true; out.textContent = 'Saving…';
+    try {
+      const response = await fetch('/api/bank-accounts', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          bankName: document.getElementById('bank-name').value,
+          accountNumber: document.getElementById('account-number').value,
+          ifsc: document.getElementById('ifsc').value,
+          kind: document.getElementById('bank-kind').value,
+          openingBalance: document.getElementById('opening-balance').value,
+          openingDate: document.getElementById('opening-date').value,
+        }),
+      });
+      const r = await response.json();
+      if (!r.ok) throw new Error(r.error || 'could not save bank account');
+      location.href = '${esc(returnTo)}' + ('${esc(returnTo)}' === '/reconcile'
+        ? '?account=' + encodeURIComponent(r.id) : '');
+    } catch (e) {
+      out.innerHTML = '<span class="bad">' + String(e.message || e).replace(/</g, '&lt;') + '</span>';
+      btn.disabled = false;
+    }
+  };
+  </script>`;
+}
+
+export function renderBankAccountSetup(today: string, returnTo = '/reconcile'): string {
+  return `<h1>Add your bank account</h1>
+    <p class="sub">This connects the ledger to statement imports. It cannot move money.</p>
+    ${bankAccountForm(today, returnTo)}`;
+}
+
+// ---------------------------------------------------------------------------
+
+export function renderSales(a: {
+  desk: SalesDesk;
+  today: string;
+  created?: string;
+  draft?: { customerId: string; amount?: string; gstRate?: string };
+}): string {
+  const { desk } = a;
+  const customerOptions = desk.customers.map((c) =>
+    `<option value="${esc(c.id)}" data-state="${esc(c.stateCode ?? '')}" data-phone="${esc(c.phone ?? '')}">` +
+    `${esc(c.name)}${c.gstin ? ` · ${esc(c.gstin)}` : ' · unregistered'}</option>`).join('');
+  const registrationOptions = desk.registrations.map((r) =>
+    `<option value="${esc(r.id)}" data-state="${esc(r.stateCode)}">` +
+    `${esc(r.gstin)}${r.primary ? ' (primary)' : ''}</option>`).join('');
+  const accountOptions = desk.incomeAccounts.map((x) =>
+    `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('');
+
+  const invoiceRows = desk.invoices.map((x) => {
+    const open = Number(x.outstanding) > 0;
+    return `<tr>
+      <td><a href="/sales/${esc(x.voucherId)}" class="mono">${esc(x.invoiceNumber)}</a></td>
+      <td>${esc(x.postingDate)}</td><td>${esc(x.customerName)}</td>
+      <td class="num">${inr(x.grandTotal)}</td>
+      <td class="num ${open ? 'warn' : 'good'}">${open ? inr(x.outstanding) : 'Paid'}</td>
+    </tr>`;
+  }).join('');
+
+  const ready = desk.customers.length > 0 && desk.registrations.length > 0 &&
+    desk.incomeAccounts.length > 0;
+
+  return `<div class="sales-head">
+  <div><h1>Sales invoices</h1>
+    <p class="sub">Raise a GST invoice and post it to the ledger in one step.</p></div>
+</div>
+${a.created ? `<div class="msg good"><b>Invoice ${esc(a.created)} posted.</b> It is now in receivables and GSTR-1.</div>` : ''}
+${a.draft ? '<div class="msg warn"><b>AI-prepared draft.</b> It has not posted anything. Confirm the description, HSN/SAC, amount, GST and dates before posting.</div>' : ''}
+
+<details class="panel" ${desk.customers.length === 0 ? 'open' : ''}>
+  <summary><b>Add customer</b></summary>
+  <form id="customer-form" class="customer-form" style="margin-top:12px">
+    <label>Customer name<input name="name" required autocomplete="organization"></label>
+    <label>Legal name<input name="legalName" autocomplete="organization"></label>
+    <label>GST status<select name="gstCategory" id="customer-category">
+      <option value="registered_regular">Registered</option>
+      <option value="unregistered">Unregistered</option>
+    </select></label>
+    <label>State code<input name="stateCode" required inputmode="numeric" maxlength="2" placeholder="27"></label>
+    <label id="gstin-label">GSTIN<input name="gstin" maxlength="15" class="mono" required></label>
+    <label>WhatsApp number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="9876543210"></label>
+    <label>Billing address<input name="billingAddress" required autocomplete="street-address"></label>
+    <div><button class="primary" type="submit">Save customer</button></div>
+  </form>
+  <div id="customer-msg"></div>
+</details>
+
+<div class="sales-grid">
+  <section class="panel">
+    <h2 style="margin-top:0">New invoice</h2>
+    ${desk.registrations.length === 0 ? '<div class="msg bad">Add an active GST registration before raising an invoice.</div>' : ''}
+    ${desk.incomeAccounts.length === 0 ? '<div class="msg bad">Add a sales or income ledger before raising an invoice.</div>' : ''}
+    ${desk.customers.length === 0 ? '<div class="msg">Add the first customer above.</div>' : ''}
+    <div class="invoice-meta">
+      <label>Customer<select id="invoice-customer"><option value="">Choose customer</option>${customerOptions}</select></label>
+      <label>Invoice date<input id="invoice-date" type="date" value="${esc(a.today)}"></label>
+      <label>Due date<input id="due-date" type="date"></label>
+      <label>Issued from<select id="invoice-registration">${registrationOptions}</select></label>
+      <label>Place of supply<input id="invoice-pos" maxlength="2" inputmode="numeric" placeholder="State code"></label>
+      <label style="grid-column:span 3">Narration<input id="invoice-narration" placeholder="Optional note for the ledger"></label>
+    </div>
+    <div class="quick-due"><span>Set due date:</span>
+      <button type="button" data-due="7">7 days</button>
+      <button type="button" data-due="15">15 days</button>
+      <button type="button" data-due="30">30 days</button>
+    </div>
+
+    <div class="entry-scroll"><table class="entry-table">
+      <thead><tr><th>Description</th><th>HSN/SAC</th><th class="num">Qty</th>
+        <th class="num">Rate ₹</th><th class="num">GST %</th><th>Income ledger</th><th></th></tr></thead>
+      <tbody id="invoice-lines"></tbody>
+    </table></div>
+    <template id="invoice-line-template"><tr>
+      <td><input class="desc" aria-label="Description" required></td>
+      <td><input class="hsn mono" aria-label="HSN or SAC" required></td>
+      <td><input class="qty num" aria-label="Quantity" inputmode="decimal" value="1" required></td>
+      <td><input class="price num" aria-label="Unit price" inputmode="decimal" placeholder="0.00" required></td>
+      <td><input class="gst num" aria-label="GST rate" inputmode="decimal" value="18" required></td>
+      <td><select class="account" aria-label="Income ledger">${accountOptions}</select></td>
+      <td><button class="remove" type="button" aria-label="Remove line">×</button></td>
+    </tr></template>
+    <div class="sales-actions">
+      <div><button type="button" id="add-line">Add line</button>
+        <span class="invoice-shortcuts">Press Enter after GST to add another line</span></div>
+      <button class="primary" type="button" id="post-invoice" ${ready ? '' : 'disabled'}>Post invoice</button>
+    </div>
+    <div id="invoice-msg"></div>
+  </section>
+
+  <aside class="panel ledger-proof">
+    <h2>Posting preview</h2>
+    <p class="note">The final figures are calculated again by the accounting engine.</p>
+    <div class="proof-line"><span>Taxable value</span><b id="sum-taxable">₹0.00</b></div>
+    <div class="proof-line"><span id="label-cgst">CGST</span><b id="sum-cgst">₹0.00</b></div>
+    <div class="proof-line"><span id="label-sgst">SGST</span><b id="sum-sgst">₹0.00</b></div>
+    <div class="proof-line"><span>IGST</span><b id="sum-igst">₹0.00</b></div>
+    <div class="proof-line"><span>Round off</span><b id="sum-round">₹0.00</b></div>
+    <div class="proof-line proof-total"><span>Customer owes</span><b id="sum-total">₹0.00</b></div>
+  </aside>
+</div>
+
+<h2>Recent invoices</h2>
+${desk.invoices.length === 0 ? '<p class="empty">No sales invoices yet.</p>' : `<div class="panel" style="padding:0"><table>
+  <tr><th>Invoice</th><th>Date</th><th>Customer</th><th class="num">Total</th><th class="num">Outstanding</th></tr>
+  ${invoiceRows}</table></div>`}
+
+<script>
+const $ = (id) => document.getElementById(id);
+const lines = $('invoice-lines');
+const template = $('invoice-line-template');
+const fmt = (n) => '₹' + (Number.isFinite(n) ? n : 0).toFixed(2);
+
+function addLine() {
+  lines.append(template.content.cloneNode(true));
+  const row = lines.lastElementChild;
+  row.querySelector('.remove').onclick = (e) => {
+    const row = e.currentTarget.closest('tr');
+    if (lines.children.length > 1) row.remove();
+    calculate();
+  };
+  row.querySelectorAll('input,select').forEach((x) =>
+    x.addEventListener('input', calculate));
+  row.querySelector('.gst').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault(); addLine();
+      lines.lastElementChild.querySelector('.desc').focus();
+    }
+  });
+}
+
+function calculate() {
+  let taxable = 0, tax = 0;
+  lines.querySelectorAll('tr').forEach((r) => {
+    const value = (Number(r.querySelector('.qty').value) || 0) *
+      (Number(r.querySelector('.price').value) || 0);
+    taxable += value;
+    tax += value * (Number(r.querySelector('.gst').value) || 0) / 100;
+  });
+  const reg = $('invoice-registration').selectedOptions[0];
+  const intra = reg && reg.dataset.state === $('invoice-pos').value;
+  const cgst = intra ? tax / 2 : 0, sgst = intra ? tax / 2 : 0, igst = intra ? 0 : tax;
+  const before = taxable + tax;
+  const rounded = Math.round(before);
+  $('sum-taxable').textContent = fmt(taxable);
+  $('sum-cgst').textContent = fmt(cgst); $('sum-sgst').textContent = fmt(sgst);
+  $('sum-igst').textContent = fmt(igst); $('sum-round').textContent = fmt(rounded - before);
+  $('sum-total').textContent = fmt(rounded);
+}
+
+$('add-line').onclick = addLine;
+$('invoice-customer').onchange = (e) => {
+  const o = e.target.selectedOptions[0];
+  if (o && o.dataset.state) $('invoice-pos').value = o.dataset.state;
+  calculate();
+};
+$('invoice-registration').onchange = calculate;
+$('invoice-pos').oninput = calculate;
+$('invoice-date').onchange = () => {
+  if (!$('due-date').value) setDue(30);
+};
+function setDue(days) {
+  const start = new Date($('invoice-date').value + 'T00:00:00');
+  if (Number.isNaN(start.getTime())) return;
+  start.setDate(start.getDate() + days);
+  $('due-date').value = start.toISOString().slice(0, 10);
+}
+document.querySelectorAll('[data-due]').forEach((b) =>
+  b.onclick = () => setDue(Number(b.dataset.due)));
+addLine(); calculate();
+const aiDraft = ${JSON.stringify(a.draft ?? null)};
+if (aiDraft) {
+  $('invoice-customer').value = aiDraft.customerId;
+  $('invoice-customer').dispatchEvent(new Event('change'));
+  const first = lines.querySelector('tr');
+  if (aiDraft.amount) first.querySelector('.price').value = aiDraft.amount;
+  if (aiDraft.gstRate) first.querySelector('.gst').value = aiDraft.gstRate;
+  calculate();
+  first.querySelector('.desc').focus();
+}
+
+$('customer-category').onchange = (e) => {
+  const input = document.querySelector('[name=gstin]');
+  const registered = e.target.value === 'registered_regular';
+  input.required = registered; input.disabled = !registered;
+  if (!registered) input.value = '';
+};
+
+$('customer-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const values = Object.fromEntries(new FormData(e.target));
+  const out = $('customer-msg');
+  try {
+    const r = await fetch('/api/customers', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(values) });
+    const result = await r.json();
+    if (!result.ok) throw new Error(result.error);
+    const option = document.createElement('option');
+    option.value = result.id; option.textContent = values.name;
+    option.dataset.state = values.stateCode; option.dataset.phone = values.phone || '';
+    $('invoice-customer').append(option); $('invoice-customer').value = result.id;
+    $('invoice-pos').value = values.stateCode; calculate();
+    $('post-invoice').disabled = !$('invoice-registration').value ||
+      !lines.querySelector('.account').value;
+    e.target.reset(); $('customer-category').dispatchEvent(new Event('change'));
+    e.target.closest('details').open = false;
+    out.innerHTML = '<div class="msg good">Customer saved and selected.</div>';
+    lines.querySelector('.desc').focus();
+  } catch (error) { out.innerHTML = '<div class="msg bad">' + escJs(error.message) + '</div>'; }
+};
+
+$('post-invoice').onclick = async () => {
+  const button = $('post-invoice'), out = $('invoice-msg');
+  const invoiceLines = [...lines.querySelectorAll('tr')].map((r) => ({
+    description: r.querySelector('.desc').value.trim(),
+    hsnSac: r.querySelector('.hsn').value.trim(), quantity: r.querySelector('.qty').value,
+    unitPrice: r.querySelector('.price').value, gstRate: r.querySelector('.gst').value,
+    incomeAccountId: r.querySelector('.account').value,
+  }));
+  const body = {
+    partyId: $('invoice-customer').value, registrationId: $('invoice-registration').value,
+    postingDate: $('invoice-date').value, dueDate: $('due-date').value || undefined,
+    placeOfSupply: $('invoice-pos').value, narration: $('invoice-narration').value.trim() || undefined,
+    lines: invoiceLines,
+  };
+  if (!body.partyId || !body.postingDate || !body.placeOfSupply ||
+      invoiceLines.some((l) => !l.description || !l.hsnSac || !l.quantity || !l.unitPrice || !l.incomeAccountId)) {
+    out.innerHTML = '<div class="msg bad">Choose a customer and complete every invoice line.</div>';
+    return;
+  }
+  button.disabled = true; out.innerHTML = '<div class="msg">Posting invoice…</div>';
+  try {
+    const r = await fetch('/api/invoices', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body) });
+    const result = await r.json();
+    if (!result.ok) throw new Error(result.error);
+    location.href = '/sales?created=' + encodeURIComponent(result.invoiceNumber);
+  } catch (error) {
+    out.innerHTML = '<div class="msg bad"><b>Invoice not posted.</b><br>' + escJs(error.message) + '</div>';
+    button.disabled = false;
+  }
+};
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !$('post-invoice').disabled) {
+    e.preventDefault(); $('post-invoice').click();
+  }
+});
+function escJs(s) { const d = document.createElement('div'); d.textContent = String(s || 'Unknown error'); return d.innerHTML; }
+</script>`;
+}
+
+export function renderSalesInvoice(a: SalesInvoiceDetail): string {
+  const taxRows = [
+    ['CGST', a.totalCgst], ['SGST', a.totalSgst], ['IGST', a.totalIgst],
+    ['Cess', a.totalCess], ['Round off', a.roundOff],
+  ].filter(([, value]) => Number(value) !== 0).map(([label, value]) =>
+    `<div class="proof-line"><span>${label}</span><b>₹${inr(value!)}</b></div>`).join('');
+
+  const phone = (a.customerPhone ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  const invoiceMessage = `Invoice ${a.invoiceNumber} from ${a.supplierName} for ₹${inr(a.grandTotal)}.`;
+  const reminderMessage = `Payment reminder: invoice ${a.invoiceNumber} for ₹${inr(a.grandTotal)}` +
+    `${a.dueDate ? ` was due on ${a.dueDate}` : ' is outstanding'}.`;
+  const whatsapp = (message: string) => `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+
+  return `<div class="no-print sales-head">
+    <div><a href="/sales">← Sales invoices</a></div>
+    <div class="invoice-share">
+      <a class="btnlink" href="${esc(whatsapp(invoiceMessage))}" target="_blank" rel="noopener">Share on WhatsApp</a>
+      <a class="btnlink" href="${esc(whatsapp(reminderMessage))}" target="_blank" rel="noopener">Send payment reminder</a>
+      <button onclick="window.print()">Print / save PDF</button>
+    </div>
+  </div>
+  <article class="panel invoice-paper">
+    <div class="invoice-title">
+      <div><h1>${esc(a.supplierName)}</h1><div class="muted">Tax invoice</div>
+        <div class="mono">${esc(a.invoiceNumber)}</div></div>
+      <div style="text-align:right"><b>${esc(a.customerName)}</b>
+        <div class="muted">${a.customerGstin ? `GSTIN ${esc(a.customerGstin)}` : 'Unregistered customer'}</div>
+        ${a.billingAddress ? `<div class="muted">${esc(a.billingAddress)}</div>` : ''}</div>
+    </div>
+    <div class="invoice-meta" style="margin-top:16px">
+      <div><span class="muted">Invoice date</span><br><b>${esc(a.postingDate)}</b></div>
+      <div><span class="muted">Due date</span><br><b>${esc(a.dueDate ?? '—')}</b></div>
+      <div><span class="muted">Supplier GSTIN</span><br><b class="mono">${esc(a.supplierGstin)}</b></div>
+      <div><span class="muted">Place of supply</span><br><b>${esc(a.placeOfSupply)}</b></div>
+    </div>
+    <table><tr><th>Description</th><th>HSN/SAC</th><th class="num">Qty</th>
+      <th class="num">Rate</th><th class="num">GST</th><th class="num">Taxable</th></tr>
+      ${a.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="mono">${esc(l.hsnSac)}</td>
+        <td class="num">${esc(l.quantity)} ${esc(l.uom)}</td><td class="num">₹${inr(l.unitPrice)}</td>
+        <td class="num">${esc(l.gstRate)}%</td><td class="num">₹${inr(l.taxableValue)}</td></tr>`).join('')}
+    </table>
+    <div style="max-width:310px;margin:20px 0 0 auto">
+      <div class="proof-line"><span>Taxable value</span><b>₹${inr(a.taxableValue)}</b></div>
+      ${taxRows}
+      <div class="proof-line proof-total"><span>Total</span><b class="invoice-total">₹${inr(a.grandTotal)}</b></div>
+    </div>
+  </article>`;
+}
+
+// ---------------------------------------------------------------------------
+
+export function renderTallyImport(): string {
+  return `<h1>Import from Tally</h1>
+  <p class="sub">Start with a safe preview. Nothing is added to the books until
+  the ledgers are mapped and you confirm the import.</p>
+
+  <div class="msg"><b>Current scope:</b> ledger history only. Customer and supplier
+  bill-wise balances, invoice detail, and inventory are not migrated yet.</div>
+
+  <div class="panel">
+    <h2 style="margin-top:0">Export from TallyPrime</h2>
+    <ol>
+      <li>Open <b>Alt+E → Masters</b>, choose XML, and export all accounting masters.</li>
+      <li>Open <b>Alt+E → Transactions</b>, choose all vouchers and XML.</li>
+      <li>Preview each XML file here. Raw Tally backup files are not supported.</li>
+    </ol>
+    <label><b>Choose Tally XML</b><br>
+      <input id="tally-file" type="file" accept=".xml,text/xml,application/xml" style="margin-top:8px">
+    </label>
+    <button class="primary" id="tally-preview" type="button" style="margin-left:8px">Preview file</button>
+  </div>
+  <div id="tally-result"></div>
+
+  <script>
+  const file = document.getElementById('tally-file');
+  const result = document.getElementById('tally-result');
+  const button = document.getElementById('tally-preview');
+  const escT = (s) => { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; };
+  const statT = (value, label) => '<div class="stat"><b>' + escT(value) + '</b><span>' + escT(label) + '</span></div>';
+
+  button.onclick = async () => {
+    if (!file.files[0]) { result.innerHTML = '<div class="msg bad">Choose an XML file first.</div>'; return; }
+    button.disabled = true;
+    result.innerHTML = '<div class="msg">Reading Tally export…</div>';
+    try {
+      const xml = await file.files[0].text();
+      const response = await fetch('/api/tally/preview', {
+        method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ xml })
+      });
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.error);
+      const warnings = data.warnings.length
+        ? '<div class="msg bad"><b>Needs attention</b><ul>' + data.warnings.map((x) => '<li>' + escT(x) + '</li>').join('') + '</ul></div>' : '';
+      const vouchers = data.vouchers.length ? '<h2>Voucher sample</h2><div class="panel" style="padding:0"><table>' +
+        '<tr><th>Date</th><th>Number</th><th>Type</th><th class="num">Lines</th><th class="num">Difference</th></tr>' +
+        data.vouchers.map((v) => '<tr><td>' + escT(v.date || 'Invalid') + '</td><td class="mono">' + escT(v.number || '—') +
+          '</td><td>' + escT(v.sourceType) + '</td><td class="num">' + escT(v.entries) + '</td><td class="num ' +
+          (v.balanced ? 'good' : 'bad') + '">' + escT(v.difference) + '</td></tr>').join('') + '</table></div>' : '';
+      const ledgers = data.ledgers.length ? '<h2>Ledger sample</h2><div class="panel" style="padding:0"><table>' +
+        '<tr><th>Ledger</th><th>Kind</th><th>Parent group</th><th>GSTIN</th><th class="num">Opening balance</th></tr>' +
+        data.ledgers.map((l) => '<tr><td>' + escT(l.name) + '</td><td>' + (l.partyType ? '<span class="tag">' + escT(l.partyType) + '</span>' : 'account') +
+          '</td><td>' + escT(l.parent || '—') + '</td><td class="mono">' +
+          escT(l.gstin || '—') + '</td><td class="num">' + escT(l.openingBalance || '—') + '</td></tr>').join('') + '</table></div>' : '';
+      const mappings = data.mappings.length ? '<h2>Map Tally ledgers</h2><div class="panel" style="padding:0"><table>' +
+        '<tr><th>Tally ledger</th><th class="num">Used in</th><th>BharatERP account</th></tr>' +
+        data.mappings.map((m) => '<tr><td>' + escT(m.sourceName) + (m.partyType ? ' <span class="tag">creates ' + escT(m.partyType) + '</span>' : '') +
+          '</td><td class="num">' + escT(m.usedIn) +
+          '</td><td><select class="tally-map" data-source="' + escT(m.sourceName) + '"><option value="">Choose account</option>' +
+          data.accounts.map((a) => '<option value="' + escT(a.id) + '" ' + (a.id === m.suggestedAccountId ? 'selected' : '') +
+            '>' + escT(a.name) + ' (' + escT(a.rootType) + ')</option>').join('') + '</select></td></tr>').join('') +
+        '</table></div>' : '';
+      const confirm = data.stats.voucherCount ? '<div class="panel"><button id="confirm-tally" class="primary" ' +
+        (data.canImport ? '' : 'disabled') + '>Confirm and import ' + escT(data.stats.voucherCount) + ' vouchers</button>' +
+        '<p class="note">Imports ledger history only. Vouchers are marked as Tally history and safe to resume without duplicates.</p></div>' : '';
+      result.innerHTML = '<div class="panel strip">' + statT(data.company || 'Unknown', 'company') +
+        statT(data.stats.ledgerCount, 'ledgers') + statT(data.stats.voucherCount, 'vouchers') +
+        statT(data.stats.balancedCount, 'balanced') + statT(data.stats.unbalancedCount, 'need review') + '</div>' +
+        warnings + ledgers + vouchers + mappings + confirm;
+
+      const confirmButton = document.getElementById('confirm-tally');
+      if (confirmButton) confirmButton.onclick = async () => {
+        const selected = [...document.querySelectorAll('.tally-map')];
+        if (selected.some((x) => !x.value)) {
+          result.insertAdjacentHTML('afterbegin', '<div class="msg bad">Map every Tally ledger before importing.</div>');
+          return;
+        }
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Importing…';
+        try {
+          const response = await fetch('/api/tally/import', {
+            method: 'POST', headers: {'content-type':'application/json'},
+            body: JSON.stringify({ token: data.token, mappings: selected.map((x) => ({ sourceName: x.dataset.source, accountId: x.value })) })
+          });
+          const imported = await response.json();
+          if (!imported.ok) throw new Error(imported.error);
+          result.innerHTML = '<div class="msg good"><b>Import complete.</b><br>' + escT(imported.imported) +
+            ' voucher(s) posted' + (imported.skippedDuplicates ? '; ' + escT(imported.skippedDuplicates) + ' already imported and skipped' : '') +
+            '.</div><p><a href="/"><button class="primary">Open dashboard</button></a></p>';
+        } catch (error) {
+          confirmButton.disabled = false; confirmButton.textContent = 'Confirm import';
+          result.insertAdjacentHTML('afterbegin', '<div class="msg bad"><b>Import stopped.</b><br>' + escT(error.message) + '</div>');
+        }
+      };
+    } catch (error) {
+      result.innerHTML = '<div class="msg bad"><b>Cannot preview this file.</b><br>' + escT(error.message) + '</div>';
+    } finally { button.disabled = false; }
+  };
+  </script>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -869,6 +1573,8 @@ interface ProposalViewV {
   taxable: string | null;
   tax: string | null;
   total: string | null;
+  totalIsUnverified: boolean;
+  canRecordExpenseOnly: boolean;
   registrationStatus: string | null;
   /** Null when no supplier could be matched — nothing to hang master data on. */
   partyId: string | null;
@@ -912,11 +1618,13 @@ function fillForm(p: ProposalViewV, token: string): string {
       return `<div class="fillrow">
         <label>Figures as printed <span class="muted">${esc(f.ask)}</span></label>
         <div class="fillfigs">
-          <input data-fill="taxable" placeholder="taxable" inputmode="decimal">
+          <input data-fill="taxable" placeholder="taxable" inputmode="decimal"
+            value="${esc(p.taxable ?? '')}">
           <input data-fill="cgst" placeholder="CGST" inputmode="decimal">
           <input data-fill="sgst" placeholder="SGST" inputmode="decimal">
           <input data-fill="igst" placeholder="IGST" inputmode="decimal">
-          <input data-fill="total" placeholder="total" inputmode="decimal">
+          <input data-fill="total" placeholder="total" inputmode="decimal"
+            value="${esc(p.total ?? '')}">
         </div>
         <div class="muted small">They must add up — taxable + tax = total — and
           the tax must match a scheduled rate. Checked before anything posts.</div>
@@ -945,6 +1653,38 @@ function fillForm(p: ProposalViewV, token: string): string {
         ${form.unfixable.length > 0 ? 'disabled' : ''}>Check these figures</button>
       <span class="fillresult muted"></span>
     </div>
+  </div>`;
+}
+
+function expenseOnlyForm(
+  p: ProposalViewV, token: string,
+  accounts: Array<{ id: string; name: string; itc: string | null }>,
+  defaultAccountId: string | null,
+): string {
+  if (!p.canRecordExpenseOnly || p.total === null) return '';
+  const accountOptions = accounts.map((a) =>
+    `<option value="${esc(a.id)}" ${a.id === defaultAccountId ? 'selected' : ''}>${esc(a.name)}</option>`
+  ).join('');
+  const supplier = p.partyId === null
+    ? `<label>New supplier name
+         <input class="expense-supplier" placeholder="e.g. Campus E-Shop" autocomplete="organization">
+       </label>`
+    : `<div><span class="muted small">Supplier</span><br><b>${esc(p.partyName ?? 'Supplier on file')}</b></div>`;
+  return `<div class="expenseonly" data-index="${p.index}" data-token="${esc(token)}"
+      data-party="${esc(p.partyId ?? '')}" data-gstin="${esc(p.supplierGstin ?? '')}"
+      data-total="${esc(p.total)}" data-prepared="0">
+    <h3>Record ${inr(p.total)} as expense</h3>
+    <div class="muted small">The receipt total is kept. No GST amount or input credit is recorded.</div>
+    <div class="expensegrid">
+      ${supplier}
+      <label>Expense account
+        <select class="grossaccount">${accountOptions}</select>
+      </label>
+      <button class="prepare-expense" ${accounts.length === 0 ? 'disabled' : ''}>
+        Prepare without GST credit
+      </button>
+    </div>
+    <div class="expense-result small" aria-live="polite"></div>
   </div>`;
 }
 
@@ -1036,6 +1776,11 @@ function proposalCard(
       : `<ul class="${cls}">${items.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`;
 
   const canPost = p.status !== 'blocked';
+  const fill = fillForm(p, token);
+  const expenseOnly = expenseOnlyForm(p, token, accounts, defaultAccountId);
+  const fillChoice = p.canRecordExpenseOnly && fill !== ''
+    ? `<details class="manualalternative"><summary>Enter the GST breakup instead</summary>${fill}</details>`
+    : fill;
 
   // The classification controls — an expense head per line, and whether to
   // claim credit at all. Offered only on a postable card; a blocked one has
@@ -1084,14 +1829,16 @@ function proposalCard(
     </div>
 
     <div class="figs">
-      ${money('taxable', p.taxable)} ${money('tax', p.tax)} ${money('total', p.total)}
+      ${money('taxable', p.taxable)} ${money('tax', p.tax)}
+      ${money(p.totalIsUnverified ? 'total seen — check it' : 'total', p.total)}
     </div>
 
     ${confirms}
     ${notes('warns', p.warnings)}
     ${notes('blocks', p.blockers)}
     ${partyRcmForm(p, token)}
-    ${fillForm(p, token)}
+    ${expenseOnly}
+    ${fillChoice}
     ${controls}
 
     <div class="billactions">
@@ -1119,8 +1866,8 @@ export function renderBillReview(a: {
 }): string {
   const upload = `
     <div class="row">
-      <label>Upload invoice PDFs
-        <input type="file" id="pdfs" accept="application/pdf" multiple>
+      <label>Upload invoice PDFs or photos
+        <input type="file" id="pdfs" accept="application/pdf,image/jpeg,image/png,image/webp" multiple>
       </label>
       <button class="primary" id="run" disabled>Read them</button>
     </div>`;
@@ -1205,27 +1952,72 @@ if (run) run.onclick = async () => {
  */
 function readLineAccounts(card) {
   const out = [];
-  card.querySelectorAll('.lineacct').forEach((sel) => out.push(sel.value || null));
+  card.querySelectorAll('.lineacct, .grossaccount').forEach((sel) => out.push(sel.value || null));
   return out.length > 0 ? out : undefined;
 }
 
 function readFill(card) {
   const fill = card.querySelector('.fill');
-  if (!fill) return undefined;
   const manual = {};
   const figures = {};
-  fill.querySelectorAll('[data-fill]').forEach((el) => {
-    const v = el.value.trim();
-    if (v === '') return;
-    const k = el.dataset.fill;
-    if (['taxable','cgst','sgst','igst','cess','total'].includes(k)) figures[k] = v;
-    else manual[k] = v;
-  });
+  if (fill) {
+    fill.querySelectorAll('[data-fill]').forEach((el) => {
+      const v = el.value.trim();
+      if (v === '') return;
+      const k = el.dataset.fill;
+      if (['taxable','cgst','sgst','igst','cess','total'].includes(k)) figures[k] = v;
+      else manual[k] = v;
+    });
+  }
   if (figures.taxable !== undefined && figures.total !== undefined) {
     manual.figures = figures;
   }
+  const expense = card.querySelector('.expenseonly[data-prepared="1"]');
+  if (expense) {
+    manual.expenseOnly = true;
+    if (expense.dataset.party) manual.partyId = expense.dataset.party;
+    delete manual.figures;
+  }
   return Object.keys(manual).length > 0 ? manual : undefined;
 }
+
+document.querySelectorAll('button.prepare-expense').forEach((btn) => {
+  btn.onclick = async () => {
+    const box = btn.closest('.expenseonly');
+    const card = btn.closest('.billcard');
+    const out = box.querySelector('.expense-result');
+    let partyId = box.dataset.party;
+    btn.disabled = true; out.textContent = 'Preparing…';
+    try {
+      if (!partyId) {
+        const name = box.querySelector('.expense-supplier').value.trim();
+        if (!name) throw new Error('Enter the supplier name.');
+        const made = await post('/api/suppliers', { name, gstin: box.dataset.gstin || undefined });
+        if (!made.ok) throw new Error(made.error || 'could not create supplier');
+        partyId = made.id; box.dataset.party = partyId;
+      }
+      box.dataset.prepared = '1';
+      const r = await post('/api/bills/fill', {
+        token: box.dataset.token, index: Number(box.dataset.index),
+        manual: readFill(card), lineAccounts: readLineAccounts(card),
+      });
+      if (!r.ok) throw new Error(r.error || 'could not prepare expense');
+      if (!r.ready) {
+        box.dataset.prepared = '0';
+        throw new Error((r.blockers || []).join(' '));
+      }
+      out.innerHTML = '<span class="good">Ready. Review and post the expense.</span>';
+      const actions = card.querySelector(':scope > .billactions');
+      actions.innerHTML = '<button class="primary post" data-index="' + box.dataset.index +
+        '" data-token="' + box.dataset.token + '">Approve ₹' + box.dataset.total +
+        ' expense</button>';
+      wirePost(actions.querySelector('button.post'));
+    } catch (error) {
+      out.innerHTML = '<span class="bad">' + String(error.message || error).replace(/</g, '&lt;') + '</span>';
+      btn.disabled = false;
+    }
+  };
+});
 
 /*
  * Reclassifying a line can create a TDS liability, so the card has to ask
@@ -1299,7 +2091,7 @@ document.querySelectorAll('button.setrcm').forEach((btn) => {
     if (!f.ok) { out.textContent = f.error || 'saved, but could not re-read'; return; }
     if (f.ready) {
       out.innerHTML = '<span class="good">Saved — this bill now posts.</span>';
-      const actions = card.querySelector('.billactions:last-of-type');
+      const actions = card.querySelector(':scope > .billactions');
       if (actions && !actions.querySelector('button.post')) {
         actions.innerHTML =
           '<button class="primary post" data-index="' + box.dataset.index +
@@ -1327,7 +2119,7 @@ document.querySelectorAll('button.check').forEach((btn) => {
     if (!r.ok) { out.textContent = r.error || 'could not check'; return; }
     if (r.ready) {
       out.innerHTML = '<span class="good">These hold together — you can post now.</span>';
-      const actions = card.querySelector('.billactions:last-of-type');
+      const actions = card.querySelector(':scope > .billactions');
       if (actions && !actions.querySelector('button.post')) {
         actions.innerHTML =
           '<button class="primary post" data-index="' + btn.dataset.index +
@@ -1359,14 +2151,15 @@ function wirePost(btn) {
     const r = await post('/api/bills/post', {
       token: btn.dataset.token, index: Number(btn.dataset.index), confirm,
       lineAccounts,
-      blockItc: noitc ? noitc.checked : false,
+      blockItc: (noitc ? noitc.checked : false) ||
+        !!card.querySelector('.expenseonly[data-prepared="1"]'),
       // The same answers the check ran against, so the bill posted is the bill
       // the reviewer was shown.
       manual: readFill(card),
     });
     if (r.ok) {
       card.classList.add('done');
-      card.querySelector('.billactions').innerHTML =
+      card.querySelector(':scope > .billactions').innerHTML =
         '<span class="good">Posted — ' + r.voucherId + '</span>';
     } else {
       say(false, r.error || 'could not post'); btn.disabled = false;
@@ -1488,6 +2281,7 @@ export function renderPayables(a: {
   bills: OutstandingBillV[];
   accounts: Array<{ id: string; name: string }>;
   today: string;
+  draftVoucherId?: string;
 }): string {
   // Ageing totals per bucket.
   const buckets: Record<string, bigint> = {
@@ -1510,7 +2304,9 @@ export function renderPayables(a: {
   const acctOptions = a.accounts.map((ac) =>
     `<option value="${esc(ac.id)}">${esc(ac.name)}</option>`).join('');
 
-  const rows = a.bills.map((b) => `
+  const rows = a.bills.map((b) => {
+    const isDraft = b.voucherId === a.draftVoucherId;
+    return `
     <tr class="prow" data-v="${esc(b.voucherId)}">
       <td>${esc(b.supplierName)}</td>
       <td class="mono">${esc(b.billNumber)}</td>
@@ -1521,23 +2317,26 @@ export function renderPayables(a: {
       <td><button class="pay" data-v="${esc(b.voucherId)}" data-out="${esc(b.outstanding)}">Pay</button>
         <a class="btnlink" href="/returns?bill=${esc(b.voucherId)}">Return</a></td>
     </tr>
-    <tr class="payform" id="pf_${esc(b.voucherId)}" hidden>
+    <tr class="payform" id="pf_${esc(b.voucherId)}" ${isDraft ? '' : 'hidden'}>
       <td colspan="6">
         <div class="payrow">
+          ${isDraft ? '<strong>AI-prepared draft — check every field before approval.</strong>' : ''}
           <label>Amount <input type="text" class="p-amt" value="${esc(b.outstanding)}"></label>
           <label>From <select class="p-acct">${acctOptions}</select></label>
           <label>Date <input type="date" class="p-date" value="${esc(a.today)}"></label>
           <label>Ref <input type="text" class="p-ref" placeholder="UTR / cheque no"></label>
-          <button class="primary p-go" data-v="${esc(b.voucherId)}">Record payment</button>
+          <button class="primary p-go" data-v="${esc(b.voucherId)}">${isDraft ? 'Approve and record payment' : 'Record payment'}</button>
         </div>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   return `<h1>Payables</h1>
 <p class="sub">What the client owes, oldest first. A payment posts to the ledger
 and clears the bill.</p>
 
 ${strip}
+${a.draftVoucherId ? '<div class="msg warn">This is an AI-prepared draft. It has not posted anything. Check the amount, payment account and date before approving.</div>' : ''}
 <div id="msg"></div>
 
 ${a.bills.length === 0

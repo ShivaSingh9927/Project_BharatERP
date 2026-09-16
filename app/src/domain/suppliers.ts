@@ -11,6 +11,60 @@
 
 import { withFirm } from '../db/pool.ts';
 import { paise, money } from './tax.ts';
+import { ValidationError } from './types.ts';
+import { validateGstin } from './gstin.ts';
+
+/** A supplier created by a reviewer from the bill card, with an audit trail. */
+export async function createSupplier(
+  firmId: string,
+  input: { clientId: string; name: string; gstin?: string; createdBy: string },
+): Promise<{ id: string; name: string }> {
+  const name = input.name.trim();
+  const gstin = input.gstin?.trim().toUpperCase() || null;
+  if (name === '') throw new ValidationError('supplier name is required', 'PB-1');
+  if (gstin !== null) {
+    const check = validateGstin(gstin);
+    if (!check.valid) {
+      throw new ValidationError(`supplier GSTIN invalid — ${check.reason}`, 'PB-1');
+    }
+  }
+
+  return withFirm(firmId, async (c) => {
+    if (gstin !== null) {
+      const existing = await c.query<{ id: string; name: string }>(
+        `SELECT id, name FROM parties
+          WHERE client_id = $1 AND party_type = 'supplier' AND gstin = $2`,
+        [input.clientId, gstin]);
+      if (existing.rows[0]) return existing.rows[0];
+    }
+    const payable = await c.query<{ id: string }>(
+      `SELECT id FROM accounts
+        WHERE client_id = $1 AND account_type = 'payable' AND NOT is_group
+        ORDER BY code NULLS LAST LIMIT 1`, [input.clientId]);
+    if (!payable.rows[0]) {
+      throw new ValidationError('no Creditors account is configured', 'PB-1');
+    }
+
+    const made = await c.query<{ id: string; name: string }>(
+      `INSERT INTO parties
+         (firm_id, client_id, party_type, name, legal_name, gstin, pan,
+          gst_category, state_code, ledger_account_id, created_by)
+       VALUES ($1,$2,'supplier',$3,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING id, name`,
+      [firmId, input.clientId, name, gstin, gstin?.slice(2, 12) ?? null,
+       gstin ? 'registered_regular' : 'unregistered', gstin?.slice(0, 2) ?? null,
+       payable.rows[0].id, input.createdBy]);
+    const supplier = made.rows[0]!;
+    await c.query(
+      `INSERT INTO audit_log
+         (firm_id, client_id, entity_type, entity_id, action, after,
+          actor_user_id, actor_type)
+       VALUES ($1,$2,'supplier',$3,'create',$4,$5,'human')`,
+      [firmId, input.clientId, supplier.id,
+       JSON.stringify({ name, gstin, source: 'bill_review' }), input.createdBy]);
+    return supplier;
+  });
+}
 
 export interface SupplierListRow {
   id: string;

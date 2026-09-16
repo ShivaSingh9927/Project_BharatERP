@@ -158,6 +158,8 @@ const NUMBER_LABELS = [
    */
   /(?<![\w-])(?<!\be[\s-])invoice\s*(?:number|no)\b\.?\s*[#:：]?\s*([^\n]*)/i,
   /\binvoice\s*#\s*([^\n]*)/i,
+  // Common on retail receipts, including PaddleOCR's "Bill No.ES096200".
+  /\bbill\s*(?:number|no)\b\.?\s*[#:：]?\s*([^\n]*)/i,
   /*
    * The abbreviated form. A Delhi travel agent heads its invoices "Inv No.
    * I3027535" and the number went unread — reported as "no invoice number

@@ -86,4 +86,16 @@ describe('the figures shown', () => {
     expect(p.readBy).toBe('docling');
     expect(p.registrationStatus).toBe('Active');
   });
+  it('shows one labelled total even when the table is blocked', () => {
+    const p = proposalView(base({
+      table: { readable: false, roles: [], header: [], rows: [], totals: null,
+        sums: {}, reason: 'table did not tie' } as never,
+      statedTotal: '117.00', blockers: ['the line-item table could not be read'],
+      input: null,
+    }));
+    expect(p.total).toBe('117.00');
+    expect(p.totalIsUnverified).toBe(true);
+    expect(p.form?.read.total).toBe('117.00');
+    expect(p.canRecordExpenseOnly).toBe(true);
+  });
 });

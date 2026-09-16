@@ -59,6 +59,7 @@ interface LayoutResponse {
 
 export interface GlmOcrClient {
   read(file: Buffer): Promise<CandidateTable[]>;
+  readDocument(file: Buffer): Promise<{ text: string; tables: CandidateTable[] }>;
 }
 
 /**
@@ -140,34 +141,57 @@ export function tablesFromLayout(body: LayoutResponse): CandidateTable[] {
   return out;
 }
 
+/** Running text for header fields when local OCR could not run at all. */
+export function textFromLayout(body: LayoutResponse): string {
+  const lines: string[] = [];
+  for (const page of body.layout_details ?? []) {
+    const elements = Array.isArray(page) ? page : [page];
+    for (const el of elements) {
+      if (typeof el?.content !== 'string') continue;
+      if (el.label === 'table') {
+        lines.push(...parseHtmlTable(el.content).map((row) => row.join(' ')));
+      } else {
+        const text = cellText(el.content);
+        if (text !== '') lines.push(text);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
 const DEFAULT_URL = 'https://api.z.ai/api/paas/v4';
 
 export function glmOcrHttpClient(apiKey: string, baseUrl = DEFAULT_URL): GlmOcrClient {
+  const request = async (file: Buffer): Promise<LayoutResponse> => {
+    const isPdf = file.subarray(0, 5).toString('latin1') === '%PDF-';
+    const mime = isPdf ? 'application/pdf' : 'image/jpeg';
+    const r = await fetch(`${baseUrl}/layout_parsing`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'glm-ocr',
+        file: `data:${mime};base64,${file.toString('base64')}`,
+      }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!r.ok) {
+      throw new Error(
+        `HTTP ${r.status} from the layout reader` +
+        (r.status === 429 ? ' (rate limit, or the account is out of credit)' : ''));
+    }
+    return await r.json() as LayoutResponse;
+  };
+
   return {
     async read(file) {
-      const isPdf = file.subarray(0, 5).toString('latin1') === '%PDF-';
-      const mime = isPdf ? 'application/pdf' : 'image/jpeg';
-      const r = await fetch(`${baseUrl}/layout_parsing`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'glm-ocr',
-          file: `data:${mime};base64,${file.toString('base64')}`,
-        }),
-        signal: AbortSignal.timeout(300_000),
-      });
-      if (!r.ok) {
-        // The body can echo the key back on some gateways, so only the status
-        // travels. A balance failure arrives as 429 and reads, unhelpfully,
-        // like rate limiting — worth knowing when one turns up in a log.
-        throw new Error(
-          `HTTP ${r.status} from the layout reader` +
-          (r.status === 429 ? ' (rate limit, or the account is out of credit)' : ''));
-      }
-      return tablesFromLayout(await r.json() as LayoutResponse);
+      return tablesFromLayout(await request(file));
+    },
+    async readDocument(file) {
+      const body = await request(file);
+      return { text: textFromLayout(body), tables: tablesFromLayout(body) };
     },
   };
 }

@@ -131,13 +131,27 @@ export async function createInvoice(
   if (input.lines.length === 0) {
     throw new ValidationError('invoice has no line items', 'SI-7');
   }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  for (const [i, line] of input.lines.entries()) {
+    if (!line.description.trim()) {
+      throw new ValidationError(`line ${i + 1} has no description`, 'SI-7');
+    }
+    if (!uuid.test(line.incomeAccountId)) {
+      throw new ValidationError(`line ${i + 1} has no valid income ledger`, 'SI-7');
+    }
+  }
 
   return withFirm(firmId, async (c) => {
     // --- party and supplier context ---------------------------------------
     const p = await c.query(
       `SELECT p.id, p.name, p.legal_name, p.gstin, p.gst_category, p.state_code,
               p.billing_address, p.ledger_account_id, p.is_active
-       FROM parties p WHERE p.id = $1 AND p.client_id = $2`,
+       FROM parties p
+       WHERE p.id = $1 AND p.client_id = $2 AND p.party_type = 'customer'
+         AND p.ledger_account_id IN (
+           SELECT id FROM accounts
+            WHERE client_id = $2 AND account_type = 'receivable' AND NOT is_group
+         )`,
       [input.partyId, input.clientId],
     );
     if (p.rowCount === 0) throw new ValidationError('party not found for this client', 'SI-1');
@@ -267,6 +281,20 @@ export async function createInvoice(
       }
 
       resolved.push({ ...line, gstRate: gstRate!, cessRate, rateId });
+    }
+
+    // A browser select is convenience, not an authorisation boundary. Every
+    // supplied ledger must be an active income leaf owned by this client;
+    // otherwise a hand-written request could post revenue into another
+    // client's chart while keeping this voucher's tenant IDs intact.
+    const wantedAccounts = [...new Set(resolved.map((l) => l.incomeAccountId))];
+    const allowedAccounts = await c.query<{ id: string }>(
+      `SELECT id FROM accounts
+        WHERE client_id = $1 AND id = ANY($2::uuid[])
+          AND root_type = 'income' AND NOT is_group AND NOT is_disabled`,
+      [input.clientId, wantedAccounts]);
+    if (allowedAccounts.rowCount !== wantedAccounts.length) {
+      throw new ValidationError('every invoice line needs an active income ledger for this client', 'SI-7');
     }
 
     // --- compute (deterministic, no model involvement) ---------------------

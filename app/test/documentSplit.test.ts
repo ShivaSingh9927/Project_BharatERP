@@ -278,6 +278,11 @@ Example Subscription                 1   Rs 929.00    Rs 929.00`,
       .toBe('92102915');
   });
 
+  it('reads a retail receipt bill number with no separating space', () => {
+    expect(splitDocuments('Tax Invoice\nBill No.ES096200\n')[0]!.documentNumber)
+      .toBe('ES096200');
+  });
+
   it('types an unqualified heading as a plain invoice, not a tax invoice', () => {
     // The distinction decides whether input credit can rest on it.
     expect(splitDocuments(FOREIGN)[0]!.kind).toBe('invoice');

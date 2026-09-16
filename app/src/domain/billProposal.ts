@@ -59,7 +59,7 @@ import { splitDocuments, type DocumentSegment } from '../parse/documentSplit.ts'
 import { extractTaxProfile, taxProfileWarnings, type TaxProfile } from '../parse/invoiceTax.ts';
 import { extractInvoiceDate } from '../parse/invoiceDate.ts';
 import { recordProvenance } from './provenance.ts';
-import { readInvoiceTableFromWords, gradeTable,
+import { readInvoiceTableFromWords, gradeTable, labelledTotalsInText,
          type InvoiceTable, type TableRow } from '../parse/invoiceTable.ts';
 import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.ts';
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
@@ -68,6 +68,7 @@ import { readChargeBlock } from '../parse/chargeBlock.ts';
 import { gradeCandidates, type ParserClient, type CandidateTable }
   from '../parse/candidateTables.ts';
 import type { GlmOcrClient } from '../parse/glmOcr.ts';
+import type { PaddleBillClient, PaddleBillResult } from '../parse/paddleBill.ts';
 import type { DoclingClient, DoclingTable } from '../parse/doclingTable.ts';
 import { readRegistration, checkRegistration } from './gstinRegistry.ts';
 import type { GstinLookup, GstinRecord } from '../integrations/sandboxGst.ts';
@@ -83,6 +84,9 @@ export interface BillProposal {
   fileHash: string;
   taxProfile: TaxProfile;
   table: InvoiceTable;
+  /** One unambiguous total explicitly labelled on the document, even when its
+   * line-item table could not be accepted. Display-only until the gates pass. */
+  statedTotal?: string | null;
   /** Matched supplier, when the GSTIN identified exactly one. */
   partyId: string | null;
   partyName: string | null;
@@ -242,6 +246,8 @@ export interface ManualEntry {
     cgst?: string; sgst?: string; igst?: string; cess?: string;
     total: string;
   };
+  /** Record a labelled gross receipt total as cost, with no GST credit. */
+  expenseOnly?: true;
 }
 
 export interface ProposeInput {
@@ -295,6 +301,8 @@ export interface ProposeInput {
    * capability, never permission.
    */
   glmOcr?: GlmOcrClient;
+  /** Local, private first reader for photographed bills. */
+  paddle?: PaddleBillClient;
   docling?: DoclingClient;
   /** The Docling reading of the whole file, extracted once in `proposeBills`. */
   doclingTables?: DoclingTable[];
@@ -699,8 +707,8 @@ function isPdf(file: Buffer): boolean {
  * A photographed invoice — the WhatsApp channel, and the one an SMB actually
  * uses.
  *
- * There is no text layer to read, so the structure sidecar OCRs the picture
- * and returns word rows with their pixel coordinates. Everything downstream is
+ * There is no text layer to read, so local PaddleOCR reads the picture and
+ * returns word rows with their pixel coordinates. Everything downstream is
  * unchanged: the rows are candidate tables, they face the same two gates, and
  * a figure still carries a region it can be pointed at on the image.
  *
@@ -710,20 +718,19 @@ function isPdf(file: Buffer): boolean {
  */
 async function readPhotograph(
   input: ProposeInput,
-): Promise<{ text: string; tables: CandidateTable[] }> {
-  if (!input.parser) {
+): Promise<PaddleBillResult> {
+  if (!input.paddle) {
     throw new ValidationError(
-      'this file is an image, not a PDF, and reading it needs the structure ' +
-      'reader with OCR — which is not running. Start it, or send the invoice ' +
-      'as a PDF.', 'BR-3');
+      'this file is an image, not a PDF, and local PaddleOCR is not configured. ' +
+      'Configure PaddleOCR, or send the invoice as a PDF.', 'BR-3');
   }
-  const r = await input.parser.read(input.file, { ocr: 'on' });
+  const r = await input.paddle.read(input.file);
   if (r.text.trim() === '') {
     throw new ValidationError(
       'no text could be read from this image at all. It may be too small, too ' +
       'dark, or not an invoice.', 'BR-3');
   }
-  return { text: r.text, tables: r.tables };
+  return { text: r.text, tables: r.tables, warnings: r.warnings };
 }
 
 /** Reads a file and proposes one bill per document it contains. */
@@ -731,7 +738,24 @@ export async function proposeBills(
   firmId: string, input: ProposeInput,
 ): Promise<BillProposal[]> {
   const fileHash = contentHash(input.file);
-  const photo = isPdf(input.file) ? null : await readPhotograph(input);
+  let glmReplacedFailedPaddle = false;
+  let photo: PaddleBillResult | null = null;
+  if (!isPdf(input.file)) {
+    try {
+      photo = await readPhotograph(input);
+    } catch (localError) {
+      const consented = input.glmOcr && (await llmSettings(firmId)).extraction;
+      if (!consented) throw localError;
+      try {
+        const cloud = await input.glmOcr!.readDocument(input.file);
+        if (cloud.text.trim() === '') throw localError;
+        photo = { text: cloud.text, tables: cloud.tables, warnings: [] };
+        glmReplacedFailedPaddle = true;
+      } catch {
+        throw localError;
+      }
+    }
+  }
 
   /*
    * A photograph has no word geometry of the kind `extractPdfWords` returns,
@@ -756,26 +780,6 @@ export async function proposeBills(
     catch { candidateTables = undefined; }
   }
 
-  /*
-   * The layout model, added to the pile rather than preferred over it.
-   *
-   * It is very good at exactly what the local readers cannot do — a
-   * photograph, or a header split across two lines — and it costs a fraction
-   * of a paisa a page. Neither is a reason to trust it: its tables face the
-   * same two gates, and if it and a local reader both tie with DIFFERENT
-   * figures `gradeCandidates` refuses the document rather than choosing.
-   *
-   * Behind the firm's consent because the document leaves the building. A
-   * failure here is never fatal — the pipeline reads what it can locally, as
-   * it did before this existed.
-   */
-  if (input.glmOcr && (await llmSettings(firmId)).extraction) {
-    try {
-      const extra = await input.glmOcr.read(input.file);
-      if (extra.length > 0) candidateTables = [...(candidateTables ?? []), ...extra];
-    } catch { /* read what we have */ }
-  }
-
   let doclingTables: DoclingTable[] | undefined;
   if (photo === null && input.docling) {
     try { doclingTables = await input.docling.read(input.file); }
@@ -784,8 +788,43 @@ export async function proposeBills(
 
   const out: BillProposal[] = [];
   for (const seg of segments) {
-    out.push(await proposeFromDocument(
-      firmId, { ...input, doclingTables, candidateTables }, seg, pages, fileHash, text));
+    const proposal = await proposeFromDocument(
+      firmId, { ...input, doclingTables, candidateTables }, seg, pages, fileHash, text);
+    if (photo) proposal.warnings.push(...photo.warnings);
+    if (glmReplacedFailedPaddle) proposal.warnings.push(
+      'local PaddleOCR could not read this image, so GLM-OCR was used with ' +
+      'the firm\'s consent and the document was sent to a third party.');
+    out.push(proposal);
+  }
+
+  /*
+   * GLM-OCR is a true fallback for photographs. It is contacted only when
+   * Paddle's candidate failed the arithmetic/readability gates, and only with
+   * the firm's existing extraction consent. A configured key alone is never
+   * permission to export a client's bill.
+   */
+  if (photo !== null && out.some((p) => !p.table.readable)
+      && input.glmOcr && (await llmSettings(firmId)).extraction) {
+    try {
+      const extra = await input.glmOcr.read(input.file);
+      if (extra.length > 0) {
+        const retried: BillProposal[] = [];
+        const fallbackTables = [...(candidateTables ?? []), ...extra];
+        for (const seg of segments) {
+          const proposal = await proposeFromDocument(
+            firmId, { ...input, doclingTables, candidateTables: fallbackTables },
+            seg, pages, fileHash, text);
+          proposal.warnings.push(...photo.warnings);
+          if (proposal.warnings.some((w) => /glm-ocr strategy/.test(w))) {
+            proposal.warnings.push(
+              'PaddleOCR could not produce a usable table, so GLM-OCR was ' +
+              'used with the firm\'s consent and the document was sent to a third party.');
+          }
+          retried.push(proposal);
+        }
+        return retried;
+      }
+    } catch { /* keep the local refusal for manual review */ }
   }
   return out;
 }
@@ -810,7 +849,6 @@ export async function proposeFromDocument(
   const blockers: string[] = [];
   const confirmations: Confirmation[] = [];
   const warnings = taxProfileWarnings(seg, profile);
-  const currency = tableCurrency(table);
   const pageText = pages
     .filter((p) => seg.pages.includes(p.number))
     .flatMap((p) => p.rows.map((r) => r.words.map((w) => w.text).join(' ')))
@@ -819,6 +857,32 @@ export async function proposeFromDocument(
   const segPages = pages.filter((p) => seg.pages.includes(p.number));
   let llmProvenance: { provider: string; model: string } | undefined;
   let crossChecked: BillProposal['crossChecked'] = 'off';
+  const labelledTotals = labelledTotalsInText(seg.text);
+  const expenseOnly = input.manual?.expenseOnly === true
+    && !table.readable && labelledTotals.length === 1;
+
+  if (expenseOnly) {
+    const total = labelledTotals[0]!;
+    const description = seg.documentNumber
+      ? `Expense from receipt ${seg.documentNumber}` : 'Expense from receipt';
+    const row: TableRow = {
+      cells: [description, total, total],
+      by: { description, taxable: total, total },
+    };
+    table = {
+      readable: true,
+      roles: ['description', 'taxable', 'total'],
+      header: ['Description', 'Expense amount', 'Total'],
+      rows: [row], totals: null,
+      sums: { taxable: total, total },
+    };
+    readBy = 'entered';
+    warnings.push(
+      `the receipt labels a total of ${total}, but does not provide a usable ` +
+      'GST breakup. A reviewer chose to record the full amount as expense; no ' +
+      'GST component or input credit is recorded.');
+  }
+  const currency = tableCurrency(table);
 
   /*
    * The fallback, in that order: coordinates first, a model only if they
@@ -1903,7 +1967,9 @@ export async function proposeFromDocument(
   return {
     index: seg.index, pages: seg.pages,
     documentNumber, supplierGstin: seg.supplierGstin,
-    fileHash, taxProfile: profile, table, partyId, partyName, registration,
+    fileHash, taxProfile: profile, table,
+    statedTotal: labelledTotals.length === 1 ? labelledTotals[0]! : null,
+    partyId, partyName, registration,
     blockers, warnings, confirmations, readBy, llmProvenance, crossChecked, tds,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
     input: ready ? {
@@ -1931,6 +1997,7 @@ export async function proposeFromDocument(
         cgst: table.sums.cgst, sgst: table.sums.sgst, igst: table.sums.igst,
         grandTotal: table.sums.total,
       },
+      ...(expenseOnly ? { forceBlockItc: true } : {}),
     } : null,
   };
 }

@@ -26,6 +26,7 @@ import { llmClientFromEnv } from '../parse/llmTable.ts';
 import { doclingClientFromEnv } from '../parse/doclingTable.ts';
 import { parserClientFromEnv } from '../parse/candidateTables.ts';
 import { glmOcrClientFromEnv } from '../parse/glmOcr.ts';
+import { paddleBillClient } from '../parse/paddleBill.ts';
 import { sandboxLookupFromEnv } from '../integrations/sandboxGst.ts';
 
 /** The readers a firm has switched on, resolved once at boot. */
@@ -34,6 +35,7 @@ export interface ReviewReaders {
   docling: ProposeInput['docling'];
   parser: ProposeInput['parser'];
   glmOcr: ProposeInput['glmOcr'];
+  paddle: ProposeInput['paddle'];
   gstinLookup: ProposeInput['gstinLookup'];
 }
 
@@ -51,6 +53,7 @@ export async function resolveReaders(): Promise<ReviewReaders> {
     docling: (await doclingClientFromEnv()) ?? undefined,
     parser: (await parserClientFromEnv()) ?? undefined,
     glmOcr: glmOcrClientFromEnv() ?? undefined,
+    paddle: paddleBillClient(),
     gstinLookup: sandboxLookupFromEnv() ?? undefined,
   };
 }
@@ -152,7 +155,7 @@ function assembleInput(
   return {
     clientId, expenseAccountId, createdBy, file,
     llm: readers.llm, docling: readers.docling, parser: readers.parser,
-    glmOcr: readers.glmOcr,
+    glmOcr: readers.glmOcr, paddle: readers.paddle,
     gstinLookup: readers.gstinLookup,
     sourceUri: 'review-upload',
   };
@@ -242,7 +245,9 @@ export async function postReviewedBill(
     if (perLine) line.expenseAccountId = perLine;
     else if (overrides.expenseAccountId) line.expenseAccountId = overrides.expenseAccountId;
   });
-  if (overrides.blockItc) proposal.input.forceBlockItc = true;
+  if (overrides.blockItc || overrides.manual?.expenseOnly === true) {
+    proposal.input.forceBlockItc = true;
+  }
 
   const bill = await postProposal(firmId, proposal, {
     approvedBy, confirm, sourceUri: 'review-upload',
@@ -273,6 +278,10 @@ export interface ProposalView {
   taxable: string | null;
   tax: string | null;
   total: string | null;
+  /** Labelled text only, not yet validated through a readable table. */
+  totalIsUnverified: boolean;
+  /** A labelled gross total can be booked without inventing a GST split. */
+  canRecordExpenseOnly: boolean;
   registrationStatus: string | null;
   /** One entry per posting line, so the reviewer can classify each. Empty on a
    *  blocked proposal, which has no lines to post. */
@@ -307,13 +316,20 @@ export function proposalView(p: BillProposal): ProposalView {
         (Number(p.table.sums.cgst ?? '0') + Number(p.table.sums.sgst ?? '0')
          + Number(p.table.sums.igst ?? '0')).toFixed(2))
     : null;
+  const total = p.table.readable
+    ? p.table.sums.total ?? null
+    : p.statedTotal ?? null;
   return {
     index: p.index, status,
     documentNumber: p.documentNumber, partyName: p.partyName,
     supplierGstin: p.supplierGstin, billDate: p.billDate ?? null, readBy: p.readBy,
     taxable: p.table.sums.taxable ?? null,
     tax,
-    total: p.table.sums.total ?? null,
+    total,
+    totalIsUnverified: !p.table.readable && total !== null,
+    canRecordExpenseOnly: !p.table.readable && p.statedTotal !== null
+      && p.statedTotal !== undefined && p.documentNumber !== null
+      && p.billDate !== undefined,
     registrationStatus: p.registration?.status ?? null,
     partyId: p.partyId,
     lines: (p.input?.lines ?? []).map((l) => ({

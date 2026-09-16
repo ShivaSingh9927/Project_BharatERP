@@ -35,7 +35,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,13 +61,16 @@ function extensionOf(bytes: Buffer): string {
  * and belongs in a virtual environment — so this is expected to be set to that
  * environment's interpreter, e.g. `/opt/bharaterp/ocr/bin/python`.
  */
-const PYTHON = process.env.PADDLE_PYTHON ?? 'python3';
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PROJECT_PYTHON = resolve(HERE, '..', '..', '.venv', 'bin', 'python');
+const PYTHON = process.env.PADDLE_PYTHON
+  ?? (existsSync(PROJECT_PYTHON) ? PROJECT_PYTHON : 'python3');
 
 /** 47–93 s per page was measured on CPU; a long statement needs headroom. */
 const TIMEOUT_MS = 10 * 60 * 1000;
 
 const SCRIPT = resolve(
-  dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'paddle_ocr.py');
+  HERE, '..', '..', 'scripts', 'paddle_ocr.py');
 
 interface SidecarSuccess {
   ok: true;

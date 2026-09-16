@@ -22,6 +22,125 @@ export function accountNumberHash(accountNumber: string): string {
     .digest('hex');
 }
 
+const BANK_KINDS = ['current', 'savings', 'od', 'cc', 'fd'] as const;
+type BankKind = typeof BANK_KINDS[number];
+
+/**
+ * Add the human-facing bank account and, when supplied, its opening book
+ * balance. The full account number is used only for the fingerprint and last
+ * four digits; it is never written to the database.
+ */
+export async function createBankAccount(
+  firmId: string,
+  input: {
+    clientId: string;
+    bankName: string;
+    accountNumber: string;
+    ifsc?: string;
+    kind: string;
+    openingBalance: string;
+    openingDate: string;
+    createdBy: string;
+  },
+): Promise<{ id: string; bankName: string; last4: string }> {
+  const bankName = input.bankName.trim();
+  const accountNumber = input.accountNumber.replace(/[\s-]+/g, '').toUpperCase();
+  const ifsc = input.ifsc?.trim().toUpperCase() || null;
+  const kind = input.kind as BankKind;
+  if (bankName.length < 2 || bankName.length > 80) {
+    throw new ValidationError('enter a valid bank name', 'BR-2');
+  }
+  if (!/^[A-Z0-9]{6,34}$/.test(accountNumber)) {
+    throw new ValidationError('account number must be 6 to 34 letters or digits', 'BR-2');
+  }
+  if (ifsc !== null && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+    throw new ValidationError('IFSC must look like HDFC0001234', 'BR-2');
+  }
+  if (!BANK_KINDS.includes(kind)) {
+    throw new ValidationError('choose a valid account type', 'BR-2');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.openingDate) ||
+      Number.isNaN(Date.parse(`${input.openingDate}T00:00:00Z`))) {
+    throw new ValidationError('choose a valid opening date', 'BR-2');
+  }
+  let opening: bigint;
+  try { opening = paise(input.openingBalance || '0'); }
+  catch { throw new ValidationError('enter a valid opening balance', 'BR-2'); }
+
+  return withFirm(firmId, async (c) => {
+    const hash = accountNumberHash(accountNumber);
+    const duplicate = await c.query(
+      'SELECT 1 FROM bank_accounts WHERE client_id = $1 AND account_number_hash = $2',
+      [input.clientId, hash]);
+    if (duplicate.rowCount) throw new ValidationError('this bank account is already added', 'BR-2');
+
+    const ledger = await c.query<{ id: string }>(
+      `SELECT id FROM accounts
+       WHERE client_id = $1 AND account_type = 'bank' AND NOT is_group
+       ORDER BY code NULLS LAST LIMIT 1`, [input.clientId]);
+    if (!ledger.rows[0]) throw new ValidationError('no Bank Accounts ledger is configured', 'BR-2');
+
+    const made = await c.query<{ id: string }>(
+      `INSERT INTO bank_accounts
+         (firm_id, client_id, account_id, bank_name, account_number_last4,
+          account_number_hash, ifsc, kind, opening_balance, opening_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [firmId, input.clientId, ledger.rows[0].id, bankName, accountNumber.slice(-4),
+       hash, ifsc, kind, money(opening), input.openingDate]);
+    const id = made.rows[0]!.id;
+
+    if (opening !== 0n) {
+      const fy = await c.query<{ id: string }>(
+        `SELECT id FROM fiscal_years
+         WHERE client_id = $1 AND start_date <= $2 AND end_date >= $2 LIMIT 1`,
+        [input.clientId, input.openingDate]);
+      if (!fy.rows[0]) throw new ValidationError('opening date is outside the configured financial year', 'BR-2');
+      const capital = await c.query<{ id: string }>(
+        `SELECT id FROM accounts
+         WHERE client_id = $1 AND account_type = 'capital' AND NOT is_group
+         ORDER BY code NULLS LAST LIMIT 1`, [input.clientId]);
+      if (!capital.rows[0]) throw new ValidationError('no Capital account is configured', 'BR-2');
+      const number = await c.query<{ number: string }>(
+        `SELECT next_voucher_number($1, 'opening', $2) AS number`,
+        [input.clientId, fy.rows[0].id]);
+      const voucher = await c.query<{ id: string }>(
+        `INSERT INTO vouchers
+           (firm_id, client_id, voucher_type, voucher_number, posting_date,
+            fiscal_year_id, narration, created_by)
+         VALUES ($1,$2,'opening',$3,$4,$5,$6,$7) RETURNING id`,
+        [firmId, input.clientId, number.rows[0]!.number, input.openingDate,
+         fy.rows[0].id, `Opening balance — ${bankName} ••${accountNumber.slice(-4)}`,
+         input.createdBy]);
+      const amount = opening < 0n ? -opening : opening;
+      const bankDebit = opening > 0n ? amount : 0n;
+      const bankCredit = opening < 0n ? amount : 0n;
+      for (const [line, accountId, debit, credit] of [
+        [1, ledger.rows[0].id, bankDebit, bankCredit],
+        [2, capital.rows[0].id, bankCredit, bankDebit],
+      ] as const) {
+        await c.query(
+          `INSERT INTO ledger_entries
+             (firm_id, client_id, voucher_id, line_no, posting_date,
+              fiscal_year_id, account_id, debit, credit, is_opening)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)`,
+          [firmId, input.clientId, voucher.rows[0]!.id, line, input.openingDate,
+           fy.rows[0].id, accountId, money(debit), money(credit)]);
+      }
+    }
+
+    await c.query(
+      `INSERT INTO audit_log
+         (firm_id, client_id, entity_type, entity_id, action, after,
+          actor_user_id, actor_type)
+       VALUES ($1,$2,'bank_account',$3,'create',$4,$5,'human')`,
+      [firmId, input.clientId, id, JSON.stringify({
+        bankName, last4: accountNumber.slice(-4), ifsc, kind,
+        openingBalance: money(opening), openingDate: input.openingDate,
+      }), input.createdBy]);
+    return { id, bankName, last4: accountNumber.slice(-4) };
+  });
+}
+
 async function accountByName(
   c: PoolClient, clientId: string, name: string,
 ): Promise<string> {

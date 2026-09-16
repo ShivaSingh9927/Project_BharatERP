@@ -130,7 +130,7 @@ export function formFor(p: BillProposal): BillFormView {
       billDate: p.billDate ?? null,
       taxable: money(p.table.sums.taxable),
       tax: tax === undefined || tax === '' ? null : tax,
-      total: money(p.table.sums.total),
+      total: money(p.table.sums.total) ?? p.statedTotal ?? null,
     },
     fields,
     unfixable: p.blockers.filter((b) => !matched.has(b)),

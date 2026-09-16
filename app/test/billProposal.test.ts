@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.ts';
 import { seedItcEligibility } from '../src/seed/tdsSections.ts';
-import { proposeFromDocument, postProposal, deriveGstRate,
+import { proposeBills, proposeFromDocument, postProposal, deriveGstRate,
          llmExtractionEnabled, enableLlmExtraction, llmSettings,
          compareReadings } from '../src/domain/billProposal.ts';
 import type { LlmClient } from '../src/parse/llmTable.ts';
@@ -960,6 +960,101 @@ describe('a model as extractor of last resort', () => {
     await expect(ownerPool.query(
       `INSERT INTO firm_ai_settings (firm_id, llm_extraction) VALUES ($1, true)`,
       [t.firmId])).rejects.toThrow();
+  });
+});
+
+describe('photograph OCR order', () => {
+  const photoText = (number: string) =>
+    `Tax Invoice\nInvoice Number # ${number}\nInvoice Date : 27-08-2026\n` +
+    `GSTIN - ${SAME_STATE}\nIGST 18 %\nWhether tax is payable under reverse charge - No`;
+  const good = [[
+    ['Description', 'Taxable Value', 'IGST', 'Total'],
+    ['Example', '1000.00', '180.00', '1180.00'],
+  ]];
+
+  it('does not call GLM when Paddle produces a usable table', async () => {
+    let glmCalls = 0;
+    const p = await proposeBills(t.firmId, {
+      clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases,
+      file: Buffer.from('jpeg'),
+      paddle: { read: async () => ({
+        text: photoText('PHOTO-1'), warnings: [],
+        tables: [{ page: 1, method: 'paddle-ocr', cells: good[0]! }],
+      }) },
+      glmOcr: {
+        read: async () => { glmCalls++; return []; },
+        readDocument: async () => { glmCalls++; return { text: '', tables: [] }; },
+      },
+    });
+    expect(glmCalls).toBe(0);
+    expect(p[0]?.table.readable).toBe(true);
+    expect(p[0]?.warnings.join(' ')).toMatch(/paddle-ocr strategy/);
+  });
+
+  it('calls GLM only after Paddle returns no usable table', async () => {
+    let glmCalls = 0;
+    const p = await proposeBills(t.firmId, {
+      clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases,
+      file: Buffer.from('jpeg'),
+      paddle: { read: async () => ({
+        text: photoText('PHOTO-2'), warnings: [], tables: [],
+      }) },
+      glmOcr: {
+        read: async () => {
+          glmCalls++;
+          return [{ page: 1, method: 'glm-ocr', cells: good[0]! }];
+        },
+        readDocument: async () => { glmCalls++; return { text: '', tables: [] }; },
+      },
+    });
+    expect(glmCalls).toBe(1);
+    expect(p[0]?.table.readable).toBe(true);
+    expect(p[0]?.warnings.join(' ')).toMatch(/sent to a third party/);
+  });
+
+  it('uses GLM text and tables when Paddle itself cannot run', async () => {
+    let glmCalls = 0;
+    const p = await proposeBills(t.firmId, {
+      clientId: t.clientId, createdBy: t.userId, expenseAccountId: purchases,
+      file: Buffer.from('jpeg'),
+      paddle: { read: async () => { throw new Error('Paddle unavailable'); } },
+      glmOcr: {
+        read: async () => { throw new Error('wrong GLM entry point'); },
+        readDocument: async () => {
+          glmCalls++;
+          return {
+            text: photoText('PHOTO-3'),
+            tables: [{ page: 1, method: 'glm-ocr', cells: good[0]! }],
+          };
+        },
+      },
+    });
+    expect(glmCalls).toBe(1);
+    expect(p[0]?.documentNumber).toBe('PHOTO-3');
+    expect(p[0]?.table.readable).toBe(true);
+  });
+});
+
+describe('gross receipt expense without GST credit', () => {
+  it('books one labelled total without inventing a tax breakup', async () => {
+    const segment = splitDocuments(
+      `Tax Invoice\nBill No.R-117\nDate : 13/09/2026\nGSTIN: ${SAME_STATE}\n` +
+      'G.TOTAL :- 117.00\nINCLUSIVE OF ALL TAXES')[0]!;
+    const p = await propose(segment, page([w('unreadable', 40, 100)]), undefined, {
+      manual: { expenseOnly: true },
+    });
+    expect(p.blockers).toEqual([]);
+    expect(p.readBy).toBe('entered');
+    expect(p.table.sums).toMatchObject({ taxable: '117.00', total: '117.00' });
+    expect(p.input?.lines).toHaveLength(1);
+    expect(p.input?.lines[0]?.gstRate).toBe('0');
+    expect(p.input?.forceBlockItc).toBe(true);
+    expect(p.warnings.join(' ')).toMatch(/no GST component or input credit/);
+
+    const posted = await postProposal(t.firmId, p, { approvedBy: t.userId });
+    expect(posted.grandTotal).toBe('117.00');
+    expect(posted.totalGst).toBe('0.00');
+    expect(posted.itcEligibility).toBe('blocked');
   });
 });
 

@@ -27,7 +27,7 @@ were revised:
   Tally-style reports) alongside the modern UI from v1.
 - **AI is CA-productivity, never CA-replacement.** Copy and defaults reflect
   this. AI proposes; CA approves.
-- **Migration is one-click and reversible.** Import from `.tly` backup; export
+- **Migration is guided and reversible.** Import Tally's supported XML/JSON export; export
   back to Tally anytime. Reversibility kills switching fear.
 - **WhatsApp is a first-class interface**, not a feature.
 - **India-first.** Global is not on the roadmap.
@@ -56,7 +56,7 @@ were revised:
 1. **CA Console** — multi-client dashboard, approvals queue, health scores,
    white-label, per-client billing, notes/tasks
 2. **Tally Mode** — F-key nav, voucher entry, Tally-style reports, one-click
-   toggle Tally ↔ Modern, `.tly` import
+   toggle Tally ↔ Modern, Tally XML/JSON import
 3. **Invoicing (Sales)** — GST-compliant, auto-IRN, auto e-way bill, WhatsApp
    send with payment link, recurring, credit/debit notes
 4. **Bills & Expenses (Purchase/AP)** — OCR from vendor emails, WhatsApp
@@ -80,7 +80,7 @@ were revised:
 
 ### The 3 killer wedges
 
-1. **One-click Tally migration** — CA uploads `.tly` → all clients in
+1. **Guided Tally migration** — CA uploads Tally XML exports → all clients in
    BharatERP in 5 minutes; can go back anytime.
 2. **AI takes data entry, not the CA's job** — CA reviews AI drafts;
    *"double your clients without hiring."*
@@ -107,7 +107,7 @@ doubles their capacity. Easy sell if the product works.
 - Auth + multi-tenancy (firm → clients → users)
 - Chart of accounts + GL engine
 - CA console (basic)
-- **Tally mode + `.tly` import** ← the wedge
+- **Tally mode + XML/JSON import** ← the wedge
 - Invoicing + e-invoice IRP + WhatsApp send
 - Bill capture (Google Document AI + LLM)
 - Bank statement upload + parser + auto-reconcile
@@ -200,7 +200,7 @@ report exists before the first customer's statutory audit season.*
    should reshape ~30% of this doc.
 2. **Buy a Tally licence, use it for a week, screenshot every screen.** Tally
    mode must feel identical under the fingers.
-3. **Prototype the `.tly` importer first.** If you can parse a Tally backup
+3. **Prototype the Tally XML importer first.** If you can parse a Tally export
    and rebuild a client's books, you have a demo that closes CAs in one
    meeting. If you can't, the whole wedge is theoretical.
 

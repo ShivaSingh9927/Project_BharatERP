@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseHtmlTable, tablesFromLayout } from '../src/parse/glmOcr.ts';
+import { parseHtmlTable, tablesFromLayout, textFromLayout } from '../src/parse/glmOcr.ts';
 
 const TABLE = `<table class="table table-bordered"><thead><tr>
   <th>S.N.</th><th>PART DESCRIPTION</th><th>Qty.</th><th>IGST Amount</th><th>Amount (\`)</th>
@@ -71,6 +71,11 @@ describe('picking tables out of the layout', () => {
     expect(out[0]?.method).toBe('glm-ocr');
     expect(out[0]?.page).toBe(1);
     expect(out[0]?.pageWidth).toBe(2200);
+  });
+
+  it('keeps running text for header fields when GLM replaces failed local OCR', () => {
+    expect(textFromLayout(body)).toContain('TAX INVOICE');
+    expect(textFromLayout(body)).toContain('PIN BLOCK & T/M CASE');
   });
 
   it('claims no per-cell boxes, because it is not given any', () => {

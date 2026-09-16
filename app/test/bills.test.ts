@@ -16,7 +16,7 @@ import { decideItc, canClaimItc, billsApproaching180Days } from '../src/domain/i
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
 import { trialBalance, balanceSheet } from '../src/reports/index.ts';
 import { outstandingBills, recordPayment, paymentAccounts } from '../src/domain/payables.ts';
-import { supplierDetail, supplierList } from '../src/domain/suppliers.ts';
+import { createSupplier, supplierDetail, supplierList } from '../src/domain/suppliers.ts';
 import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
 
 let t: SeededTenant;
@@ -795,6 +795,19 @@ describe('payables — what is owed, and paying it', () => {
 
 // ---------------------------------------------------------------------------
 describe('the supplier 360 gathers a supplier\'s whole history', () => {
+  it('creates a supplier from bill review and reuses its GSTIN', async () => {
+    const gstin = makeGstin('09', 'AEOPS3298C');
+    const first = await createSupplier(t.firmId, {
+      clientId: t.clientId, name: 'Campus E-Shop', gstin, createdBy: t.userId,
+    });
+    const again = await createSupplier(t.firmId, {
+      clientId: t.clientId, name: 'Duplicate attempt', gstin, createdBy: t.userId,
+    });
+    expect(again.id).toBe(first.id);
+    expect((await supplierList(t.firmId, t.clientId)).find((s) => s.id === first.id)?.name)
+      .toBe('Campus E-Shop');
+  });
+
   it('shows bills, the payment that settled one, and running totals', async () => {
     // By now this supplier has PAYABLE/2026/1 (paid in full) and
     // PAYABLE/2026/2 (unpaid) from the payables tests, plus earlier bills.

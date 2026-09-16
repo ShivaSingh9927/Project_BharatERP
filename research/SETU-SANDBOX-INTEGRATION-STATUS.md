@@ -1,7 +1,44 @@
 # Setu Sandbox Integration — Working Notes
 
 **Date:** July 4, 2026
-**Status:** Auth working, product instance returns 500 on consent creation
+**Status:** Investigation exhausted — 500 is confirmed server-side (Setu). Nothing left to fix on our side.
+
+---
+
+## UPDATE (July 4, 2026) — Root cause isolated
+
+Ran a full controlled diagnosis. Every client-side variable eliminated; the 500 is
+Setu's backend (coincided with a "System — Outage" banner on Setu's site).
+
+**Key discovery — the real AA v2 auth flow is token-based (OAuth), not raw headers:**
+1. `POST https://orgservice-prod.setu.co/v1/users/login` with body
+   `{clientID, secret, grant_type:"client_credentials"}` + header `client: bridge`
+   → returns a Bearer `access_token` (JWT). **Our credentials mint a token fine (200).**
+2. Then call `/v2/consents` with `Authorization: Bearer <token>` + `x-product-instance-id`.
+
+**What we proved:**
+| Test | Result |
+|------|--------|
+| Wrong client secret → /v2/consents | 401 (auth is enforced) |
+| Real creds, empty body → /v2/consents | 400 InvalidRequest (auth passes, validation reached) |
+| Real Bearer token + our instance + valid payload | **500** |
+| Real Bearer token + our instance + playground's exact minimal payload | **500** |
+| Real Bearer token + demo instance (b6d7a54a) | 401 (token not scoped to Setu's demo org) |
+| Get Token with our creds | 200 (token minted successfully) |
+
+**Conclusion:** credentials valid, auth works, product instance recognized (request
+reaches backend, not 401), payload correct — backend still 500s. Cause is either
+(a) our product instance not linked to sandbox mock AAs/FIPs downstream, or
+(b) the Setu outage. Both require Setu to fix.
+
+**Ruled out (do NOT retry):** KYC (production-only, irrelevant to sandbox; also we're
+not incorporated so can't complete it), credential regeneration (creds proven active),
+payload tweaks (all shapes 500), auth method (header and Bearer both 500).
+
+**Action:** raise a ticket (below) + re-test after the outage clears. Move Phase 1
+forward with the PDF/CSV statement parser in the meantime (no dependency on this).
+
+---
 
 ---
 

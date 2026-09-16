@@ -29,19 +29,23 @@ import { ownerPool, withFirm } from '../db/pool.ts';
 import { reconciliationQueue } from '../domain/matching.ts';
 import { importStatementFile } from '../domain/statement.ts';
 import { parseStatementFile } from '../parse/statementFile.ts';
-import { settleInvoiceFromBankLine, postBankCharge, postInterestCredit } from '../domain/banking.ts';
+import { createBankAccount, settleInvoiceFromBankLine, postBankCharge,
+         postInterestCredit } from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
 import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
+         renderBankAccountSetup,
          renderCashRegister, renderGstr2b } from './views.ts';
 import { parseGstr2b } from '../parse/../integrations/gstr2bJson.ts';
 import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
 import { paise, money } from '../domain/tax.ts';
 import { loadDashboard } from '../domain/dashboard.ts';
+import { answerAssistantWithAi, assistantRuns, recordAssistantRun } from '../domain/assistant.ts';
+import { llmClientFromEnv } from '../parse/llmTable.ts';
 import { outstandingBills, paymentAccounts, recordPayment } from '../domain/payables.ts';
 import { renderBillReview, renderDashboard, renderPayables, renderSupplierList, renderSupplier } from './views.ts';
-import { supplierList, supplierDetail } from '../domain/suppliers.ts';
+import { createSupplier, supplierList, supplierDetail } from '../domain/suppliers.ts';
 import { renderGstr1 } from './views.ts';
 import { generateGstr1, salesPeriods } from '../domain/gstr1.ts';
 import { renderGstr3b, renderTds, renderReturns, renderReceivables,
@@ -66,8 +70,15 @@ import { cashRegisterCheck } from '../reports/cashRegister.ts';
 import { login, logout, sessionFromToken, changePassword,
          lockoutRemaining, type Session as AuthSession } from '../domain/auth.ts';
 import { renderLogin } from './views.ts';
+import { renderAssistantRuns, renderSales, renderSalesInvoice, renderTallyImport } from './views.ts';
+import { createInvoice } from '../domain/invoicing.ts';
+import { createCustomer, salesDesk, salesInvoiceDetail } from '../domain/sales.ts';
+import { parseTallyXml } from '../parse/tallyXml.ts';
+import type { TallyPreview } from '../parse/tallyXml.ts';
+import { importTallyPreview, tallyMappingDesk } from '../domain/tallyImport.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
+const assistantLlm = llmClientFromEnv();
 
 /**
  * Who is signed in. Resolved from the cookie on EVERY request — not once at
@@ -225,11 +236,24 @@ function stashFile(file: Buffer): string {
 
 let readers: ReviewReaders = {
   llm: undefined, docling: undefined, parser: undefined, glmOcr: undefined,
+  paddle: undefined,
   gstinLookup: undefined };
 
 /** The last preview rendered for a client, so a reload can show it again. */
 type PreviewCard = ReturnType<typeof proposalView> & { token: string };
 const lastPreview = new Map<string, PreviewCard[]>();
+
+/** Parsed Tally exports awaiting explicit ledger mapping and confirmation. */
+const tallyPreviews = new Map<string, { preview: TallyPreview; at: number }>();
+function stashTally(preview: TallyPreview, xml: string): string {
+  const token = createHash('sha256').update(xml).digest('hex').slice(0, 20);
+  tallyPreviews.set(token, { preview, at: Date.now() });
+  while (tallyPreviews.size > 12) {
+    const oldest = [...tallyPreviews.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) tallyPreviews.delete(oldest[0]); else break;
+  }
+  return token;
+}
 
 /** A handful of the client's most recently posted bills. */
 async function recentBills(session: Session): Promise<Array<{
@@ -398,6 +422,197 @@ async function handle(
     }));
   }
 
+  if (req.method === 'POST' && path === '/api/bank-accounts') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const account = await createBankAccount(session.firmId, {
+        clientId: session.clientId,
+        bankName: String(body.bankName ?? ''),
+        accountNumber: String(body.accountNumber ?? ''),
+        ifsc: String(body.ifsc ?? ''),
+        kind: String(body.kind ?? ''),
+        openingBalance: String(body.openingBalance ?? '0'),
+        openingDate: String(body.openingDate ?? ''),
+        createdBy: session.userId,
+      });
+      return json(res, 200, { ok: true, ...account });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/assistant') {
+    const body = JSON.parse(await readBody(req));
+    const question = String(body.question ?? '').slice(0, 500);
+    const page = String(body.page ?? '').slice(0, 40);
+    try {
+      const startedAt = Date.now();
+      const reply = await answerAssistantWithAi(
+        session.firmId, session.clientId, question, page, assistantLlm);
+      await recordAssistantRun(session.firmId, {
+        clientId: session.clientId, userId: session.userId, question, page,
+        reply, durationMs: Date.now() - startedAt,
+      });
+      const { audit: _audit, ...safeReply } = reply;
+      return json(res, 200, { ok: true, ...safeReply });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/assistant-runs') {
+    const runs = await assistantRuns(session.firmId, session.clientId);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'assistant-runs', body: renderAssistantRuns(runs),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/sales') {
+    const desk = await salesDesk(session.firmId, session.clientId);
+    const draftCustomer = url.searchParams.get('customer');
+    const rawAmount = url.searchParams.get('amount');
+    const rawGst = url.searchParams.get('gst');
+    const draft = url.searchParams.get('draft') === 'ai'
+      && desk.customers.some((customer) => customer.id === draftCustomer)
+      ? {
+          customerId: draftCustomer!,
+          amount: rawAmount && /^\d+(?:\.\d{1,2})?$/.test(rawAmount) && Number(rawAmount) > 0
+            ? rawAmount : undefined,
+          gstRate: rawGst && /^\d{1,2}(?:\.\d+)?$/.test(rawGst)
+            && Number(rawGst) >= 0 && Number(rawGst) <= 40 ? rawGst : undefined,
+        }
+      : undefined;
+    return html(res, 200, renderShell({
+      session, accounts, active: 'sales',
+      body: renderSales({
+        desk,
+        today: new Date().toISOString().slice(0, 10),
+        created: url.searchParams.get('created') ?? undefined,
+        draft,
+      }),
+    }));
+  }
+
+  if (req.method === 'GET' && path.startsWith('/sales/')) {
+    const voucherId = path.slice('/sales/'.length);
+    const invoice = await salesInvoiceDetail(
+      session.firmId, session.clientId, voucherId);
+    if (invoice === null) {
+      return html(res, 404, renderShell({
+        session, accounts, active: 'sales',
+        body: '<p class="empty">That invoice was not found.</p>',
+      }));
+    }
+    return html(res, 200, renderShell({
+      session, accounts, active: 'sales', body: renderSalesInvoice(invoice),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/customers') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const customer = await createCustomer(session.firmId, {
+        clientId: session.clientId,
+        name: String(body.name ?? ''),
+        legalName: body.legalName === undefined ? undefined : String(body.legalName),
+        billingAddress: String(body.billingAddress ?? ''),
+        gstCategory: body.gstCategory === 'unregistered'
+          ? 'unregistered' : 'registered_regular',
+        gstin: body.gstin === undefined ? undefined : String(body.gstin),
+        stateCode: String(body.stateCode ?? ''),
+        phone: body.phone === undefined ? undefined : String(body.phone),
+        createdBy: session.userId,
+      });
+      return json(res, 200, { ok: true, ...customer });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/invoices') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const invoice = await createInvoice(session.firmId, {
+        clientId: session.clientId,
+        registrationId: String(body.registrationId ?? ''),
+        partyId: String(body.partyId ?? ''),
+        postingDate: String(body.postingDate ?? ''),
+        dueDate: body.dueDate === undefined ? undefined : String(body.dueDate),
+        placeOfSupply: String(body.placeOfSupply ?? ''),
+        narration: body.narration === undefined ? undefined : String(body.narration),
+        createdBy: session.userId,
+        lines: Array.isArray(body.lines) ? body.lines.map((line: Record<string, unknown>) => ({
+          description: String(line.description ?? ''),
+          hsnSac: String(line.hsnSac ?? ''),
+          quantity: String(line.quantity ?? ''),
+          unitPrice: String(line.unitPrice ?? ''),
+          gstRate: String(line.gstRate ?? ''),
+          incomeAccountId: String(line.incomeAccountId ?? ''),
+        })) : [],
+      });
+      return json(res, 200, { ok: true, ...invoice });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/tally') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'tally', body: renderTallyImport(),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/tally/preview') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const xml = String(body.xml ?? '');
+      const preview = parseTallyXml(xml);
+      const token = stashTally(preview, xml);
+      const desk = await tallyMappingDesk(session.firmId, session.clientId, preview);
+      return json(res, 200, {
+        ok: true,
+        token,
+        company: preview.companies.join(', '),
+        stats: preview.stats,
+        warnings: preview.warnings,
+        accounts: desk.accounts,
+        mappings: desk.mappings,
+        canImport: preview.stats.voucherCount > 0 &&
+          preview.stats.unbalancedCount === 0 && preview.stats.unsupportedCount === 0 &&
+          !preview.vouchers.some((v) => v.date === null),
+        ledgers: preview.ledgers.slice(0, 20),
+        vouchers: preview.vouchers.slice(0, 20).map((v) => ({
+          date: v.date, number: v.number, sourceType: v.sourceType,
+          entries: v.entries.length, difference: v.difference, balanced: v.balanced,
+        })),
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/tally/import') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const stashed = tallyPreviews.get(String(body.token ?? ''));
+      if (!stashed || Date.now() - stashed.at > 30 * 60 * 1000) {
+        return json(res, 200, { ok: false, error: 'this preview has expired — preview the XML again' });
+      }
+      const pairs = Array.isArray(body.mappings) ? body.mappings : [];
+      const mappings: Record<string, string> = {};
+      for (const pair of pairs) {
+        if (typeof pair?.sourceName === 'string' && typeof pair?.accountId === 'string') {
+          mappings[pair.sourceName] = pair.accountId;
+        }
+      }
+      const result = await importTallyPreview(
+        session.firmId, session.clientId, session.userId, stashed.preview, mappings);
+      return json(res, 200, { ok: true, ...result });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
   if (req.method === 'GET' && path === '/bills') {
     const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
     const expAccounts = await expenseAccounts(session.firmId, session.clientId);
@@ -481,6 +696,21 @@ async function handle(
     }
   }
 
+  if (req.method === 'POST' && path === '/api/suppliers') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const supplier = await createSupplier(session.firmId, {
+        clientId: session.clientId,
+        name: String(body.name ?? ''),
+        ...(body.gstin ? { gstin: String(body.gstin) } : {}),
+        createdBy: session.userId,
+      });
+      return json(res, 200, { ok: true, ...supplier });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
   if (req.method === 'POST' && path === '/api/parties/rcm-rate') {
     /*
      * Master data, written on a named user's decision.
@@ -557,7 +787,8 @@ async function handle(
     const today = new Date().toISOString().slice(0, 10);
     return html(res, 200, renderShell({
       session, accounts, active: 'payables',
-      body: renderPayables({ bills, accounts: payAccounts, today }),
+      body: renderPayables({ bills, accounts: payAccounts, today,
+        draftVoucherId: url.searchParams.get('draft') ?? undefined }),
     }));
   }
 
@@ -860,7 +1091,7 @@ async function handle(
     if (!accountId) {
       return html(res, 200, renderShell({
         session, accounts, active: 'reconcile',
-        body: '<p class="empty">No bank account yet. Add one before reconciling.</p>',
+        body: renderBankAccountSetup(new Date().toISOString().slice(0, 10)),
       }));
     }
     const [queue, brs] = await Promise.all([
@@ -1032,7 +1263,7 @@ createServer((req, res) => {
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`\n  BharatERP review server`);
   console.log(`  http://127.0.0.1:${PORT}`);
-  const on = [readers.docling && 'Docling', readers.llm && 'model',
+  const on = [readers.paddle && 'PaddleOCR', readers.docling && 'Docling', readers.llm && 'model',
               readers.gstinLookup && 'GSTIN lookup'].filter(Boolean);
   console.log(`  readers: ${on.length ? on.join(', ') : 'on-page only'}`);
   console.log(`  sign in at /login — set a password with ` +

@@ -79,6 +79,8 @@ export interface PostVoucherInput {
   sourceDocumentId?: string;
   /** Explicit number, e.g. during Tally import. Otherwise allocated atomically. */
   voucherNumber?: string;
+  /** Stable source identity. Used to make external imports safely resumable. */
+  externalId?: string;
   actorType?: ActorType;
   aiModel?: string;
   batchId?: string;

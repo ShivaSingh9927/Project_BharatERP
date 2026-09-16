@@ -39,6 +39,9 @@
 
 import { gradeTable, type InvoiceTable } from './invoiceTable.ts';
 import type { Charged } from './invoiceTax.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 
 /**
  * The transport, kept behind an interface for two reasons: the tests must run
@@ -359,7 +362,16 @@ export function deepseekClient(
  * two different questions: "can we" and "may we".
  */
 export function llmClientFromEnv(env: NodeJS.ProcessEnv = process.env): LlmClient | null {
-  const key = env.DEEPSEEK_API;
+  let key = env.DEEPSEEK_API;
+  const localKeyFile = resolve(homedir(), 'Documents/api_keys/DEEPSEEK_API.txt');
+  const keyFile = env.DEEPSEEK_API_FILE ??
+    (existsSync(localKeyFile) ? localKeyFile : undefined);
+  if (!key && keyFile && existsSync(keyFile)) {
+    const secret = readFileSync(keyFile, 'utf8').trim();
+    // Accept either a file containing only the key or a shell-style assignment.
+    key = /(?:^|\s)(sk-[A-Za-z0-9_-]+)/.exec(secret)?.[1] ??
+      /^DEEPSEEK_API\s*=\s*(\S+)$/m.exec(secret)?.[1];
+  }
   if (!key) return null;
   return deepseekClient(key, env.DEEPSEEK_MODEL ?? 'deepseek-chat');
 }

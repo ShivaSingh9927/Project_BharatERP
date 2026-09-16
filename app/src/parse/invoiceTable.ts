@@ -561,7 +561,7 @@ function resolveBareAmount(
    * value, and both are excluded by having something in front of it. (The tax
    * ones never reach here anyway — the guard above returns first.)
    */
-  const bare = /^\s*(?:amount|value)\b/iu;
+  const bare = /^\s*(?:amount|amt\.?|value)\b/iu;
 
   /*
    * And it must actually hold money. An empty column cannot be the total, and

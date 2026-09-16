@@ -102,4 +102,12 @@ describe('what the form shows back', () => {
     expect(f.read.documentNumber).toBeNull();
     expect(f.read.taxable).toBeNull();
   });
+
+  it('shows a uniquely labelled total without treating it as approved', () => {
+    const f = formFor(proposal(
+      ['the line-item table could not be read: the item rows do not tie'],
+      { statedTotal: '117.00' }));
+    expect(f.read.total).toBe('117.00');
+    expect(f.fields.map((x) => x.field)).toContain('figures');
+  });
 });
