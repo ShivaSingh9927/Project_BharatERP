@@ -37,6 +37,24 @@ domain code, migrations, and tests for exact behavior.
 - After phase 1a, Node 22 typecheck passed and the full local test suite
   passed: 59 test files, 942 tests. This storage is not yet exposed in the UI.
 
+## Client attention page
+
+- Added read-only `/attention` for the signed-in client's open follow-ups,
+  unresolved or unverified obligation timeline items (`observed`, `open`,
+  `blocked`, `needs_human_review`, `prepared`, `submitted_unverified`, and
+  `paid_unverified`), and up to five recently completed follow-ups. Follow-ups
+  link to their review desk item; obligation cards expand to a short list of
+  recorded states and timestamps without exposing free-text evidence reasons.
+- The page heading comes from the shared shell. Obligation statuses distinguish
+  prepared work from filed or paid outcomes, and clearly label reported filing
+  or payment as unverified.
+- The page reports stored workflow states only. It does not infer deadlines,
+  filing, or payment and has no completion or other write action. It performs
+  no outbound email.
+- Verification on Node 22.23.3: `npm run typecheck` passed and
+  `npm test -- --run test/attentionView.test.ts` passed (1 test; no database
+  access required).
+
 ## Recently changed document workflow
 
 - Document class suggestions are on by default; firms may explicitly turn

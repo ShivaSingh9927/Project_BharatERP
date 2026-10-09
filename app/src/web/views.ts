@@ -19,6 +19,7 @@ import type { SalesDesk, SalesInvoiceDetail } from '../domain/sales.ts';
 import type { InboxDocument, DocumentInformationRequest, DocumentRequestAnswer } from '../domain/documentInbox.ts';
 import type { AssistantRunView } from '../domain/assistant.ts';
 import type { FollowUpItem } from '../domain/followUps.ts';
+import type { ObligationTimelineItem } from '../domain/obligationTimeline.ts';
 import type { ActivityItem } from '../domain/activity.ts';
 import type { EmailInbox, IntakeMessage } from '../domain/emailIntake.ts';
 
@@ -662,6 +663,41 @@ export function renderFollowUps(items: FollowUpItem[]): string {
     })();</script>`;
 }
 
+export function renderAttention(items: FollowUpItem[], obligations: ObligationTimelineItem[]): string {
+  const open = items.filter((item) => item.status === 'open');
+  const recent = items.filter((item) => item.status === 'completed')
+    .sort((a, b) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt)).slice(0, 5);
+  const visibleStates = new Set(['observed', 'open', 'blocked', 'needs_human_review',
+    'prepared', 'submitted_unverified', 'paid_unverified']);
+  const visibleObligations = obligations.filter((item) => visibleStates.has(item.workflowState));
+  const followUpRow = (item: FollowUpItem): string => `<article id="attention-followup-${esc(item.id)}" class="panel follow-up-item">
+    <div class="follow-up-title"><h3>${esc(item.title)}</h3><span class="pill">${item.status === 'open' ? 'Open · needs review' : 'Completed'}</span></div>
+    ${item.details ? `<p>${esc(item.details)}</p>` : ''}
+    ${item.sourceQuestion ? `<details><summary>Source context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
+      ${item.sourceAnswer ? `<p><b>Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
+    <small>${item.status === 'open' ? 'Added' : 'Completed'} ${esc(new Date(item.status === 'open' ? item.createdAt : item.completedAt ?? item.createdAt).toLocaleString('en-IN'))}</small>
+    <p><a href="/follow-ups#followup-${esc(item.id)}">Open review desk item →</a></p></article>`;
+  const labels: Record<string, string> = {
+    observed: 'Observed · applicability or status not established',
+    open: 'Open · work remains',
+    blocked: 'Blocked · review the recorded blocker',
+    needs_human_review: 'Needs human review',
+    prepared: 'Prepared · not filed or paid',
+    submitted_unverified: 'Submitted · unverified',
+    paid_unverified: 'Payment reported · unverified',
+  };
+  return `<p class="sub">Client work recorded for review. Nexus shows stored statuses and does not infer deadlines, filing, or payment.</p>
+    <h2>Open follow-ups · ${open.length}</h2>
+    ${open.length ? open.map(followUpRow).join('') : '<p class="empty">No open follow-ups.</p>'}
+    <h2>Obligations to review · ${visibleObligations.length}</h2>
+    ${visibleObligations.length ? visibleObligations.map((item) => `<article id="attention-obligation-${esc(item.id)}" class="panel">
+      <h3>${esc(item.kind)} · ${esc(item.periodKey)}</h3><span class="pill">${esc(labels[item.workflowState] ?? item.workflowState)}</span>
+      ${item.history.length ? `<details><summary>Recorded workflow history · ${item.history.length}</summary><ol>${item.history.slice(-5).reverse().map((event) => `<li><b>${esc(labels[event.workflowState] ?? event.workflowState)}</b> · ${esc(new Date(event.recordedAt).toLocaleString('en-IN'))}</li>`).join('')}</ol></details>` : ''}
+    </article>`).join('') : '<p class="empty">No unresolved or unverified obligations recorded.</p>'}
+    <h2>Recently completed follow-ups</h2>
+    ${recent.length ? recent.map(followUpRow).join('') : '<p class="empty">No recently completed follow-ups.</p>'}`;
+}
+
 const CSS = `
 :root {
   color-scheme: light;
@@ -1137,13 +1173,14 @@ export function renderShell(a: {
 <aside class="sidebar">
   <a class="brand" href="/"><span class="brand-mark">B</span>BharatERP</a>
   <nav aria-label="Main navigation">
-    ${navSection('WORKFLOW', ['home','firm','setup','activity','documents','email-inbox','nexus','follow-ups'], [
+    ${navSection('WORKFLOW', ['home','firm','setup','activity','documents','email-inbox','nexus','attention','follow-ups'], [
       link('/', 'home', 'Home', '⌂'),
       ...(canSeeFirm ? [link('/firm', 'firm', 'Firm', '◫')] : []),
       link('/setup', 'setup', 'Setup', '✓'), link('/activity', 'activity', 'Activity', '◷'),
       link('/documents', 'documents', 'Documents', '▤'),
       ...(canManageEmail ? [link('/email-inbox', 'email-inbox', 'Email inbox', '✉')] : []),
-      link('/nexus', 'nexus', 'Bharat Nexus', '✦'), link('/follow-ups', 'follow-ups', 'Review desk', '✓'),
+      link('/nexus', 'nexus', 'Bharat Nexus', '✦'), link('/attention', 'attention', 'Attention', '!'),
+      link('/follow-ups', 'follow-ups', 'Review desk', '✓'),
     ])}
     ${navSection('BOOKS', ['bills','sales','payables','receivables','suppliers'], [
       link('/bills', 'bills', 'Bills', '▤'), link('/sales', 'sales', 'Sales', '↗'),
