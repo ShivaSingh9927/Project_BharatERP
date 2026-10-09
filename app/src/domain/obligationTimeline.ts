@@ -160,8 +160,8 @@ export async function recordObligationWorkflowEvent(args: {
     await assertClient(c, args.clientId);
     // Transaction-level advisory lock serializes projection reads and appends
     // for this obligation without granting UPDATE on immutable identity rows.
-    const obligation = await c.query<{ id: string }>(
-      `SELECT id FROM obligation_timeline_items WHERE id=$1 AND client_id=$2`,
+    const obligation = await c.query<{ id: string; obligation_kind: string; period_key: string }>(
+      `SELECT id, obligation_kind, period_key FROM obligation_timeline_items WHERE id=$1 AND client_id=$2`,
       [args.obligationId, args.clientId]);
     if (!obligation.rowCount) throw new ValidationError('obligation is unavailable', 'OBL-2');
     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
@@ -195,14 +195,14 @@ export async function recordObligationWorkflowEvent(args: {
     if (eventType !== 'note' && !allowedTransitions[previousState]?.includes(eventType)) {
       throw new ValidationError(`workflow transition ${previousState} to ${eventType} is not allowed`, 'OBL-3');
     }
-    const result = await c.query(
+    const result = await c.query<{ id: string }>(
       `INSERT INTO obligation_workflow_events
          (firm_id, client_id, obligation_id, event_type, workflow_state,
           actor_type, actor_id, occurred_at, reason, evidence_refs, idempotency_key, event_ordinal)
        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
         WHERE EXISTS (SELECT 1 FROM obligation_timeline_items
                        WHERE id = $3 AND client_id = $2)
-       ON CONFLICT (firm_id, client_id, idempotency_key) DO NOTHING`,
+       ON CONFLICT (firm_id, client_id, idempotency_key) DO NOTHING RETURNING id`,
       [args.firmId, args.clientId, args.obligationId, eventType, state, actor,
         args.actorId ?? null, occurredAt, reason, JSON.stringify(refs), idempotencyKey,
         Number(current.rows[0]!.event_ordinal) + 1]);
@@ -211,6 +211,21 @@ export async function recordObligationWorkflowEvent(args: {
         [args.obligationId, args.clientId]);
       if (!exists.rowCount) throw new ValidationError('obligation is unavailable', 'OBL-2');
       return false;
+    }
+    if (eventType === 'blocked' || eventType === 'needs_human_review') {
+      const needsReview = eventType === 'needs_human_review';
+      const kind = obligation.rows[0]!.obligation_kind;
+      const period = obligation.rows[0]!.period_key;
+      await c.query(
+        `INSERT INTO nexus_alert_events
+           (firm_id, client_id, source_kind, source_id, alert_type, priority, title, message, dedupe_key)
+         VALUES ($1,$2,'obligation_event',$3,$4,'high',$5,$6,$7)
+         ON CONFLICT (firm_id, client_id, dedupe_key) DO NOTHING`,
+        [args.firmId, args.clientId, result.rows[0]!.id,
+          needsReview ? 'obligation_needs_human_review' : 'obligation_blocked',
+          needsReview ? 'Obligation needs human review' : 'Obligation blocked',
+          `${kind} · ${period} needs ${needsReview ? 'human review' : 'a blocker review'}`,
+          `obligation_event:${result.rows[0]!.id}:${eventType}`]);
     }
     return true;
   });

@@ -20,6 +20,7 @@ import type { InboxDocument, DocumentInformationRequest, DocumentRequestAnswer }
 import type { AssistantRunView } from '../domain/assistant.ts';
 import type { FollowUpItem } from '../domain/followUps.ts';
 import type { ObligationTimelineItem } from '../domain/obligationTimeline.ts';
+import type { NexusAlert } from '../domain/alerts.ts';
 import type { ActivityItem } from '../domain/activity.ts';
 import type { EmailInbox, IntakeMessage } from '../domain/emailIntake.ts';
 
@@ -663,10 +664,13 @@ export function renderFollowUps(items: FollowUpItem[]): string {
     })();</script>`;
 }
 
-export function renderAttention(items: FollowUpItem[], obligations: ObligationTimelineItem[]): string {
+export function renderAttention(
+  items: FollowUpItem[], obligations: ObligationTimelineItem[], alerts: NexusAlert[] = [], alertTotal = alerts.length,
+): string {
   const open = items.filter((item) => item.status === 'open');
   const recent = items.filter((item) => item.status === 'completed')
     .sort((a, b) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt)).slice(0, 5);
+  const visibleFollowUpIds = new Set([...open, ...recent].map((item) => item.id));
   const visibleStates = new Set(['observed', 'open', 'blocked', 'needs_human_review',
     'prepared', 'submitted_unverified', 'paid_unverified']);
   const visibleObligations = obligations.filter((item) => visibleStates.has(item.workflowState));
@@ -692,8 +696,21 @@ export function renderAttention(items: FollowUpItem[], obligations: ObligationTi
     <h2>Obligations to review · ${visibleObligations.length}</h2>
     ${visibleObligations.length ? visibleObligations.map((item) => `<article id="attention-obligation-${esc(item.id)}" class="panel">
       <h3>${esc(item.kind)} · ${esc(item.periodKey)}</h3><span class="pill">${esc(labels[item.workflowState] ?? item.workflowState)}</span>
-      ${item.history.length ? `<details><summary>Recorded workflow history · ${item.history.length}</summary><ol>${item.history.slice(-5).reverse().map((event) => `<li><b>${esc(labels[event.workflowState] ?? event.workflowState)}</b> · ${esc(new Date(event.recordedAt).toLocaleString('en-IN'))}</li>`).join('')}</ol></details>` : ''}
+      ${item.history.length ? `<details><summary>Recorded workflow history · ${item.history.length}</summary><ol>${item.history.slice(-5).reverse().map((event) => `<li id="attention-event-${esc(event.id)}"><b>${esc(labels[event.workflowState] ?? event.workflowState)}</b> · ${esc(new Date(event.recordedAt).toLocaleString('en-IN'))}</li>`).join('')}</ol></details>` : ''}
     </article>`).join('') : '<p class="empty">No unresolved or unverified obligations recorded.</p>'}
+    <h2>Recent in-app alerts · ${alertTotal} total${alertTotal > alerts.length ? ` (showing ${alerts.length})` : ''}</h2>
+    ${alerts.length ? alerts.map((alert) => {
+      const sourceObligation = alert.sourceKind === 'obligation_event'
+        ? visibleObligations.find((item) => item.history.some((event) => event.id === alert.sourceId)) : undefined;
+      const sourceVisible = alert.sourceKind === 'follow_up'
+        ? visibleFollowUpIds.has(alert.sourceId) : Boolean(sourceObligation);
+      const href = alert.sourceKind === 'follow_up'
+        ? `/follow-ups#followup-${encodeURIComponent(alert.sourceId)}`
+        : sourceObligation ? `/attention#attention-obligation-${encodeURIComponent(sourceObligation.id)}` : null;
+      return `<article id="alert-${esc(alert.id)}" class="panel"><div class="follow-up-title"><h3>${esc(alert.title)}</h3><span class="pill">${esc(alert.priority)}</span></div>
+        <p>${esc(alert.message)}</p><small>${esc(new Date(alert.createdAt).toLocaleString('en-IN'))}</small>
+        ${sourceVisible && href ? `<p><a href="${esc(href)}">Review source →</a></p>` : '<p class="sub">Source item is not shown in the current review list.</p>'}</article>`;
+    }).join('') : '<p class="empty">No in-app alerts recorded.</p>'}
     <h2>Recently completed follow-ups</h2>
     ${recent.length ? recent.map(followUpRow).join('') : '<p class="empty">No recently completed follow-ups.</p>'}`;
 }

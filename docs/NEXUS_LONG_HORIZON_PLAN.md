@@ -122,6 +122,14 @@ instrument and its amendments; an index page is only a discovery aid.
 
 ### 3. Add in-app and email alerts
 
+**Phase 3a progress (2026-10-09):** migration 050 adds append-only,
+client-scoped in-app alert events for explicit follow-up creation/completion
+and obligation `blocked`/`needs_human_review` transitions. `/attention` shows
+up to ten recent notices and their total count. It links only to sources in
+the visible review list; stale or closed sources are labeled without a link.
+Notice priority is fixed by event type; no legal deadline or priority is
+inferred. External delivery remains out of scope.
+
 - Derive alert events from obligation/task transitions with deterministic
   priority rules. Critical events are timely; routine items go into a
   configurable digest. Include direct links, minimal private data, delivery

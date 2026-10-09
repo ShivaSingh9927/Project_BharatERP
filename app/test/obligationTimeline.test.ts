@@ -5,6 +5,8 @@ import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
 import {
   listObligationTimeline, recordObservedObligation, recordObligationWorkflowEvent,
 } from '../src/domain/obligationTimeline.ts';
+import { listNexusAlerts } from '../src/domain/alerts.ts';
+import { createFollowUp, completeFollowUp } from '../src/domain/followUps.ts';
 import { ValidationError } from '../src/domain/types.ts';
 
 let tenant: SeededTenant;
@@ -58,6 +60,32 @@ describe('obligation timeline storage', () => {
     const row = (await listObligationTimeline(tenant.firmId, tenant.clientId))[0]!;
     expect(row.workflowState).toBe('blocked');
     expect(row.history.map((entry) => entry.workflowState)).toEqual(['observed', 'blocked']);
+    const alerts = await listNexusAlerts(tenant.firmId, tenant.clientId);
+    expect(alerts.total).toBe(1);
+    expect(alerts.items).toHaveLength(1);
+    expect(alerts.items[0]?.sourceKind).toBe('obligation_event');
+    expect(alerts.items[0]?.alertType).toBe('obligation_blocked');
+    expect(alerts.items[0]?.priority).toBe('high');
+    expect(alerts.items[0]?.message).toContain('synthetic_return · FY26-P01');
+    expect(alerts.items[0]?.message.toLowerCase()).not.toContain('filed');
+    const otherClientAlerts = await listNexusAlerts(otherTenant.firmId, otherTenant.clientId);
+    expect(otherClientAlerts.total).toBe(0);
+    expect(otherClientAlerts.items).toEqual([]);
+  });
+
+  it('creates deterministic in-app notices for follow-up creation and completion', async () => {
+    const id = await createFollowUp(tenant.firmId, tenant.clientId, tenant.userId,
+      { title: 'Review the source receipt', details: 'Synthetic test fixture' });
+    const firstCompletion = await completeFollowUp(tenant.firmId, tenant.clientId, tenant.userId, id);
+    const repeatedCompletion = await completeFollowUp(tenant.firmId, tenant.clientId, tenant.userId, id);
+    expect(firstCompletion).toBe(true);
+    expect(repeatedCompletion).toBe(false);
+    const alerts = await listNexusAlerts(tenant.firmId, tenant.clientId);
+    const followUpAlerts = alerts.items.filter((alert) => alert.sourceKind === 'follow_up' && alert.sourceId === id);
+    expect(followUpAlerts).toHaveLength(2);
+    expect(followUpAlerts.map((alert) => alert.alertType).sort()).toEqual(['follow_up_completed', 'follow_up_created']);
+    expect(new Set(followUpAlerts.map((alert) => alert.id)).size).toBe(2);
+    expect(followUpAlerts.every((alert) => alert.priority === 'routine')).toBe(true);
   });
 
   it('serializes concurrent transitions and preserves event order', async () => {

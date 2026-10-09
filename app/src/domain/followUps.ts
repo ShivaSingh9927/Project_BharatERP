@@ -62,7 +62,14 @@ export async function createFollowUp(
          (firm_id, client_id, created_by, title, details, source_question, source_answer)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [firmId, clientId, userId, title, details, sourceQuestion, sourceAnswer]);
-    return result.rows[0]!.id;
+    const id = result.rows[0]!.id;
+    await c.query(
+      `INSERT INTO nexus_alert_events
+         (firm_id, client_id, source_kind, source_id, alert_type, priority, title, message, dedupe_key)
+       VALUES ($1,$2,'follow_up',$3,'follow_up_created','routine','Follow-up added',$4,$5)
+       ON CONFLICT (firm_id, client_id, dedupe_key) DO NOTHING`,
+      [firmId, clientId, id, title, `follow_up:${id}:created`]);
+    return id;
   });
 }
 
@@ -73,6 +80,17 @@ export async function completeFollowUp(
     const result = await c.query(
       `UPDATE follow_up_items SET status = 'completed', completed_by = $3, completed_at = now()
         WHERE id = $1 AND client_id = $2 AND status = 'open'`, [id, clientId, userId]);
-    return result.rowCount === 1;
+    if (result.rowCount !== 1) return false;
+    const followUp = await c.query<{ title: string }>(
+      `SELECT title FROM follow_up_items WHERE id=$1 AND client_id=$2`, [id, clientId]);
+    if (followUp.rowCount) {
+      await c.query(
+        `INSERT INTO nexus_alert_events
+           (firm_id, client_id, source_kind, source_id, alert_type, priority, title, message, dedupe_key)
+         VALUES ($1,$2,'follow_up',$3,'follow_up_completed','routine','Follow-up marked complete',$4,$5)
+         ON CONFLICT (firm_id, client_id, dedupe_key) DO NOTHING`,
+        [firmId, clientId, id, followUp.rows[0]!.title, `follow_up:${id}:completed`]);
+    }
+    return true;
   });
 }

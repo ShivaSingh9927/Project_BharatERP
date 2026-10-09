@@ -55,6 +55,25 @@ domain code, migrations, and tests for exact behavior.
   `npm test -- --run test/attentionView.test.ts` passed (1 test; no database
   access required).
 
+## Nexus in-app alert slice
+
+- Phase 3a adds durable client-scoped alert events in
+  `app/src/migrations/050_nexus_in_app_alerts.sql`. Events are firm-RLS
+  protected, append-only, and deduplicated by their source transition.
+- Notices are created transactionally for explicit follow-up creation and
+  completion, and obligation transitions to `blocked` or
+  `needs_human_review`. Copy and priority are deterministic; no statutory
+  deadlines or AI-selected priorities are used. `/attention` shows recent
+  up to ten recent notices, with the total count. A source link appears only
+  when its target is present in the visible review list; stale or closed
+  sources are labeled without a misleading link.
+- This slice has no outbound email/provider, alert preferences, or read-state
+  workflow. It does not post or file records. Migration 050 was applied to the
+  configured local database on 2026-10-09; apply it in each other target DB.
+- Node 22.23.3 `npm run typecheck` passed. Focused integration/UI tests passed:
+  `npm test -- --run test/attentionView.test.ts test/obligationTimeline.test.ts`
+  (2 files, 7 tests).
+
 ## Recently changed document workflow
 
 - Document class suggestions are on by default; firms may explicitly turn

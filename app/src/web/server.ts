@@ -96,6 +96,7 @@ import { renderDocumentInbox, renderNexus, renderFollowUps, renderActivity,
          renderEmailInbox, renderAttention } from './views.ts';
 import { createFollowUp, completeFollowUp, listFollowUps } from '../domain/followUps.ts';
 import { listObligationTimeline } from '../domain/obligationTimeline.ts';
+import { listNexusAlerts } from '../domain/alerts.ts';
 import { recentActivity } from '../domain/activity.ts';
 import { emailInbox, receiveSampleEmail, assignEmail } from '../domain/emailIntake.ts';
 import { markReviewedEmailStatement } from '../domain/emailStatementReview.ts';
@@ -537,13 +538,14 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/attention') {
-    const [followUps, obligations] = await Promise.all([
+    const [followUps, obligations, alertList] = await Promise.all([
       listFollowUps(session.firmId, session.clientId, true),
       listObligationTimeline(session.firmId, session.clientId),
+      listNexusAlerts(session.firmId, session.clientId),
     ]);
     return html(res, 200, renderShell({
       session, accounts, active: 'attention',
-      body: renderAttention(followUps, obligations),
+      body: renderAttention(followUps, obligations, alertList.items, alertList.total),
     }));
   }
 
