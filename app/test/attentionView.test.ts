@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAttention, renderShell } from '../src/web/views.ts';
+import { renderAttention, renderFollowUps, renderShell } from '../src/web/views.ts';
 import type { FollowUpItem } from '../src/domain/followUps.ts';
 import type { ObligationTimelineItem } from '../src/domain/obligationTimeline.ts';
 import type { NexusAlert } from '../src/domain/alerts.ts';
@@ -8,9 +8,11 @@ describe('client attention page', () => {
   it('shows open work, reviewable obligation states, and recent completions without action controls', () => {
     const followUps: FollowUpItem[] = [
       { id: 'fu-open', title: 'Review missing statement', details: 'Check source pages', sourceQuestion: 'Where is it?',
-        sourceAnswer: 'Nexus noted a missing statement.', status: 'open', createdBy: 'user', completedBy: null,
+        sourceAnswer: 'Nexus noted a missing statement.', assigneeUserId: 'user', assigneeName: 'Asha CA',
+        dueDate: '2026-10-08', priority: 'high', status: 'open', createdBy: 'user', completedBy: null,
         createdAt: '2026-10-08T10:00:00.000Z', completedAt: null },
       { id: 'fu-done', title: 'Check supplier name', details: '', sourceQuestion: null, sourceAnswer: null,
+        assigneeUserId: null, assigneeName: null, dueDate: null, priority: 'normal',
         status: 'completed', createdBy: 'user', completedBy: 'user',
         createdAt: '2026-10-01T10:00:00.000Z', completedAt: '2026-10-07T10:00:00.000Z' },
     ];
@@ -33,6 +35,9 @@ describe('client attention page', () => {
       obligation('paid', 'paid_unverified'), obligation('closed', 'closed'), obligation('superseded', 'superseded')], alerts);
     expect(html).toContain('Open follow-ups · 1');
     expect(html).toContain('Review missing statement');
+    expect(html).toContain('Priority: <b>high</b>');
+    expect(html).toContain('Assignee: Asha CA');
+    expect(html).toContain('2026-10-08');
     expect(html).toContain('/follow-ups#followup-fu-open');
     expect(html).toContain('Observed · applicability or status not established');
     expect(html).toContain('Open · work remains');
@@ -58,6 +63,16 @@ describe('client attention page', () => {
       accounts: [], active: 'attention', body: html });
     expect(shell).toContain('href="/attention"');
     expect(html).not.toContain('<h1>Attention</h1>');
+  });
+
+  it('renders routing controls in the review desk and sends them with create', async () => {
+    const html = renderFollowUps([], [{ id: 'user-1', displayName: 'Asha CA', role: 'ca_staff' }]);
+    expect(html).toContain('name="assigneeUserId"');
+    expect(html).toContain('Asha CA · ca_staff');
+    expect(html).toContain('name="dueDate"');
+    expect(html).toContain('name="priority"');
+    expect(html).toContain('assigneeUserId: data.get');
+    expect(html).toContain("'/api/follow-ups/'");
   });
 
   it('does not link an alert to a closed obligation hidden from the review list', () => {

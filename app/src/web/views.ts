@@ -18,7 +18,7 @@ import type { Brs } from '../domain/brs.ts';
 import type { SalesDesk, SalesInvoiceDetail } from '../domain/sales.ts';
 import type { InboxDocument, DocumentInformationRequest, DocumentRequestAnswer } from '../domain/documentInbox.ts';
 import type { AssistantRunView } from '../domain/assistant.ts';
-import type { FollowUpItem } from '../domain/followUps.ts';
+import type { FollowUpAssignee, FollowUpItem } from '../domain/followUps.ts';
 import type { ObligationTimelineItem } from '../domain/obligationTimeline.ts';
 import type { NexusAlert } from '../domain/alerts.ts';
 import type { ActivityItem } from '../domain/activity.ts';
@@ -619,12 +619,13 @@ export function renderEmailInbox(inbox: EmailInbox): string {
     })();</script>`;
 }
 
-export function renderFollowUps(items: FollowUpItem[]): string {
+export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssignee[] = []): string {
   const open = items.filter((item) => item.status === 'open');
   const done = items.filter((item) => item.status === 'completed');
   const row = (item: FollowUpItem, canComplete: boolean): string => `<article id="followup-${esc(item.id)}" class="panel follow-up-item">
     <div class="follow-up-title"><h2>${esc(item.title)}</h2><span class="pill">${esc(item.status)}</span></div>
     ${item.details ? `<p>${esc(item.details)}</p>` : ''}
+    <p class="sub">Priority: <b>${esc(item.priority)}</b> · Assignee: ${esc(item.assigneeName ?? 'Unassigned')} · Due: ${esc(item.dueDate ?? 'No due date')}</p>
     ${item.sourceQuestion ? `<details><summary>Chat context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
       ${item.sourceAnswer ? `<p><b>Bharat Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
     <small>Added ${esc(new Date(item.createdAt).toLocaleString('en-IN'))}</small>
@@ -635,6 +636,9 @@ export function renderFollowUps(items: FollowUpItem[]): string {
     <section class="panel"><h2>Add a follow-up</h2>
       <form id="follow-up-form"><label>What needs review?<input name="title" maxlength="160" required placeholder="e.g. Confirm the missing bank statement"></label>
       <label>Context<textarea name="details" maxlength="2000" placeholder="What should the CA check?"></textarea></label>
+      <label>Assignee<select name="assigneeUserId"><option value="">Unassigned</option>${assignees.map((person) => `<option value="${esc(person.id)}">${esc(person.displayName)} · ${esc(person.role)}</option>`).join('')}</select></label>
+      <label>Due date<input type="date" name="dueDate"></label>
+      <label>Priority<select name="priority"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option></select></label>
       <button class="primary" type="submit">Add to queue</button><span id="follow-up-result" role="status"></span></form>
     </section>
     <h2>Open · ${open.length}</h2>
@@ -648,7 +652,8 @@ export function renderFollowUps(items: FollowUpItem[]): string {
         const button = form.querySelector('button'); button.disabled = true;
         try {
           const response = await fetch('/api/follow-ups', { method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ title: data.get('title'), details: data.get('details') }) });
+            body: JSON.stringify({ title: data.get('title'), details: data.get('details'),
+              assigneeUserId: data.get('assigneeUserId'), dueDate: data.get('dueDate'), priority: data.get('priority') }) });
           const saved = await response.json(); if (!saved.ok) throw new Error(saved.error || 'could not add follow-up');
           location.reload();
         } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
@@ -667,6 +672,10 @@ export function renderFollowUps(items: FollowUpItem[]): string {
 export function renderAttention(
   items: FollowUpItem[], obligations: ObligationTimelineItem[], alerts: NexusAlert[] = [], alertTotal = alerts.length,
 ): string {
+  const todayParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const today = `${todayParts.find((part) => part.type === 'year')!.value}-${todayParts.find((part) => part.type === 'month')!.value}-${todayParts.find((part) => part.type === 'day')!.value}`;
   const open = items.filter((item) => item.status === 'open');
   const recent = items.filter((item) => item.status === 'completed')
     .sort((a, b) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt)).slice(0, 5);
@@ -676,6 +685,7 @@ export function renderAttention(
   const visibleObligations = obligations.filter((item) => visibleStates.has(item.workflowState));
   const followUpRow = (item: FollowUpItem): string => `<article id="attention-followup-${esc(item.id)}" class="panel follow-up-item">
     <div class="follow-up-title"><h3>${esc(item.title)}</h3><span class="pill">${item.status === 'open' ? 'Open · needs review' : 'Completed'}</span></div>
+    <p class="sub">Priority: <b>${esc(item.priority)}</b> · Assignee: ${esc(item.assigneeName ?? 'Unassigned')} · Due: ${esc(item.dueDate ?? 'No due date')}${item.status === 'open' && item.dueDate && item.dueDate < today ? ' · <b>Overdue</b>' : item.status === 'open' && item.dueDate && (Date.parse(`${item.dueDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000 <= 7 ? ' · <b>Due soon</b>' : ''}</p>
     ${item.details ? `<p>${esc(item.details)}</p>` : ''}
     ${item.sourceQuestion ? `<details><summary>Source context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
       ${item.sourceAnswer ? `<p><b>Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}

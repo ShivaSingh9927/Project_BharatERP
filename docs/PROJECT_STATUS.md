@@ -55,6 +55,24 @@ domain code, migrations, and tests for exact behavior.
   `npm test -- --run test/attentionView.test.ts` passed (1 test; no database
   access required).
 
+## Follow-up routing slice (Phase 2)
+
+- Migration `app/src/migrations/051_follow_up_routing.sql` adds optional
+  assignee and due date fields plus a `low`/`normal`/`high` priority to
+  client-scoped follow-ups. Assignees are limited to firm users who are
+  firm-scoped or scoped to the selected client; browser-provided IDs are
+  checked before insert.
+- `/follow-ups` now collects these fields and displays them on open and
+  completed items. `/attention` shows the same routing metadata and labels a
+  past due date as overdue. Existing human completion remains the only
+  completion path; no AI-driven completion or accounting action was added.
+- Migration 051 was applied to the configured local database on 2026-10-09.
+  Apply it in each other target database with `npm run migrate`.
+- Node 22.23.3 `npm run typecheck` passed. Focused tests passed:
+  `npm test -- --run test/followUps.test.ts test/obligationTimeline.test.ts`
+  (2 files, 8 tests) and `npm test -- --run test/attentionView.test.ts`
+  (1 file, 4 tests).
+
 ## Nexus in-app alert slice
 
 - Phase 3a adds durable client-scoped alert events in

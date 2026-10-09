@@ -94,7 +94,7 @@ import { receiveDocument, listDocuments, getDocumentBytes,
          answerDocumentRequest, confirmDocumentClass } from '../domain/documentInbox.ts';
 import { renderDocumentInbox, renderNexus, renderFollowUps, renderActivity,
          renderEmailInbox, renderAttention } from './views.ts';
-import { createFollowUp, completeFollowUp, listFollowUps } from '../domain/followUps.ts';
+import { createFollowUp, completeFollowUp, listFollowUps, listFollowUpAssignees } from '../domain/followUps.ts';
 import { listObligationTimeline } from '../domain/obligationTimeline.ts';
 import { listNexusAlerts } from '../domain/alerts.ts';
 import { recentActivity } from '../domain/activity.ts';
@@ -531,9 +531,13 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/follow-ups') {
+    const [items, assignees] = await Promise.all([
+      listFollowUps(session.firmId, session.clientId, true),
+      listFollowUpAssignees(session.firmId, session.clientId),
+    ]);
     return html(res, 200, renderShell({
       session, accounts, active: 'follow-ups',
-      body: renderFollowUps(await listFollowUps(session.firmId, session.clientId, true)),
+      body: renderFollowUps(items, assignees),
     }));
   }
 

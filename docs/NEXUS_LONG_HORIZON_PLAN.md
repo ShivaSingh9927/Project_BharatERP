@@ -112,10 +112,16 @@ instrument and its amendments; an index page is only a discovery aid.
 
 ### 2. Build `/attention` and follow-up routing
 
-- Extend the existing follow-up concept with assignee, due date, priority,
-  linked obligation/document, blocker, activity history, snooze, and a
-  confirmation-required completion criterion. Avoid duplicate tasks for the
-  same event.
+- **Phase 2 routing slice (2026-10-09):** migration 051 stores optional
+  client-valid assignee, explicit due date, and low/normal/high priority.
+  `/follow-ups` collects and displays the values; `/attention` displays them
+  and marks past due dates as overdue. Assignment is validated against firm
+  and client scope. Completion remains an explicit human action.
+- Remaining: linked obligation/document, blocker, activity history, snooze,
+  and a stronger confirmation criterion. Avoid duplicate tasks for the same event.
+- Still planned: linked obligation/document, blocker, activity history,
+  snooze, and a confirmation-required completion criterion. Avoid duplicate
+  tasks for the same event.
 - Show `needs decision`, `blocked`, `due soon`, `overdue`, and `recently done`.
 - Exit gate: each item has one clear next action and an audit trail; an AI
   suggestion cannot mark a filing complete.
