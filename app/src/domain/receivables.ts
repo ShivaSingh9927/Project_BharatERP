@@ -35,6 +35,7 @@ export interface OutstandingInvoice {
   invoiceNumber: string;
   partyId: string;
   customerName: string;
+  customerPhone: string | null;
   invoiceDate: string;
   dueDate: string;
   grandTotal: string;
@@ -66,12 +67,12 @@ export async function outstandingInvoices(
   return withFirm(firmId, async (c) => {
     const r = await c.query<{
       voucher_id: string; invoice_number: string; party_id: string;
-      customer: string; invoice_date: string; due_date: string;
+      customer: string; customer_phone: string | null; invoice_date: string; due_date: string;
       grand_total: string; outstanding: string; tds: string;
       days_overdue: string;
     }>(
       `SELECT si.voucher_id, v.voucher_number AS invoice_number, si.party_id,
-              si.customer_legal_name AS customer,
+              si.customer_legal_name AS customer, p.phone AS customer_phone,
               to_char(v.posting_date, 'YYYY-MM-DD') AS invoice_date,
               to_char(COALESCE(si.due_date, v.posting_date), 'YYYY-MM-DD') AS due_date,
               si.grand_total::text,
@@ -80,6 +81,7 @@ export async function outstandingInvoices(
               (CURRENT_DATE - COALESCE(si.due_date, v.posting_date)) AS days_overdue
          FROM sales_invoices si
          JOIN vouchers v ON v.id = si.voucher_id
+         JOIN parties p ON p.id = si.party_id
          JOIN LATERAL (
            SELECT COALESCE(SUM(le.debit - le.credit), 0) AS amt
              FROM ledger_entries le JOIN accounts a ON a.id = le.account_id
@@ -116,7 +118,7 @@ export async function outstandingInvoices(
       const days = Number(x.days_overdue);
       return {
         voucherId: x.voucher_id, invoiceNumber: x.invoice_number,
-        partyId: x.party_id, customerName: x.customer,
+        partyId: x.party_id, customerName: x.customer, customerPhone: x.customer_phone,
         invoiceDate: x.invoice_date, dueDate: x.due_date,
         grandTotal: x.grand_total, outstanding: x.outstanding,
         tdsWithheld: money(paise(x.tds)),

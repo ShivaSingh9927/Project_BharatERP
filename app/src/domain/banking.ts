@@ -26,9 +26,11 @@ const BANK_KINDS = ['current', 'savings', 'od', 'cc', 'fd'] as const;
 type BankKind = typeof BANK_KINDS[number];
 
 /**
- * Add the human-facing bank account and, when supplied, its opening book
- * balance. The full account number is used only for the fingerprint and last
- * four digits; it is never written to the database.
+ * Add the human-facing bank account. An opening book balance is optional: a
+ * first statement proves the bank's balance, while the CA can decide later
+ * whether an accounting opening entry is needed. The full account number is
+ * used only for the fingerprint and last four digits; it is never written to
+ * the database.
  */
 export async function createBankAccount(
   firmId: string,
@@ -38,8 +40,8 @@ export async function createBankAccount(
     accountNumber: string;
     ifsc?: string;
     kind: string;
-    openingBalance: string;
-    openingDate: string;
+    openingBalance?: string;
+    openingDate?: string;
     createdBy: string;
   },
 ): Promise<{ id: string; bankName: string; last4: string }> {
@@ -59,8 +61,9 @@ export async function createBankAccount(
   if (!BANK_KINDS.includes(kind)) {
     throw new ValidationError('choose a valid account type', 'BR-2');
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.openingDate) ||
-      Number.isNaN(Date.parse(`${input.openingDate}T00:00:00Z`))) {
+  const openingDate = input.openingDate || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(openingDate) ||
+      Number.isNaN(Date.parse(`${openingDate}T00:00:00Z`))) {
     throw new ValidationError('choose a valid opening date', 'BR-2');
   }
   let opening: bigint;
@@ -74,26 +77,55 @@ export async function createBankAccount(
       [input.clientId, hash]);
     if (duplicate.rowCount) throw new ValidationError('this bank account is already added', 'BR-2');
 
-    const ledger = await c.query<{ id: string }>(
-      `SELECT id FROM accounts
+    // One ledger per real bank account. A shared "Bank Accounts" ledger makes
+    // two accounts look separate on the upload screen but mixed in the books,
+    // which defeats a BRS. The seeded bank ledger supplies the correct parent
+    // and accounting attributes for each new child ledger.
+    const template = await c.query<{
+      parent_id: string | null; root_type: string; normal_balance: string;
+      liquidity_class: string | null;
+    }>(
+      `SELECT parent_id, root_type::text, normal_balance::text,
+              liquidity_class::text
+       FROM accounts
        WHERE client_id = $1 AND account_type = 'bank' AND NOT is_group
        ORDER BY code NULLS LAST LIMIT 1`, [input.clientId]);
-    if (!ledger.rows[0]) throw new ValidationError('no Bank Accounts ledger is configured', 'BR-2');
+    if (!template.rows[0]) throw new ValidationError('no Bank Accounts ledger is configured', 'BR-2');
+    const ledgerBaseName = `${bankName} ••${accountNumber.slice(-4)}`;
+    // Two different accounts can theoretically share their last four digits.
+    // Keep the human-safe display and add an ordinal only in that rare case.
+    const sibling = await c.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM accounts
+       WHERE client_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3`,
+      [input.clientId, template.rows[0]!.parent_id, ledgerBaseName],
+    );
+    const ledgerName = sibling.rows[0]!.n === 0
+      ? ledgerBaseName : `${ledgerBaseName} (${sibling.rows[0]!.n + 1})`;
+    const ledger = await c.query<{ id: string }>(
+      `INSERT INTO accounts
+         (firm_id, client_id, name, parent_id, is_group, root_type,
+          account_type, normal_balance, liquidity_class, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,false,$5,'bank',$6,$7,$8,$8)
+       RETURNING id`,
+      [firmId, input.clientId, ledgerName, template.rows[0]!.parent_id,
+       template.rows[0]!.root_type, template.rows[0]!.normal_balance,
+       template.rows[0]!.liquidity_class, input.createdBy],
+    );
 
     const made = await c.query<{ id: string }>(
       `INSERT INTO bank_accounts
          (firm_id, client_id, account_id, bank_name, account_number_last4,
           account_number_hash, ifsc, kind, opening_balance, opening_date)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [firmId, input.clientId, ledger.rows[0].id, bankName, accountNumber.slice(-4),
-       hash, ifsc, kind, money(opening), input.openingDate]);
+      [firmId, input.clientId, ledger.rows[0]!.id, bankName, accountNumber.slice(-4),
+       hash, ifsc, kind, money(opening), openingDate]);
     const id = made.rows[0]!.id;
 
     if (opening !== 0n) {
       const fy = await c.query<{ id: string }>(
         `SELECT id FROM fiscal_years
          WHERE client_id = $1 AND start_date <= $2 AND end_date >= $2 LIMIT 1`,
-        [input.clientId, input.openingDate]);
+        [input.clientId, openingDate]);
       if (!fy.rows[0]) throw new ValidationError('opening date is outside the configured financial year', 'BR-2');
       const capital = await c.query<{ id: string }>(
         `SELECT id FROM accounts
@@ -108,14 +140,14 @@ export async function createBankAccount(
            (firm_id, client_id, voucher_type, voucher_number, posting_date,
             fiscal_year_id, narration, created_by)
          VALUES ($1,$2,'opening',$3,$4,$5,$6,$7) RETURNING id`,
-        [firmId, input.clientId, number.rows[0]!.number, input.openingDate,
+        [firmId, input.clientId, number.rows[0]!.number, openingDate,
          fy.rows[0].id, `Opening balance — ${bankName} ••${accountNumber.slice(-4)}`,
          input.createdBy]);
       const amount = opening < 0n ? -opening : opening;
       const bankDebit = opening > 0n ? amount : 0n;
       const bankCredit = opening < 0n ? amount : 0n;
       for (const [line, accountId, debit, credit] of [
-        [1, ledger.rows[0].id, bankDebit, bankCredit],
+        [1, ledger.rows[0]!.id, bankDebit, bankCredit],
         [2, capital.rows[0].id, bankCredit, bankDebit],
       ] as const) {
         await c.query(
@@ -123,7 +155,7 @@ export async function createBankAccount(
              (firm_id, client_id, voucher_id, line_no, posting_date,
               fiscal_year_id, account_id, debit, credit, is_opening)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)`,
-          [firmId, input.clientId, voucher.rows[0]!.id, line, input.openingDate,
+          [firmId, input.clientId, voucher.rows[0]!.id, line, openingDate,
            fy.rows[0].id, accountId, money(debit), money(credit)]);
       }
     }
@@ -135,7 +167,8 @@ export async function createBankAccount(
        VALUES ($1,$2,'bank_account',$3,'create',$4,$5,'human')`,
       [firmId, input.clientId, id, JSON.stringify({
         bankName, last4: accountNumber.slice(-4), ifsc, kind,
-        openingBalance: money(opening), openingDate: input.openingDate,
+        openingBalance: input.openingBalance === undefined ? null : money(opening),
+        openingDate: input.openingBalance === undefined ? null : openingDate,
       }), input.createdBy]);
     return { id, bankName, last4: accountNumber.slice(-4) };
   });
@@ -155,6 +188,7 @@ interface Leg {
   accountId: string;
   debit?: bigint;
   credit?: bigint;
+  isOpening?: boolean;
   partyType?: 'customer' | 'supplier';
   partyId?: string;
   settlesVoucherId?: string;
@@ -170,12 +204,12 @@ async function postLegs(
     await c.query(
       `INSERT INTO ledger_entries
          (firm_id, client_id, voucher_id, line_no, posting_date, fiscal_year_id,
-          account_id, debit, credit, party_type, party_id, settles_voucher_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          account_id, debit, credit, party_type, party_id, settles_voucher_id, is_opening)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [
         a.firmId, a.clientId, a.voucherId, i + 1, a.postingDate, a.fiscalYearId,
         e.accountId, money(e.debit ?? 0n), money(e.credit ?? 0n),
-        e.partyType ?? null, e.partyId ?? null, e.settlesVoucherId ?? null,
+        e.partyType ?? null, e.partyId ?? null, e.settlesVoucherId ?? null, e.isOpening ?? false,
       ]);
   }
 }
@@ -205,6 +239,61 @@ async function newVoucher(
   return { voucherId: v.rows[0]!.id, fiscalYearId };
 }
 
+/**
+ * Create a reviewed opening entry from the earliest imported statement. This
+ * is deliberately an explicit action: the statement supplies the number, but
+ * the reviewer authorises the accounting entry.
+ */
+export async function postOpeningFromFirstStatement(
+  firmId: string,
+  input: { clientId: string; bankAccountId: string; createdBy: string },
+): Promise<{ amount: string; date: string }> {
+  return withFirm(firmId, async (c) => {
+    const bank = await c.query<{ account_id: string; bank_name: string; last4: string }>(
+      `SELECT account_id, bank_name, account_number_last4 AS last4
+       FROM bank_accounts WHERE id = $1 AND client_id = $2`,
+      [input.bankAccountId, input.clientId],
+    );
+    if (!bank.rows[0]) throw new ValidationError('bank account not found', 'BR-2');
+    const account = bank.rows[0]!;
+    const already = await c.query<{ found: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM ledger_entries
+        WHERE account_id = $1 AND is_opening) AS found`, [account.account_id]);
+    if (already.rows[0]!.found) {
+      throw new ValidationError('an opening balance is already recorded for this bank account', 'BR-2');
+    }
+    const statement = await c.query<{ opening: string; date: string }>(
+      `SELECT opening_balance::text AS opening, period_from::text AS date
+       FROM bank_statements WHERE bank_account_id = $1
+       ORDER BY period_from ASC, uploaded_at ASC LIMIT 1`, [input.bankAccountId]);
+    if (!statement.rows[0]) throw new ValidationError('import a statement before setting its opening balance', 'BR-2');
+    const source = statement.rows[0]!;
+    const amount = paise(source.opening);
+    if (amount === 0n) {
+      await c.query('UPDATE bank_accounts SET opening_balance = $1, opening_date = $2 WHERE id = $3',
+        [source.opening, source.date, input.bankAccountId]);
+      return { amount: source.opening, date: source.date };
+    }
+    const capital = await c.query<{ id: string }>(
+      `SELECT id FROM accounts WHERE client_id = $1 AND account_type = 'capital' AND NOT is_group
+       ORDER BY code NULLS LAST LIMIT 1`, [input.clientId]);
+    if (!capital.rows[0]) throw new ValidationError('no Capital account is configured', 'BR-2');
+    const { voucherId, fiscalYearId } = await newVoucher(c, {
+      firmId, clientId: input.clientId, type: 'opening', postingDate: source.date,
+      narration: `Opening balance from first statement — ${account.bank_name} ••${account.last4}`,
+      createdBy: input.createdBy, approvedBy: input.createdBy,
+    });
+    const abs = amount < 0n ? -amount : amount;
+    await postLegs(c, { firmId, clientId: input.clientId, voucherId, postingDate: source.date, fiscalYearId }, [
+      { accountId: account.account_id, debit: amount > 0n ? abs : 0n, credit: amount < 0n ? abs : 0n, isOpening: true },
+      { accountId: capital.rows[0]!.id, debit: amount < 0n ? abs : 0n, credit: amount > 0n ? abs : 0n, isOpening: true },
+    ]);
+    await c.query('UPDATE bank_accounts SET opening_balance = $1, opening_date = $2 WHERE id = $3',
+      [source.opening, source.date, input.bankAccountId]);
+    return { amount: source.opening, date: source.date };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Settling a customer receipt — BR-16
 // ---------------------------------------------------------------------------
@@ -217,6 +306,224 @@ export interface SettlementResult {
   invoiceSettled: string;
   fullySettled: boolean;
   note: string;
+}
+
+export type BankReviewClassification =
+  | 'business_expense' | 'personal' | 'transfer' | 'unsure'
+  | 'share_application_pending' | 'related_party_loan_pending'
+  | 'customer_advance_pending' | 'intercompany_transfer_pending'
+  | 'refund_or_reversal_pending' | 'bank_interest_pending'
+  | 'customer_receipt_pending';
+
+const PENDING_RECEIPTS = new Set<BankReviewClassification>([
+  'share_application_pending', 'related_party_loan_pending',
+  'customer_advance_pending', 'intercompany_transfer_pending',
+  'refund_or_reversal_pending', 'bank_interest_pending', 'customer_receipt_pending',
+]);
+const REVIEW_CLASSIFICATIONS = new Set<BankReviewClassification>([
+  'business_expense', 'personal', 'transfer', 'unsure',
+  ...PENDING_RECEIPTS,
+]);
+
+export interface BankReviewAccount {
+  id: string;
+  name: string;
+  rootType: string;
+  accountType: string;
+}
+
+export interface BankReviewOptions {
+  expenseAccounts: BankReviewAccount[];
+  transferAccounts: BankReviewAccount[];
+  personalAccountName: string;
+}
+
+/** Accounts that may safely receive a statement-only classification. */
+export async function bankReviewOptions(
+  firmId: string, clientId: string, bankAccountId: string,
+): Promise<BankReviewOptions> {
+  return withFirm(firmId, async (c) => {
+    const bank = await c.query<{ account_id: string }>(
+      'SELECT account_id FROM bank_accounts WHERE id = $1 AND client_id = $2',
+      [bankAccountId, clientId]);
+    if (!bank.rows[0]) throw new ValidationError('bank account not found', 'BR-2');
+
+    const accounts = await c.query<{
+      id: string; name: string; rootType: string; accountType: string;
+    }>(
+      `SELECT id, name, root_type::text AS "rootType", account_type::text AS "accountType"
+       FROM accounts
+       WHERE client_id = $1 AND NOT is_group AND NOT is_disabled
+       ORDER BY code NULLS LAST, name`, [clientId]);
+    const expenseAccounts = accounts.rows.filter((a) => a.rootType === 'expense');
+    const transferAccounts = accounts.rows.filter((a) =>
+      a.id !== bank.rows[0]!.account_id
+      && ['asset', 'liability', 'equity'].includes(a.rootType)
+      && !['receivable', 'payable', 'tax_input', 'tax_output',
+           'tds_receivable', 'tds_payable', 'temporary'].includes(a.accountType));
+
+    const pan = (await c.query<{ pan: string | null }>(
+      'SELECT pan FROM clients WHERE id = $1', [clientId])).rows[0]?.pan ?? null;
+    const proprietor = pan?.length === 10 && pan[3] === 'P';
+    return {
+      expenseAccounts,
+      transferAccounts,
+      personalAccountName: proprietor ? 'Drawings' : 'Personal Expenses Recoverable',
+    };
+  });
+}
+
+export async function reviewBankTransaction(
+  firmId: string,
+  input: {
+    clientId: string;
+    bankTransactionId: string;
+    classification: BankReviewClassification;
+    accountId?: string;
+    sourceName?: string;
+    note?: string;
+    reviewedBy: string;
+  },
+): Promise<{ posted: boolean; voucherId: string | null; classification: BankReviewClassification }> {
+  if (!REVIEW_CLASSIFICATIONS.has(input.classification)) {
+    throw new ValidationError('choose a valid review type', 'BR-18');
+  }
+  const note = input.note?.trim() ?? '';
+  if (note.length > 500) throw new ValidationError('note must be 500 characters or fewer', 'BR-18');
+  const sourceName = input.sourceName?.trim() ?? '';
+  if (sourceName.length > 160) throw new ValidationError('sender name must be 160 characters or fewer', 'BR-18');
+
+  return withFirm(firmId, async (c) => {
+    const found = await c.query(
+      `SELECT bt.*, btr.amount::text, btr.unmatched_amount::text, btr.status,
+              ba.account_id AS gl_account_id
+       FROM bank_transactions bt
+       JOIN bank_transactions_reconciled btr ON btr.id = bt.id
+       JOIN bank_accounts ba ON ba.id = bt.bank_account_id
+       WHERE bt.id = $1 AND bt.client_id = $2`,
+      [input.bankTransactionId, input.clientId]);
+    if (!found.rows[0]) throw new ValidationError('bank transaction not found', 'BV-6');
+    const txn = found.rows[0]!;
+    const amount = paise(txn.amount);
+    if (amount <= 0n || paise(txn.unmatched_amount) !== amount) {
+      throw new ValidationError('this transaction is already fully or partly reconciled', 'BV-4');
+    }
+
+    if (input.classification === 'unsure') {
+      await c.query(
+        `INSERT INTO bank_transaction_reviews
+           (bank_transaction_id, firm_id, client_id, classification,
+            receipt_status, note, reviewed_by)
+         VALUES ($1,$2,$3,'unsure','not_required',$4,$5)
+         ON CONFLICT (bank_transaction_id) DO UPDATE SET
+           classification = 'unsure', account_id = NULL, receipt_status = 'not_required',
+           source_name = NULL, note = EXCLUDED.note, posted_voucher_id = NULL,
+           reviewed_by = EXCLUDED.reviewed_by, reviewed_at = now(), updated_at = now()`,
+        [input.bankTransactionId, firmId, input.clientId, note || null, input.reviewedBy]);
+      return { posted: false, voucherId: null, classification: input.classification };
+    }
+
+    const outbound = paise(txn.debit) > 0n;
+    if (PENDING_RECEIPTS.has(input.classification)) {
+      if (outbound) throw new ValidationError('this review choice requires an incoming receipt', 'BR-18');
+      if (!sourceName) throw new ValidationError('enter who sent this money', 'BR-18');
+      await c.query(
+        `INSERT INTO bank_transaction_reviews
+           (bank_transaction_id, firm_id, client_id, classification,
+            receipt_status, source_name, note, reviewed_by)
+         VALUES ($1,$2,$3,$4,'not_required',$5,$6,$7)
+         ON CONFLICT (bank_transaction_id) DO UPDATE SET
+           classification = EXCLUDED.classification, account_id = NULL,
+           receipt_status = 'not_required', source_name = EXCLUDED.source_name,
+           note = EXCLUDED.note, posted_voucher_id = NULL,
+           reviewed_by = EXCLUDED.reviewed_by, reviewed_at = now(), updated_at = now()`,
+        [input.bankTransactionId, firmId, input.clientId, input.classification,
+         sourceName, note || null, input.reviewedBy]);
+      return { posted: false, voucherId: null, classification: input.classification };
+    }
+    if ((input.classification === 'business_expense' || input.classification === 'personal')
+        && !outbound) {
+      throw new ValidationError('only an outgoing payment can be classified this way', 'BR-18');
+    }
+
+    let target: { id: string; name: string; root_type: string; account_type: string } | undefined;
+    if (input.classification === 'business_expense') {
+      if (!input.accountId) throw new ValidationError('choose an expense account', 'BR-18');
+      target = (await c.query(
+        `SELECT id, name, root_type::text, account_type::text FROM accounts
+         WHERE id = $1 AND client_id = $2 AND root_type = 'expense' AND NOT is_group`,
+        [input.accountId, input.clientId])).rows[0];
+      if (!target) throw new ValidationError('choose a valid expense account', 'BR-18');
+    } else if (input.classification === 'personal') {
+      const pan = (await c.query<{ pan: string | null }>(
+        'SELECT pan FROM clients WHERE id = $1', [input.clientId])).rows[0]?.pan ?? null;
+      const name = pan?.length === 10 && pan[3] === 'P'
+        ? 'Drawings' : 'Personal Expenses Recoverable';
+      const id = await accountByName(c, input.clientId, name);
+      target = { id, name, root_type: name === 'Drawings' ? 'equity' : 'asset', account_type: 'general' };
+    } else {
+      if (!input.accountId) throw new ValidationError('choose the other account for this transfer', 'BR-18');
+      target = (await c.query(
+        `SELECT id, name, root_type::text, account_type::text FROM accounts
+         WHERE id = $1 AND client_id = $2 AND root_type IN ('asset','liability','equity')
+           AND NOT is_group`, [input.accountId, input.clientId])).rows[0];
+      if (!target || target.id === txn.gl_account_id) {
+        throw new ValidationError('choose a different balance-sheet account for the transfer', 'BR-18');
+      }
+    }
+
+    const postingDate = txn.txn_date.toISOString().slice(0, 10);
+    const transferBetweenCash = input.classification === 'transfer'
+      && ['bank', 'cash'].includes(target.account_type);
+    const type = transferBetweenCash ? 'contra' : outbound ? 'payment' : 'receipt';
+    const label = input.classification === 'business_expense'
+      ? `Expense without receipt — ${target.name}`
+      : input.classification === 'personal'
+        ? `Personal payment — ${target.name}`
+        : `Transfer — ${target.name}`;
+    const { voucherId, fiscalYearId } = await newVoucher(c, {
+      firmId, clientId: input.clientId, type, postingDate,
+      narration: `${label}: ${txn.narration}${note ? ` — ${note}` : ''}`,
+      createdBy: input.reviewedBy, approvedBy: input.reviewedBy,
+    });
+
+    const legs: Leg[] = outbound
+      ? [{ accountId: target.id, debit: amount }, { accountId: txn.gl_account_id, credit: amount }]
+      : [{ accountId: txn.gl_account_id, debit: amount }, { accountId: target.id, credit: amount }];
+    await postLegs(c, {
+      firmId, clientId: input.clientId, voucherId, postingDate, fiscalYearId,
+    }, legs);
+
+    const receiptStatus = input.classification === 'business_expense' ? 'missing' : 'not_required';
+    await c.query(
+      `INSERT INTO bank_transaction_reviews
+         (bank_transaction_id, firm_id, client_id, classification, account_id,
+          receipt_status, note, posted_voucher_id, reviewed_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (bank_transaction_id) DO UPDATE SET
+         classification = EXCLUDED.classification, account_id = EXCLUDED.account_id,
+         receipt_status = EXCLUDED.receipt_status, source_name = NULL, note = EXCLUDED.note,
+         posted_voucher_id = EXCLUDED.posted_voucher_id,
+         reviewed_by = EXCLUDED.reviewed_by, reviewed_at = now(), updated_at = now()`,
+      [input.bankTransactionId, firmId, input.clientId, input.classification,
+       target.id, receiptStatus, note || null, voucherId, input.reviewedBy]);
+
+    await c.query(
+      `INSERT INTO reconciliation_matches
+         (firm_id, client_id, bank_transaction_id, voucher_id, amount,
+          match_type, evidence, proposed_by, approved_by)
+       VALUES ($1,$2,$3,$4,$5,'manual',$6,'user',$7)`,
+      [firmId, input.clientId, input.bankTransactionId, voucherId, money(amount),
+       JSON.stringify({
+         classification: input.classification,
+         account: target.name,
+         receipt_status: receiptStatus,
+         gst_itc_claimed: '0.00',
+         bank_statement_is_payment_evidence_only: true,
+       }), input.reviewedBy]);
+
+    return { posted: true, voucherId, classification: input.classification };
+  });
 }
 
 /**

@@ -57,6 +57,8 @@ export interface CockpitRow {
   overdueCount: number;
   billsPosted: number;
   registrationIssues: number;
+  documentsWaiting: number;
+  informationRequested: number;
   gstr1Due: string;
   gstr3bDue: string;
   daysToGstr1: number;
@@ -76,6 +78,8 @@ export interface Cockpit {
     creditAtRisk: string;
     overduePayable: string;
     needingAttention: number;
+    documentsWaiting: number;
+    informationRequested: number;
   };
 }
 
@@ -94,6 +98,8 @@ function attentionOf(r: Omit<CockpitRow, 'attention'>): number {
   if (paise(r.creditAtRisk) > 0n) score += 25;
   if (r.registrationIssues > 0) score += 20;
   if (r.overdueCount > 0) score += 10;
+  if (r.documentsWaiting > 0) score += 15;
+  if (r.informationRequested > 0) score += 20;
   return score;
 }
 
@@ -184,10 +190,21 @@ export async function loadCockpit(
         GROUP BY p.client_id`);
     const regIssues = new Map(regQ.rows.map((r) => [r.client_id, Number(r.n)]));
 
+    const docsQ = await c.query<{
+      client_id: string; waiting: string; information_requested: string;
+    }>(`SELECT client_id,
+              count(*) FILTER (WHERE status IN ('received', 'in_review'))::text AS waiting,
+              count(*) FILTER (WHERE status = 'needs_information')::text AS information_requested
+         FROM source_documents
+        WHERE firm_id = $1 AND status IN ('received', 'in_review', 'needs_information')
+        GROUP BY client_id`, [firmId]);
+    const docs = new Map(docsQ.rows.map((r) => [r.client_id, r]));
+
     const due = returnDueDates(period);
     const rows: CockpitRow[] = clients.rows.map((cl) => {
       const rk = risk.get(cl.id);
       const ov = overdue.get(cl.id);
+      const doc = docs.get(cl.id);
       const partial: Omit<CockpitRow, 'attention'> = {
         clientId: cl.id, name: cl.name, gstin: cl.gstin,
         outputTax: money(paise(outputTax.get(cl.id) ?? '0')),
@@ -197,6 +214,8 @@ export async function loadCockpit(
         overdueCount: Number(ov?.n ?? 0),
         billsPosted: billsPosted.get(cl.id) ?? 0,
         registrationIssues: regIssues.get(cl.id) ?? 0,
+        documentsWaiting: Number(doc?.waiting ?? 0),
+        informationRequested: Number(doc?.information_requested ?? 0),
         gstr1Due: due.gstr1, gstr3bDue: due.gstr3b,
         daysToGstr1: daysUntil(today, due.gstr1),
         daysToGstr3b: daysUntil(today, due.gstr3b),
@@ -224,6 +243,8 @@ export async function loadCockpit(
         creditAtRisk: total((r) => r.creditAtRisk),
         overduePayable: total((r) => r.overduePayable),
         needingAttention: rows.filter((r) => r.attention >= 40).length,
+        documentsWaiting: rows.reduce((sum, r) => sum + r.documentsWaiting, 0),
+        informationRequested: rows.reduce((sum, r) => sum + r.informationRequested, 0),
       },
     };
   });

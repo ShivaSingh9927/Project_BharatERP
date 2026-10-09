@@ -2217,6 +2217,7 @@ export async function postProposal(
       clientId: proposal.input.clientId,
       voucherId: bill.voucherId,
       sourceUri: opts.sourceUri ?? 'unrecorded',
+      reviewedBy: opts.approvedBy,
     });
   } catch (e) {
     bill.warnings.push(

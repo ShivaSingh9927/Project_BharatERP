@@ -405,6 +405,102 @@ export interface QueueItem {
    * matching, so the queue says so.
    */
   suggestedClassification: 'bank_charge' | 'interest' | 'cheque' | null;
+  suggestedExpenseAccount: string | null;
+  reviewClassification: 'business_expense' | 'personal' | 'transfer' | 'unsure'
+    | PendingReceiptCategory | null;
+  reviewSourceName: string | null;
+  fundingSuggestion: {
+    classification: PendingReceiptCategory | 'unsure'; sourceName: string;
+    basis: 'prior_confirmation' | 'narration_clue' | 'deepseek'; reason: string;
+    confidence?: number; evidence?: string[]; question?: string;
+  } | null;
+  reviewNote: string | null;
+}
+
+export type PendingReceiptCategory =
+  'share_application_pending' | 'related_party_loan_pending' | 'customer_advance_pending'
+  | 'intercompany_transfer_pending' | 'refund_or_reversal_pending'
+  | 'bank_interest_pending' | 'customer_receipt_pending';
+
+const PENDING_RECEIPT_CATEGORIES = new Set<PendingReceiptCategory>([
+  'share_application_pending', 'related_party_loan_pending', 'customer_advance_pending',
+  'intercompany_transfer_pending', 'refund_or_reversal_pending',
+  'bank_interest_pending', 'customer_receipt_pending',
+]);
+
+/** Exact normalized payer names only; a remembered answer is still a proposal. */
+export function suggestFundingFromConfirmedSource(
+  counterpartyName: string | null,
+  confirmed: Array<{ sourceName: string; classification: string }>,
+): QueueItem['fundingSuggestion'] {
+  const normalize = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const key = normalize(counterpartyName ?? '');
+  if (key.length < 5) return null;
+  const matches = confirmed.filter((x) => normalize(x.sourceName) === key
+    && PENDING_RECEIPT_CATEGORIES.has(x.classification as PendingReceiptCategory));
+  if (matches.length === 0 || new Set(matches.map((x) => x.classification)).size !== 1) return null;
+  return {
+    classification: matches[0]!.classification as PendingReceiptCategory,
+    sourceName: matches[0]!.sourceName,
+    basis: 'prior_confirmation',
+    reason: 'A prior receipt from this same extracted payer name was reviewed this way.',
+  };
+}
+
+/**
+ * First-pass funding classifier. It only recognizes explicit transaction text;
+ * names, direction, amount, and generic NEFT/UPI narration are not enough.
+ * The output is a review suggestion and never posts a voucher.
+ */
+export function suggestFundingFromNarration(
+  narration: string,
+  sourceName: string | null,
+): QueueItem['fundingSuggestion'] {
+  const candidates: Array<{ category: PendingReceiptCategory; pattern: RegExp; reason: string }> = [
+    { category: 'share_application_pending',
+      pattern: /\bshare application(?: money)?\b|\bshare subscription(?: money)?\b|\bequity subscription\b/i,
+      reason: 'Narration explicitly mentions a share application or subscription; verify the application and allotment records.' },
+    { category: 'related_party_loan_pending',
+      pattern: /\b(?:director|shareholder|related.party) loan\b|\bloan from (?:director|shareholder)\b/i,
+      reason: 'Narration explicitly mentions a director, shareholder, or related-party loan; verify the lender and terms.' },
+    { category: 'customer_advance_pending',
+      pattern: /\bcustomer advance\b|\badvance against (?:invoice|order|supply)\b/i,
+      reason: 'Narration explicitly mentions a customer advance; verify the customer and order.' },
+    { category: 'intercompany_transfer_pending',
+      pattern: /\binter.?company transfer\b|\bown account transfer\b/i,
+      reason: 'Narration explicitly mentions an intercompany or own-account transfer; verify both accounts belong to the company.' },
+    { category: 'refund_or_reversal_pending',
+      pattern: /\brefund\b|\breversal\b|\bchargeback\b/i,
+      reason: 'Narration explicitly mentions a refund or reversal; identify the original transaction.' },
+    { category: 'bank_interest_pending',
+      pattern: /\binterest (?:credit|paid|earned)\b|\bint\. paid\b/i,
+      reason: 'Narration appears to identify bank interest; verify the bank advice or statement details.' },
+    { category: 'customer_receipt_pending',
+      pattern: /\bcustomer payment\b|\binvoice payment\b|\bpayment against invoice\b/i,
+      reason: 'Narration appears to identify a customer payment; match it to the customer and invoice.' },
+  ];
+  const matches = candidates.filter((candidate) => candidate.pattern.test(narration));
+  if (matches.length !== 1) return null;
+  return {
+    classification: matches[0]!.category,
+    sourceName: sourceName ?? '',
+    basis: 'narration_clue',
+    reason: matches[0]!.reason,
+  };
+}
+
+const EXPENSE_HINTS: Array<{ pattern: RegExp; account: string }> = [
+  { pattern: /\b(bpcl|hpcl|iocl|petrol|diesel|fuel)\b/i, account: 'Motor Vehicle Expenses' },
+  { pattern: /\b(uber|ola|irctc|airlines?|hotel|makemytrip|goibibo)\b/i, account: 'Travel Expenses' },
+  { pattern: /\b(airtel|jio|bsnl|electricity|broadband|internet)\b/i, account: 'Utility Expenses' },
+  { pattern: /\b(google ads|facebook|meta ads|advertis)/i, account: 'Marketing' },
+  { pattern: /\b(print|stationery|office supplies)\b/i, account: 'Print and Stationery' },
+  { pattern: /\b(domino|zomato|swiggy|restaurant|cafe|food)\b/i, account: 'Staff Welfare' },
+];
+
+/** A suggestion only: narration cannot establish that spending was for business. */
+export function suggestExpenseAccount(narration: string): string | null {
+  return EXPENSE_HINTS.find((x) => x.pattern.test(narration))?.account ?? null;
 }
 
 /** §9 — statement-only lines, where no invoice or bill exists to match. */
@@ -435,7 +531,7 @@ export async function reconciliationQueue(
   bankAccountId: string,
   opts: { limit?: number; includeMatched?: boolean } = {},
 ): Promise<{ items: QueueItem[]; totals: { unmatched: number; matched: number;
-             autoMatchable: number; ambiguous: number } }> {
+             autoMatchable: number; ambiguous: number; unsure: number } }> {
   return withFirm(firmId, async (c) => {
     const acct = await c.query<{ client_id: string }>(
       'SELECT client_id FROM bank_accounts WHERE id = $1', [bankAccountId]);
@@ -449,6 +545,15 @@ export async function reconciliationQueue(
     const bills = await openBillCandidates(c, clientId);
     const parties = await c.query<{ id: string; name: string; legal_name: string | null }>(
       'SELECT id, name, legal_name FROM parties WHERE client_id = $1', [clientId]);
+    const confirmedFunding = await c.query<{ source_name: string; classification: string }>(
+      `SELECT r.source_name, r.classification FROM bank_transaction_reviews r
+       JOIN bank_transactions bt ON bt.id = r.bank_transaction_id
+       WHERE bt.bank_account_id = $1 AND r.source_name IS NOT NULL
+         AND r.classification IN ('share_application_pending',
+           'related_party_loan_pending','customer_advance_pending',
+           'intercompany_transfer_pending','refund_or_reversal_pending',
+           'bank_interest_pending','customer_receipt_pending')`,
+      [bankAccountId]);
 
     /** Resolve a parsed counterparty name to a party, loosely. */
     const resolveParty = (name: string | null): string | null => {
@@ -462,13 +567,17 @@ export async function reconciliationQueue(
     };
 
     const txns = await c.query(
-      `SELECT id, txn_date::text AS txn_date, narration, debit::text, credit::text,
+      `SELECT btr.id, btr.txn_date::text AS txn_date, btr.narration,
+              btr.debit::text, btr.credit::text,
               amount::text, unmatched_amount::text, status, payment_mode::text,
-              reference_number, counterparty_name, source::text
-       FROM bank_transactions_reconciled
-       WHERE bank_account_id = $1 AND NOT is_ignored
+              reference_number, counterparty_name, source::text,
+              review.classification AS review_classification,
+              review.source_name AS review_source_name, review.note AS review_note
+       FROM bank_transactions_reconciled btr
+       LEFT JOIN bank_transaction_reviews review ON review.bank_transaction_id = btr.id
+       WHERE btr.bank_account_id = $1 AND NOT btr.is_ignored
          AND ($2 OR status <> 'matched')
-       ORDER BY txn_date DESC
+       ORDER BY btr.txn_date DESC
        LIMIT $3`,
       [bankAccountId, opts.includeMatched ?? false, opts.limit ?? 500]);
 
@@ -500,6 +609,17 @@ export async function reconciliationQueue(
         suggestedClassification: proposal.best
           ? null                                    // a real match outranks a guess
           : classifyFromMode(t.payment_mode, direction),
+        suggestedExpenseAccount: direction === 'outbound'
+          ? suggestExpenseAccount(t.narration) : null,
+        reviewClassification: t.review_classification ?? null,
+        reviewSourceName: t.review_source_name ?? null,
+        fundingSuggestion: direction === 'inbound' && !proposal.best
+          ? suggestFundingFromConfirmedSource(t.counterparty_name,
+              confirmedFunding.rows.map((r) => ({
+                sourceName: r.source_name, classification: r.classification,
+              }))) ?? suggestFundingFromNarration(t.narration, t.counterparty_name)
+          : null,
+        reviewNote: t.review_note ?? null,
       };
     });
 
@@ -512,6 +632,7 @@ export async function reconciliationQueue(
         matched: items.filter((i) => i.status === 'matched').length,
         autoMatchable: items.filter((i) => i.proposal.autoMatchable).length,
         ambiguous: items.filter((i) => i.proposal.ambiguous).length,
+        unsure: items.filter((i) => i.reviewClassification === 'unsure').length,
       },
     };
   });

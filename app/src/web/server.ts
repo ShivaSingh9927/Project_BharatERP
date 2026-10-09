@@ -27,15 +27,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { ownerPool, withFirm } from '../db/pool.ts';
 import { reconciliationQueue } from '../domain/matching.ts';
-import { importStatementFile } from '../domain/statement.ts';
-import { parseStatementFile } from '../parse/statementFile.ts';
+import { addDeepSeekFundingSuggestions, setBankClassifierEnabled }
+  from '../domain/bankFundingClassifier.ts';
+import { billClassifierEnabled, setBillClassifierEnabled,
+         suggestBillLineAccounts } from '../domain/billExpenseClassifier.ts';
+import { bankSyncCoverage, importStatementBytes, importStatementFile,
+         confirmStatementBankAccount } from '../domain/statement.ts';
+import {
+  saveStatementPassword, savedStatementPassword, statementPasswordSettings,
+  setStatementAutoOpenConsent, forgetStatementPassword,
+} from '../domain/bankStatementPassword.ts';
+import { parseStatementBytes, parseStatementFile } from '../parse/statementFile.ts';
 import { createBankAccount, settleInvoiceFromBankLine, postBankCharge,
-         postInterestCredit } from '../domain/banking.ts';
+         postInterestCredit, bankReviewOptions, reviewBankTransaction,
+         postOpeningFromFirstStatement }
+  from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
 import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
          renderBankAccountSetup,
-         renderCashRegister, renderGstr2b } from './views.ts';
+         renderCashRegister, renderGstr2b, renderClientSetup } from './views.ts';
 import { parseGstr2b } from '../parse/../integrations/gstr2bJson.ts';
 import { runReconciliation, latestReconForPeriod, periodsWithRecon,
          resolveReconLine } from '../domain/gstr2bStore.ts';
@@ -65,7 +76,6 @@ import { formFor } from '../domain/billForm.ts';
 import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postReviewedBill,
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
-import { createHash } from 'node:crypto';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
 import { login, logout, sessionFromToken, changePassword,
          lockoutRemaining, type Session as AuthSession } from '../domain/auth.ts';
@@ -76,6 +86,21 @@ import { createCustomer, salesDesk, salesInvoiceDetail } from '../domain/sales.t
 import { parseTallyXml } from '../parse/tallyXml.ts';
 import type { TallyPreview } from '../parse/tallyXml.ts';
 import { importTallyPreview, tallyMappingDesk } from '../domain/tallyImport.ts';
+import { clientSetupProgress, saveClientSetup } from '../domain/clientSetup.ts';
+import { createHash } from 'node:crypto';
+import { receiveDocument, listDocuments, getDocumentBytes,
+         markDocumentInReview, requestDocumentInformation, dismissDocument,
+         listOpenDocumentRequests, listDocumentRequestHistory,
+         answerDocumentRequest, confirmDocumentClass } from '../domain/documentInbox.ts';
+import { renderDocumentInbox, renderNexus, renderFollowUps, renderActivity,
+         renderEmailInbox } from './views.ts';
+import { createFollowUp, completeFollowUp, listFollowUps } from '../domain/followUps.ts';
+import { recentActivity } from '../domain/activity.ts';
+import { emailInbox, receiveSampleEmail, assignEmail } from '../domain/emailIntake.ts';
+import { markReviewedEmailStatement } from '../domain/emailStatementReview.ts';
+import { importArchivedEmails, r2EmailConfig } from '../integrations/cloudflareR2Email.ts';
+import { documentClassifierEnabled, setDocumentClassifierEnabled,
+         suggestDocumentClass } from '../domain/documentTypeClassifier.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
 const assistantLlm = llmClientFromEnv();
@@ -215,23 +240,6 @@ async function bankAccounts(session: Session): Promise<Array<{
       [session.clientId]);
     return r.rows;
   });
-}
-
-/*
- * Uploaded files, held in memory by content hash so a proposal can be re-run
- * at post time without a second upload. A local single-reviewer tool, so a
- * simple bounded map is enough; oldest fall out past the cap.
- */
-const fileStash = new Map<string, { file: Buffer; at: number }>();
-const STASH_CAP = 20;
-function stashFile(file: Buffer): string {
-  const token = createHash('sha256').update(file).digest('hex').slice(0, 16);
-  fileStash.set(token, { file, at: Date.now() });
-  while (fileStash.size > STASH_CAP) {
-    const oldest = [...fileStash.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-    if (oldest) fileStash.delete(oldest[0]); else break;
-  }
-  return token;
 }
 
 let readers: ReviewReaders = {
@@ -396,15 +404,285 @@ async function handle(
   }
 
   const accounts = await bankAccounts(session);
+  const canManageEmail = session.boundClientId === null &&
+    (session.role === 'ca_partner' || session.role === 'ca_staff');
 
   // ---- pages --------------------------------------------------------------
 
   if (req.method === 'GET' && path === '/firm') {
+    const canSeeFirm = session.boundClientId === null &&
+      ['ca_partner', 'ca_staff', 'auditor'].includes(session.role);
+    if (!canSeeFirm) {
+      return html(res, 403, renderShell({
+        session, accounts, active: 'firm',
+        body: '<h1>Firm cockpit unavailable</h1><p>This page is for firm-level CA and audit roles. Use your client workspace to view its books and documents.</p>',
+      }));
+    }
     const cockpit = await loadCockpit(session.firmId,
       url.searchParams.get('period') ?? undefined);
     return html(res, 200, renderShell({
       session, accounts, active: 'firm', body: renderCockpit(cockpit),
     }));
+  }
+
+  if (req.method === 'GET' && path === '/setup') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'setup',
+      body: renderClientSetup(await clientSetupProgress(session.firmId, session.clientId)),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/documents') {
+    const [documents, requestHistory, classifierEnabled] = await Promise.all([
+      listDocuments(session.firmId, session.clientId),
+      listDocumentRequestHistory(session.firmId, session.clientId),
+      documentClassifierEnabled(session.firmId),
+    ]);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'documents',
+      body: renderDocumentInbox(documents,
+        session.role === 'ca_partner' || session.role === 'ca_staff',
+        requestHistory, { enabled: classifierEnabled, available: assistantLlm !== null },
+        ['owner','ca_partner','ca_staff'].includes(session.role)),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/email-inbox') {
+    if (!canManageEmail) return html(res, 403, renderShell({
+      session, accounts, active: 'email-inbox', body: '<h1>Email inbox unavailable</h1>',
+    }));
+    return html(res, 200, renderShell({
+      session, accounts, active: 'email-inbox',
+      body: renderEmailInbox(await emailInbox(session.firmId)),
+    }));
+  }
+
+  if (req.method === 'POST' && path === '/api/email-inbox/sample') {
+    if (!canManageEmail) return json(res, 403, { ok: false, error: 'CA access required' });
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (!Array.isArray(body.attachments) || body.attachments.length > 5) {
+        throw new Error('provide up to five attachments');
+      }
+      const attachments = body.attachments.map((attachment: {
+        name?: unknown; mimeType?: unknown; data?: unknown;
+      }) => {
+        if (typeof attachment.name !== 'string' || typeof attachment.data !== 'string'
+          || !/^[A-Za-z0-9+/]+={0,2}$/.test(attachment.data)) {
+          throw new Error('choose a valid attachment');
+        }
+        return { name: attachment.name,
+          mimeType: typeof attachment.mimeType === 'string' ? attachment.mimeType : undefined,
+          bytes: Buffer.from(attachment.data, 'base64') };
+      });
+      const saved = await receiveSampleEmail(session.firmId, session.userId, {
+        externalId: typeof body.externalId === 'string' ? body.externalId : undefined,
+        sender: body.sender, recipients: body.recipients,
+        subject: body.subject, bodyText: body.bodyText, attachments,
+      });
+      return json(res, 201, { ok: true, ...saved });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const emailAssignMatch = /^\/api\/email-inbox\/([0-9a-f-]{36})\/assign$/i.exec(path);
+  if (req.method === 'POST' && emailAssignMatch) {
+    if (!canManageEmail) return json(res, 403, { ok: false, error: 'CA access required' });
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.clientId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.clientId)) {
+        throw new Error('choose a client');
+      }
+      const assigned = await assignEmail(session.firmId, session.userId,
+        emailAssignMatch[1]!, body.clientId, body.rememberSender === true);
+      return json(res, assigned ? 200 : 404,
+        { ok: assigned, ...(assigned ? {} : { error: 'email is unavailable for assignment' }) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  if (req.method === 'GET' && path === '/nexus') {
+    const runs = await assistantRuns(session.firmId, session.clientId, 40);
+    const followUps = await listFollowUps(session.firmId, session.clientId, true);
+    const activity = await recentActivity(session.firmId, session.clientId, 8);
+    const documents = await listDocuments(session.firmId, session.clientId);
+    const documentRequests = await listOpenDocumentRequests(session.firmId, session.clientId);
+    return html(res, 200, renderShell({
+      session, accounts, active: 'nexus',
+      body: renderNexus(session.clientName, runs, followUps, activity, documents,
+        documentRequests, session.role === 'owner'),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/activity') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'activity',
+      body: renderActivity(await recentActivity(session.firmId, session.clientId)),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/api/activity') {
+    return json(res, 200, { ok: true,
+      items: await recentActivity(session.firmId, session.clientId) });
+  }
+
+  if (req.method === 'GET' && path === '/follow-ups') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'follow-ups',
+      body: renderFollowUps(await listFollowUps(session.firmId, session.clientId, true)),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/api/follow-ups') {
+    return json(res, 200, { ok: true,
+      items: await listFollowUps(session.firmId, session.clientId, true) });
+  }
+
+  if (req.method === 'POST' && path === '/api/follow-ups') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const id = await createFollowUp(session.firmId, session.clientId, session.userId, body);
+      return json(res, 201, { ok: true, id });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const completeFollowUpMatch = /^\/api\/follow-ups\/([0-9a-f-]+)\/complete$/i.exec(path);
+  if (req.method === 'POST' && completeFollowUpMatch) {
+    const completed = await completeFollowUp(
+      session.firmId, session.clientId, session.userId, completeFollowUpMatch[1]!);
+    return json(res, completed ? 200 : 404,
+      { ok: completed, ...(completed ? {} : { error: 'open follow-up not found' }) });
+  }
+
+  if (req.method === 'GET' && path === '/api/documents') {
+    return json(res, 200, { ok: true,
+      documents: await listDocuments(session.firmId, session.clientId) });
+  }
+
+  if (req.method === 'POST' && path === '/api/document-classifier-consent') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.enabled !== 'boolean') throw new Error('choose whether to enable document suggestions');
+      if (body.enabled && !assistantLlm) throw new Error('Nexus AI is not configured on this server');
+      await setDocumentClassifierEnabled(session.firmId, body.enabled, session.userId,
+        assistantLlm?.provider ?? 'deepseek', assistantLlm?.model ?? 'deepseek-chat');
+      return json(res, 200, { ok: true, enabled: body.enabled });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const classifyDocumentMatch = /^\/api\/documents\/([0-9a-f-]{36})\/classify$/i.exec(path);
+  if (req.method === 'POST' && classifyDocumentMatch) {
+    try {
+      const suggestion = await suggestDocumentClass({ firmId: session.firmId,
+        clientId: session.clientId, documentId: classifyDocumentMatch[1]!, llm: assistantLlm });
+      if (!suggestion) return json(res, 400, { ok: false,
+        error: 'Enable Nexus document-class suggestions first.' });
+      return json(res, 200, { ok: true, suggestion });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const confirmDocumentClassMatch = /^\/api\/documents\/([0-9a-f-]{36})\/classification-review$/i.exec(path);
+  if (req.method === 'POST' && confirmDocumentClassMatch) {
+    if (!['owner','ca_partner','ca_staff'].includes(session.role)) {
+      return json(res, 403, { ok: false, error: 'authorized reviewer access required' });
+    }
+    try {
+      const body = JSON.parse(await readBody(req));
+      const saved = await confirmDocumentClass(session.firmId, session.clientId,
+        confirmDocumentClassMatch[1]!, session.userId, body.documentClass);
+      return json(res, saved ? 200 : 404,
+        { ok: saved, ...(saved ? {} : { error: 'document is unavailable for review' }) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const answerRequestMatch = /^\/api\/document-requests\/([0-9a-f-]{36})\/answer$/i.exec(path);
+  if (req.method === 'POST' && answerRequestMatch) {
+    if (session.role !== 'owner') {
+      return json(res, 403, { ok: false, error: 'only the founder can answer this request' });
+    }
+    try {
+      const body = JSON.parse(await readBody(req));
+      const answered = await answerDocumentRequest(session.firmId, session.clientId,
+        answerRequestMatch[1]!, session.userId, body.answer, body.attachmentIds);
+      return json(res, answered ? 200 : 404,
+        { ok: answered, ...(answered ? {} : { error: 'open request not found' }) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  const documentReviewAction = /^\/api\/documents\/([0-9a-f-]{36})\/(review|request-info|dismiss)$/i.exec(path);
+  if (req.method === 'POST' && documentReviewAction) {
+    if (session.role !== 'ca_partner' && session.role !== 'ca_staff') {
+      return json(res, 403, { ok: false, error: 'a CA team member must update document review status' });
+    }
+    try {
+      const id = documentReviewAction[1]!;
+      const updated = documentReviewAction[2] === 'review'
+        ? await markDocumentInReview(session.firmId, session.clientId, id, session.userId)
+        : documentReviewAction[2] === 'dismiss'
+        ? await dismissDocument(session.firmId, session.clientId, id,
+          session.userId, JSON.parse(await readBody(req)).reason)
+        : await requestDocumentInformation(session.firmId, session.clientId, id,
+          session.userId, JSON.parse(await readBody(req)).note);
+      return json(res, updated ? 200 : 404,
+        { ok: updated, ...(updated ? {} : { error: 'document not found or already completed' }) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/documents') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      if (typeof body.name !== 'string' || typeof body.data !== 'string' ||
+          !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) {
+        return json(res, 400, { ok: false, error: 'choose a valid file' });
+      }
+      const result = await receiveDocument(session.firmId, {
+        clientId: session.clientId, uploadedBy: session.userId,
+        name: body.name, bytes: Buffer.from(body.data, 'base64'),
+        mimeType: typeof body.mimeType === 'string' ? body.mimeType : undefined,
+      });
+      let suggestion = null;
+      if (!result.duplicate && await documentClassifierEnabled(session.firmId)) {
+        try { suggestion = await suggestDocumentClass({ firmId: session.firmId,
+          clientId: session.clientId, documentId: result.document.id, llm: assistantLlm }); }
+        catch { /* Stored original remains available even if the suggestion service is down. */ }
+      }
+      return json(res, 200, { ok: true, ...result, suggestion });
+    } catch (e) {
+      return json(res, 400, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  const documentDownload = /^\/api\/documents\/([0-9a-f-]{36})\/download$/i.exec(path);
+  if (req.method === 'GET' && documentDownload) {
+    try {
+      const { document, bytes } = await getDocumentBytes(
+        session.firmId, session.clientId, documentDownload[1]!);
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-disposition': `attachment; filename="document-${document.id}"`,
+        'content-length': bytes.length,
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(bytes);
+      return;
+    } catch (e) {
+      return json(res, 404, { ok: false, error: (e as Error).message });
+    }
   }
 
   if (req.method === 'GET' && path === '/') {
@@ -431,11 +709,26 @@ async function handle(
         accountNumber: String(body.accountNumber ?? ''),
         ifsc: String(body.ifsc ?? ''),
         kind: String(body.kind ?? ''),
-        openingBalance: String(body.openingBalance ?? '0'),
-        openingDate: String(body.openingDate ?? ''),
+        openingBalance: typeof body.openingBalance === 'string' && body.openingBalance.trim()
+          ? body.openingBalance : undefined,
+        openingDate: typeof body.openingDate === 'string' && body.openingDate.trim()
+          ? body.openingDate : undefined,
         createdBy: session.userId,
       });
       return json(res, 200, { ok: true, ...account });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/client-setup') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      await saveClientSetup(session.firmId, session.clientId, {
+        name: String(body.name ?? ''), pan: String(body.pan ?? ''),
+        gstin: body.gstin === undefined ? undefined : String(body.gstin),
+      });
+      return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }
@@ -619,14 +912,34 @@ async function handle(
     const posted = await recentBills(session);
     const fresh = url.searchParams.has('new');
     const cards = fresh ? (lastPreview.get(session.clientId) ?? []) : [];
+    const billAiEnabled = await billClassifierEnabled(session.firmId);
     return html(res, 200, renderShell({
       session, accounts, active: 'bills',
       body: renderBillReview({
         proposals: cards as never, token: cards[0]?.token ?? null, posted,
         hasExpenseAccount: expenseAccountId !== null,
         accounts: expAccounts, defaultAccountId: expenseAccountId,
+        canApprove: session.role === 'ca_partner',
+        classifier: { enabled: billAiEnabled, available: assistantLlm !== null },
       }),
     }));
+  }
+
+  if (req.method === 'POST' && path === '/api/bill-classifier-consent') {
+    const body = JSON.parse(await readBody(req));
+    if (typeof body.enabled !== 'boolean') {
+      return json(res, 400, { ok: false, error: 'choose whether to enable bill suggestions' });
+    }
+    if (body.enabled && !assistantLlm) {
+      return json(res, 400, { ok: false, error: 'Nexus AI is not configured on this server' });
+    }
+    try {
+      await setBillClassifierEnabled(session.firmId, body.enabled, session.userId,
+        assistantLlm?.provider ?? 'deepseek', assistantLlm?.model ?? 'deepseek-chat');
+      return json(res, 200, { ok: true, enabled: body.enabled });
+    } catch (e) {
+      return json(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   if (req.method === 'POST' && path === '/api/bills/preview') {
@@ -635,9 +948,19 @@ async function handle(
     if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
     try {
       const all: unknown[] = [];
-      for (const f of body.files as Array<{ name: string; data: string }>) {
-        const file = Buffer.from(f.data, 'base64');
-        const token = stashFile(file);
+      const expAccounts = await expenseAccounts(session.firmId, session.clientId);
+      const incoming = Array.isArray(body.files) ? body.files : [];
+      const savedIds = Array.isArray(body.documentIds) ? body.documentIds : [];
+      for (const f of incoming as Array<{ name: string; data: string }>) {
+        const saved = await receiveDocument(session.firmId, {
+          clientId: session.clientId, uploadedBy: session.userId,
+          name: f.name, bytes: Buffer.from(f.data, 'base64'),
+        });
+        savedIds.push(saved.document.id);
+      }
+      for (const token of savedIds as string[]) {
+        const { bytes: file } = await getDocumentBytes(
+          session.firmId, session.clientId, token);
         const proposals = await previewBills(
           session.firmId, session.clientId, expenseAccountId,
           session.userId, file, readers);
@@ -652,7 +975,24 @@ async function handle(
               ...l, suggestedAccountId: learned.get(lineKey(l.description)),
             }));
           }
+          const lineSuggestions = await suggestBillLineAccounts({
+            firmId: session.firmId, clientId: session.clientId,
+            documentId: token,
+            lines: view.lines.map((line, lineIndex) => ({
+              ref: `B${p.index}L${lineIndex}`, billIndex: p.index, lineIndex,
+              description: line.description, hsn: line.hsn, vendor: view.partyName,
+              ...(line.suggestedAccountId ? { learnedAccountId: line.suggestedAccountId } : {}),
+            })),
+            accounts: expAccounts, client: assistantLlm,
+          });
+          view.lines = view.lines.map((line, lineIndex) => ({
+            ...line,
+            aiSuggestion: lineSuggestions.suggestions.get(`B${p.index}L${lineIndex}`),
+          }));
           all.push({ ...view, token });
+        }
+        if (session.role === 'ca_partner' || session.role === 'ca_staff') {
+          await markDocumentInReview(session.firmId, session.clientId, token, session.userId);
         }
       }
       // Cache the last preview so the GET page can render it after reload.
@@ -671,14 +1011,16 @@ async function handle(
      * are about to approve.
      */
     const body = JSON.parse(await readBody(req));
-    const stashed = fileStash.get(body.token);
-    if (!stashed) return json(res, 200, { ok: false, error: 'this upload has expired — read the file again' });
+    let file: Buffer;
+    try {
+      file = (await getDocumentBytes(session.firmId, session.clientId, body.token)).bytes;
+    } catch { return json(res, 200, { ok: false, error: 'this document is unavailable' }); }
     const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
     if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
     try {
       const proposals = await previewBills(
         session.firmId, session.clientId, expenseAccountId, session.userId,
-        stashed.file, readers, body.manual, body.lineAccounts);
+        file, readers, body.manual, body.lineAccounts);
       const p = proposals.find((x) => x.index === body.index);
       if (p === undefined) return json(res, 200, { ok: false, error: 'no such document' });
       const view = proposalView(p);
@@ -739,18 +1081,23 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/bills/post') {
+    if (session.role !== 'ca_partner') {
+      return json(res, 403, { ok: false, error: 'a CA partner must approve this bill' });
+    }
     const body = JSON.parse(await readBody(req));
-    const stashed = fileStash.get(body.token);
-    if (!stashed) return json(res, 200, { ok: false, error: 'this upload has expired — read the file again' });
+    let original: Awaited<ReturnType<typeof getDocumentBytes>>;
+    try {
+      original = await getDocumentBytes(session.firmId, session.clientId, body.token);
+    } catch { return json(res, 200, { ok: false, error: 'this document is unavailable' }); }
     const expenseAccountId = await purchasesAccount(session.firmId, session.clientId);
     if (!expenseAccountId) return json(res, 200, { ok: false, error: 'no Purchases account' });
     try {
       const bill = await postReviewedBill(
         session.firmId, session.clientId, expenseAccountId,
-        stashed.file, body.index, body.confirm ?? {}, session.userId, readers,
+        original.bytes, body.index, body.confirm ?? {}, session.userId, readers,
         { lineAccounts: body.lineAccounts, expenseAccountId: body.expenseAccountId,
           blockItc: body.blockItc === true, manual: body.manual,
-          tds: body.tds });
+          tds: body.tds, sourceUri: `workspace://${session.firmId}/${session.clientId}/originals/${original.document.hash}` });
       return json(res, 200, { ok: true, voucherId: bill.voucherId });
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
@@ -882,6 +1229,7 @@ async function handle(
       body: renderReceivables({
         invoices: await outstandingInvoices(session.firmId, session.clientId),
         accounts: await receiptAccounts(session.firmId, session.clientId),
+        reminders: url.searchParams.get('reminders') === '1',
       }),
     }));
   }
@@ -1094,21 +1442,63 @@ async function handle(
         body: renderBankAccountSetup(new Date().toISOString().slice(0, 10)),
       }));
     }
-    const [queue, brs] = await Promise.all([
+    const [queue, brs, reviewOptions] = await Promise.all([
       reconciliationQueue(session.firmId, accountId),
       bankReconciliationStatement(session.firmId, accountId,
         new Date().toISOString().slice(0, 10)),
+      bankReviewOptions(session.firmId, session.clientId, accountId),
     ]);
+    const classifier = await addDeepSeekFundingSuggestions(
+      session.firmId, queue.items, assistantLlm);
     return html(res, 200, renderShell({
       session, accounts, active: 'reconcile', accountId,
-      body: renderQueue(queue, brs, accountId),
+      body: renderQueue(queue, brs, accountId, reviewOptions, {
+        ...classifier, available: assistantLlm !== null,
+      }),
     }));
   }
 
+  if (req.method === 'POST' && path === '/api/bank-classifier-consent') {
+    const body = JSON.parse(await readBody(req));
+    if (typeof body.enabled !== 'boolean') {
+      return json(res, 400, { ok: false, error: 'choose whether to enable Nexus suggestions' });
+    }
+    if (body.enabled && !assistantLlm) {
+      return json(res, 400, { ok: false, error: 'Nexus AI is not configured on this server' });
+    }
+    try {
+      await setBankClassifierEnabled(session.firmId, body.enabled, session.userId,
+        assistantLlm?.provider ?? 'deepseek', assistantLlm?.model ?? 'deepseek-chat');
+      return json(res, 200, { ok: true, enabled: body.enabled });
+    } catch (e) {
+      return json(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   if (req.method === 'GET' && path === '/import') {
+    const syncAccounts = await Promise.all(accounts.map(async (account) => ({
+      ...account,
+      coverage: await bankSyncCoverage(session.firmId, session.clientId, account.id),
+      ...await statementPasswordSettings(session.firmId, session.clientId, account.id),
+    })));
+    const requestedDocumentId = url.searchParams.get('document');
+    let sourceDocument: { id: string; name: string } | undefined;
+    if (requestedDocumentId) {
+      try {
+        const received = await getDocumentBytes(
+          session.firmId, session.clientId, requestedDocumentId);
+        sourceDocument = { id: received.document.id, name: received.document.originalName };
+      } catch {
+        return html(res, 404, renderShell({
+          session, accounts, active: 'import',
+          body: '<h1>Document not found</h1><p class="empty">That file is not available for this client. <a href="/documents">Return to Documents</a>.</p>',
+        }));
+      }
+    }
     return html(res, 200, renderShell({
       session, accounts, active: 'import',
-      body: renderImport({ accounts, banks: TEMPLATES.map((t) => t.bank) }),
+      body: renderImport({ accounts: syncAccounts, banks: TEMPLATES.map((t) => t.bank),
+        sourceDocument }),
     }));
   }
 
@@ -1140,10 +1530,66 @@ async function handle(
 
   // ---- actions ------------------------------------------------------------
 
-  if (req.method === 'POST' && path === '/api/preview') {
-    const { fileText, bank } = JSON.parse(await readBody(req));
+  if (req.method === 'POST' && path === '/api/statement-password/forget') {
     try {
-      const parse = parseStatementFile(fileText, { bank: bank || undefined });
+      const body = JSON.parse(await readBody(req));
+      await forgetStatementPassword(session.firmId, session.clientId,
+        String(body.bankAccountId ?? ''), session.userId);
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/preview') {
+    const body = JSON.parse(await readBody(req));
+    const { fileText, fileBase64, bank, bankAccountId } = body;
+    try {
+      const storedDocument = typeof body.documentId === 'string'
+        ? await getDocumentBytes(session.firmId, session.clientId, body.documentId)
+        : null;
+      if (storedDocument?.document.status === 'dismissed') {
+        throw new Error('restore this dismissed document for review before opening it as a statement');
+      }
+      const suppliedPassword = typeof body.password === 'string' && body.password.length > 0
+        ? body.password : null;
+      const password = suppliedPassword ?? (bankAccountId
+        ? await savedStatementPassword(session.firmId, session.clientId, bankAccountId)
+        : null);
+      const parse = storedDocument
+        ? await parseStatementBytes(storedDocument.bytes, {
+          bank: bank || undefined, password: password ?? undefined,
+        })
+        : fileBase64
+        ? await parseStatementBytes(Buffer.from(fileBase64, 'base64'), {
+          bank: bank || undefined, password: password ?? undefined,
+        })
+        : parseStatementFile(fileText, { bank: bank || undefined });
+      const accountCheck = await confirmStatementBankAccount(
+        session.firmId, session.clientId, bankAccountId, parse.statementAccountNumber);
+      if (storedDocument && (session.role === 'ca_partner' || session.role === 'ca_staff')) {
+        await markDocumentInReview(
+          session.firmId, session.clientId, storedDocument.document.id, session.userId);
+      }
+      if (body.rememberPassword === true && suppliedPassword && bankAccountId) {
+        await saveStatementPassword(session.firmId, {
+          clientId: session.clientId, bankAccountId,
+          password: suppliedPassword, updatedBy: session.userId,
+          autoOpenEmail: body.autoOpenEmail === true,
+        });
+      } else if (bankAccountId && typeof body.autoOpenEmail === 'boolean') {
+        const settings = await statementPasswordSettings(
+          session.firmId, session.clientId, bankAccountId);
+        if (settings.saved && settings.autoOpenEmail !== body.autoOpenEmail) {
+          await setStatementAutoOpenConsent(session.firmId, session.clientId,
+            bankAccountId, session.userId, body.autoOpenEmail);
+        }
+      }
+      if (storedDocument && parse.rows.length > 0) {
+        await markReviewedEmailStatement(
+          session.firmId, session.clientId, storedDocument.document.id,
+          bankAccountId, parse.rows.length, parse.periodFrom, parse.periodTo);
+      }
       return json(res, 200, {
         ok: true,
         bank: parse.bank,
@@ -1152,9 +1598,16 @@ async function handle(
         closingBalance: parse.closingBalance,
         periodFrom: parse.periodFrom,
         periodTo: parse.periodTo,
+        accountCheck,
         warnings: parse.warnings,
         skippedRows: parse.skippedRows,
-        rows: parse.rows.slice(0, 12),
+        // The browser initially collapses this list for readability, but it
+        // receives every parsed row so the reviewer can expand and inspect the
+        // complete statement before importing it.
+        rows: parse.rows,
+        passwordRemembered: body.rememberPassword === true && Boolean(suppliedPassword),
+        autoOpenEmail: (await statementPasswordSettings(
+          session.firmId, session.clientId, bankAccountId)).autoOpenEmail,
       });
     } catch (e) {
       return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -1163,15 +1616,42 @@ async function handle(
 
   if (req.method === 'POST' && path === '/api/import') {
     const body = JSON.parse(await readBody(req));
-    const outcome = await importStatementFile(session.firmId, {
+    const storedDocument = typeof body.documentId === 'string'
+      ? await getDocumentBytes(session.firmId, session.clientId, body.documentId)
+      : null;
+    if (storedDocument?.document.status === 'dismissed') {
+      return json(res, 200, { ok: false,
+        error: 'restore this dismissed document for review before importing it as a statement',
+        warnings: [] });
+    }
+    const suppliedPassword = typeof body.password === 'string' && body.password.length > 0
+      ? body.password : null;
+    const password = suppliedPassword ?? await savedStatementPassword(
+      session.firmId, session.clientId, body.bankAccountId);
+    const common = {
       clientId: session.clientId,
       bankAccountId: body.bankAccountId,
-      fileText: body.fileText,
       bank: body.bank || undefined,
       openingBalance: body.openingBalance || undefined,
       closingBalance: body.closingBalance || undefined,
       uploadedBy: session.userId,
-    });
+      password: password ?? undefined,
+      ...(storedDocument ? { sourceDocumentId: storedDocument.document.id } : {}),
+    };
+    const outcome = storedDocument
+      ? await importStatementBytes(session.firmId, { ...common, fileBytes: storedDocument.bytes })
+      : body.fileBase64
+      ? await importStatementBytes(session.firmId, {
+        ...common, fileBytes: Buffer.from(body.fileBase64, 'base64'),
+      })
+      : await importStatementFile(session.firmId, { ...common, fileText: body.fileText });
+    if (outcome.result && body.rememberPassword === true && suppliedPassword) {
+      await saveStatementPassword(session.firmId, {
+        clientId: session.clientId, bankAccountId: body.bankAccountId,
+        password: suppliedPassword, updatedBy: session.userId,
+        autoOpenEmail: body.autoOpenEmail === true,
+      });
+    }
     return json(res, 200, {
       ok: outcome.result !== null,
       error: outcome.error,
@@ -1179,6 +1659,7 @@ async function handle(
       imported: outcome.result?.imported ?? 0,
       duplicates: outcome.result?.duplicates ?? 0,
       arithmetic: outcome.result?.arithmetic ?? null,
+      coverage: outcome.result?.coverage ?? null,
       warnings: [...outcome.parse.warnings, ...(outcome.result?.warnings ?? [])],
     });
   }
@@ -1200,6 +1681,19 @@ async function handle(
       return json(res, 200, { ok: true, ...r });
     } catch (e) {
       return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/bank-opening-from-statement') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const result = await postOpeningFromFirstStatement(session.firmId, {
+        clientId: session.clientId, bankAccountId: String(body.bankAccountId ?? ''),
+        createdBy: session.userId,
+      });
+      return json(res, 200, { ok: true, ...result });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: (e as Error).message });
     }
   }
 
@@ -1226,6 +1720,24 @@ async function handle(
         return json(res, 200, { ok: true, ...r });
       }
       return json(res, 400, { ok: false, error: `unknown classification "${body.kind}"` });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/review-bank-transaction') {
+    const body = JSON.parse(await readBody(req));
+    try {
+      const r = await reviewBankTransaction(session.firmId, {
+        clientId: session.clientId,
+        bankTransactionId: body.bankTransactionId,
+        classification: body.classification,
+        accountId: body.accountId || undefined,
+        sourceName: body.sourceName || undefined,
+        note: body.note || undefined,
+        reviewedBy: session.userId,
+      });
+      return json(res, 200, { ok: true, ...r });
     } catch (e) {
       return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -1277,3 +1789,24 @@ createServer((req, res) => {
    */
   console.log(`\n  Localhost only: no TLS, so the session cookie is not Secure.\n`);
 });
+
+const emailImportConfig = r2EmailConfig();
+if (emailImportConfig) {
+  let importing = false;
+  const poll = async () => {
+    if (importing) return;
+    importing = true;
+    try {
+      const summary = await importArchivedEmails(emailImportConfig);
+      if (summary.imported || summary.duplicates || summary.held) {
+        console.log('  email intake:', summary);
+      }
+    } catch (error) {
+      console.error('  email intake poll failed:', (error as Error).message);
+    } finally {
+      importing = false;
+    }
+  };
+  void poll();
+  setInterval(() => void poll(), 2 * 60 * 1000).unref();
+}

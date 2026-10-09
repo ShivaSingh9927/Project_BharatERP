@@ -1,4 +1,68 @@
-# BharatERP — GL Engine
+# BharatERP application — engineering notes
+
+> This document began as the GL-engine build guide. Its ledger invariants
+> remain useful, but feature lists and test counts below are historical and may
+> be stale. See [`../docs/PROJECT_STATUS.md`](../docs/PROJECT_STATUS.md) for the
+> dated implementation snapshot and [`../AGENTS.md`](../AGENTS.md) for
+> repository-wide engineering rules.
+
+## Shared email inbox and Cloudflare bridge
+
+Firm-scoped CA users can open **Email inbox** in the local app. The page shows
+each client's stable reference (`inbox+REFERENCE`) and accepts sample messages
+with attachments. A clear recipient reference routes to that client. A sender
+explicitly trusted by a CA can also route mail, unless it conflicts with a
+recipient reference. Unknown or conflicting mail stays in **Unassigned** until
+a CA assigns it. Assignment registers attachments in the client's existing
+Documents inbox; it never posts accounting entries. Message IDs are
+idempotent, and the intake record preserves each attachment entry even when
+identical file content is stored only once.
+
+The pilot Worker and R2 importer in
+[`../cloudflare/email-intake`](../cloudflare/email-intake/README.md) store raw
+MIME privately while the PC is off and import it when the local importer runs.
+The exact pilot address has passed an end-to-end test; the general `inbox@`
+route still forwards to the verified Gmail mailbox. The local sample form
+continues to use `example.test`.
+
+Each assigned attachment gets a review classification. A PDF filename alone
+is not enough to call it a statement. Nexus can answer who sent each recent
+email, when Cloudflare received it, which attachment arrived, and whether a
+CA dismissed it. The original remains available even when dismissed. Nothing
+in this email path posts transactions.
+
+For a protected bank PDF, a CA first adds the bank account and opens the file
+in **Bank sync** with its password. After the parser verifies that the account
+number matches, the CA can choose **Remember securely for this account** and
+independently opt in to **Automatically open future emailed statements for this
+account**. Consent can be revoked by clearing that option on a later preview
+or by clicking **Forget saved password**. With consent, new attachments are
+opened only for assessment; parsed rows still require CA review and manual
+import. Unknown, malformed, unrelated, or mismatched attachments remain in
+the review queue. A dismissed file must be restored before statement import.
+
+## Client document inbox
+
+The local review app now has a **Documents** page. A signed-in user can upload
+originals for their selected client, list received files, and download a
+verified original. A document can be opened in the existing bill review flow;
+that flow re-reads the durable original at approval time. `Bharat Nexus` can
+answer which files are in that client's inbox. Uploading a file does not post
+an accounting entry, and bill posting requires a CA partner session.
+
+Files are stored under `app/.data/workspace/<firm-id>/<client-id>/originals/`
+by SHA-256 hash. Set `DOCUMENT_WORKSPACE_ROOT` to an absolute directory to put
+the workspace elsewhere. Keep this directory on durable storage and back it up;
+the database records the file's address and metadata but not its bytes. The
+workspace is ignored by Git. The endpoint accepts files up to 5 MB. The
+original filename is display metadata only and cannot influence the path.
+
+The document inbox preserves the source file, supports review notes and
+information requests, and keeps AI suggestions separate from human class
+confirmation. Class confirmation only enables the next workflow link; the
+workflow itself still performs its own parsing and review. Bill preview cards
+are cached in memory for display, but the original file is durable and the
+approval step reads it again from the workspace.
 
 Implementation of [`specs/gl-engine.md`](../specs/gl-engine.md) and the
 immutability guarantees in [`specs/audit-trail.md`](../specs/audit-trail.md).
@@ -12,7 +76,7 @@ cp .env.example .env
 docker compose up -d
 npm run migrate
 npm run seed          # creates a firm, client, FY 2026-27, and 59 accounts
-npm test              # 29 acceptance tests
+npm test
 ```
 
 `npx tsx src/db/reset.ts` drops and recreates the schema (refuses any
@@ -48,9 +112,14 @@ non-localhost `DATABASE_URL`).
 | 180-day ITC reversal monitor | ✅ |
 | Supplier payment with TDS withholding | ✅ |
 
-Not yet: HTTP API, e-Invoice IRP calls, e-Way Bill, the LlamaParse/DeepSeek
-extraction calls themselves, bank reconciliation, GST returns, period close,
-multi-currency, cost centers.
+The following was the not-yet-built list when this GL-engine guide was first
+written. It is historical rather than a current gap list: check the current
+routes, migrations, tests, and `docs/PROJECT_STATUS.md` before using it to plan
+work.
+
+- e-Invoice IRP calls and e-Way Bill integrations
+- Full external extraction-provider integrations
+- Period close, multi-currency, and cost centers
 
 ## Two decisions worth knowing before you change anything
 

@@ -11,7 +11,7 @@ import { withFirm } from '../db/pool.ts';
 import { ValidationError } from './types.ts';
 import { paise, money } from './tax.ts';
 import { parseNarration } from './narration.ts';
-import { parseStatementFile, type ParsedStatementFile } from '../parse/statementFile.ts';
+import { parseStatementBytes, parseStatementFile, type ParsedStatementFile } from '../parse/statementFile.ts';
 
 export const PARSER_VERSION = 'statement-parser/1.0.0';
 
@@ -45,6 +45,64 @@ export interface ArithmeticCheck {
    */
   badRows: Array<{ row: number; expected: string; stated: string }>;
   detail: string;
+}
+
+export interface StatementAccountCheck {
+  last4: string;
+  matchedBy: 'full account number' | 'last four digits';
+}
+
+/**
+ * Every uploaded file must identify the same account that the reviewer chose.
+ * A full number is compared by its one-way fingerprint; a bank-masked number
+ * can only be compared by its final four digits. Neither form is stored.
+ */
+export async function confirmStatementBankAccount(
+  firmId: string,
+  clientId: string,
+  bankAccountId: string,
+  statementAccountNumber: string | null,
+): Promise<StatementAccountCheck> {
+  if (!statementAccountNumber) {
+    throw new ValidationError(
+      'BR-2: this statement has no readable account number, so BharatERP cannot confirm it belongs to the selected account',
+      'BR-2',
+    );
+  }
+  const normalized = statementAccountNumber.replace(/[\s-]+/g, '').toUpperCase();
+  const last4 = normalized.slice(-4);
+  if (last4.length !== 4 || !/\d{4}$/.test(last4)) {
+    throw new ValidationError('BR-2: the statement account number is not readable enough to verify', 'BR-2');
+  }
+
+  return withFirm(firmId, async (c) => {
+    const account = await c.query<{ account_number_hash: string; last4: string }>(
+      `SELECT account_number_hash, account_number_last4 AS last4
+       FROM bank_accounts WHERE id = $1 AND client_id = $2`,
+      [bankAccountId, clientId],
+    );
+    if (account.rowCount === 0) {
+      throw new ValidationError('bank account not found for this client', 'BR-2');
+    }
+    const saved = account.rows[0]!;
+    if (/[X*]/.test(normalized)) {
+      if (saved.last4 !== last4) {
+        throw new ValidationError(
+          `BR-2: this statement ends in ••${last4}, not the selected account ••${saved.last4}`,
+          'BR-2',
+        );
+      }
+      return { last4, matchedBy: 'last four digits' };
+    }
+    const fingerprint = createHash('sha256').update(normalized).digest('hex');
+    if (saved.account_number_hash !== fingerprint) {
+      throw new ValidationError(
+        `BR-2: this statement belongs to a different account (••${last4}), not the selected account ••${saved.last4}`,
+        'BR-2',
+      );
+    }
+    return { last4, matchedBy: 'full account number' };
+  });
 }
 
 /**
@@ -168,7 +226,91 @@ export interface ImportResult {
   imported: number;
   duplicates: number;
   arithmetic: ArithmeticCheck;
+  coverage: StatementCoverage;
   warnings: string[];
+}
+
+export interface DateRange {
+  from: string;
+  to: string;
+}
+
+export interface StatementCoverage {
+  coveredFrom: string | null;
+  coveredTo: string | null;
+  intervals: DateRange[];
+  gaps: DateRange[];
+  isContinuous: boolean;
+  nextExpectedFrom: string | null;
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+function dayNumber(value: string): number {
+  if (!ISO_DAY.test(value)) throw new ValidationError(`invalid statement date: ${value}`, 'BR-8');
+  const n = Date.parse(`${value}T00:00:00Z`);
+  if (!Number.isFinite(n) || new Date(n).toISOString().slice(0, 10) !== value) {
+    throw new ValidationError(`invalid statement date: ${value}`, 'BR-8');
+  }
+  return Math.floor(n / 86_400_000);
+}
+
+function dayText(n: number): string {
+  return new Date(n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Merge inclusive statement periods and expose only genuine uncovered days. */
+export function statementCoverage(ranges: DateRange[]): StatementCoverage {
+  if (ranges.length === 0) {
+    return {
+      coveredFrom: null, coveredTo: null, intervals: [], gaps: [],
+      isContinuous: true, nextExpectedFrom: null,
+    };
+  }
+
+  const sorted = ranges.map((r) => {
+    const from = dayNumber(r.from);
+    const to = dayNumber(r.to);
+    if (to < from) throw new ValidationError('statement period ends before it starts', 'BR-8');
+    return { from, to };
+  }).sort((a, b) => a.from - b.from || a.to - b.to);
+
+  const merged: Array<{ from: number; to: number }> = [];
+  for (const range of sorted) {
+    const last = merged.at(-1);
+    if (!last || range.from > last.to + 1) merged.push({ ...range });
+    else if (range.to > last.to) last.to = range.to;
+  }
+
+  const intervals = merged.map((r) => ({ from: dayText(r.from), to: dayText(r.to) }));
+  const gaps = merged.slice(1).map((r, i) => ({
+    from: dayText(merged[i]!.to + 1),
+    to: dayText(r.from - 1),
+  }));
+  const first = merged[0]!;
+  const last = merged.at(-1)!;
+  return {
+    coveredFrom: dayText(first.from),
+    coveredTo: dayText(last.to),
+    intervals,
+    gaps,
+    isContinuous: gaps.length === 0,
+    nextExpectedFrom: dayText(last.to + 1),
+  };
+}
+
+export async function bankSyncCoverage(
+  firmId: string, clientId: string, bankAccountId: string,
+): Promise<StatementCoverage> {
+  return withFirm(firmId, async (c) => {
+    const r = await c.query<{ period_from: string; period_to: string }>(
+      `SELECT period_from::text, period_to::text
+       FROM bank_statements
+       WHERE client_id = $1 AND bank_account_id = $2
+       ORDER BY period_from, period_to`,
+      [clientId, bankAccountId]);
+    return statementCoverage(r.rows.map((x) => ({ from: x.period_from, to: x.period_to })));
+  });
 }
 
 /**
@@ -192,6 +334,20 @@ export async function importStatement(
     parserVersion?: string;
   },
 ): Promise<ImportResult> {
+  const periodFrom = dayNumber(input.periodFrom);
+  const periodTo = dayNumber(input.periodTo);
+  if (periodTo < periodFrom) {
+    throw new ValidationError('statement period ends before it starts', 'BR-8');
+  }
+  for (const [i, row] of input.rows.entries()) {
+    const txnDay = dayNumber(row.txnDate);
+    if (txnDay < periodFrom || txnDay > periodTo) {
+      throw new ValidationError(
+        `transaction row ${i + 1} is dated ${row.txnDate}, outside statement period ` +
+        `${input.periodFrom} to ${input.periodTo}`, 'BR-8');
+    }
+  }
+
   const arithmetic = verifyStatementArithmetic(
     input.openingBalance, input.closingBalance, input.rows);
 
@@ -210,25 +366,17 @@ export async function importStatement(
       throw new ValidationError('bank account not found for this client', 'BR-2');
     }
 
-    // BR-8 — a gap makes every subsequent reconciliation wrong, and it is
-    // silent: nothing looks broken, the numbers simply stop being true.
+    // For directly adjacent statements the closing balance must carry forward.
+    // Overlapping statements are independently proven by BR-6 and deduplicated
+    // by BR-7, so comparing their different opening dates would be misleading.
     const prev = await c.query<{ period_to: string; closing_balance: string }>(
       `SELECT period_to::text, closing_balance::text FROM bank_statements
-       WHERE bank_account_id = $1 AND period_to < $2
+       WHERE bank_account_id = $1 AND period_to = ($2::date - 1)
        ORDER BY period_to DESC LIMIT 1`,
       [input.bankAccountId, input.periodFrom]);
 
     if (prev.rowCount! > 0) {
-      const lastEnd = new Date(prev.rows[0]!.period_to);
-      const thisStart = new Date(input.periodFrom);
-      const gapDays = Math.round((+thisStart - +lastEnd) / 86_400_000) - 1;
-      if (gapDays > 0) {
-        warnings.push(
-          `BR-8: ${gapDays} day(s) missing — the previous statement ended ` +
-          `${prev.rows[0]!.period_to} and this one starts ${input.periodFrom}`);
-      }
-      // A continuous period should also carry a continuous balance.
-      if (gapDays === 0 && paise(prev.rows[0]!.closing_balance) !== paise(input.openingBalance)) {
+      if (paise(prev.rows[0]!.closing_balance) !== paise(input.openingBalance)) {
         warnings.push(
           `BR-8: opening balance ${input.openingBalance} does not continue the previous ` +
           `statement's closing balance ${prev.rows[0]!.closing_balance}`);
@@ -249,6 +397,18 @@ export async function importStatement(
         input.rows.length, parserVersion, input.uploadedBy,
       ]);
     const statementId = st.rows[0]!.id;
+
+    if (input.sourceDocumentId) {
+      const linked = await c.query(
+        `UPDATE source_documents SET status = 'processed', review_note = NULL,
+              review_updated_at = now(), review_updated_by = $4
+          WHERE id = $1 AND firm_id = $2 AND client_id = $3`,
+        [input.sourceDocumentId, firmId, input.clientId, input.uploadedBy]);
+      if (linked.rowCount !== 1) {
+        throw new ValidationError(
+          'source document is not registered for this client', 'BR-2');
+      }
+    }
 
     let imported = 0;
     let duplicates = 0;
@@ -288,7 +448,20 @@ export async function importStatement(
         `BR-9: ${unparsed} narration(s) matched no rule and need classification`);
     }
 
-    return { statementId, imported, duplicates, arithmetic, warnings };
+    const periods = await c.query<{ period_from: string; period_to: string }>(
+      `SELECT period_from::text, period_to::text FROM bank_statements
+       WHERE client_id = $1 AND bank_account_id = $2 ORDER BY period_from, period_to`,
+      [input.clientId, input.bankAccountId]);
+    const coverage = statementCoverage(
+      periods.rows.map((x) => ({ from: x.period_from, to: x.period_to })));
+    if (coverage.gaps.length > 0) {
+      for (const gap of coverage.gaps) {
+        const days = dayNumber(gap.to) - dayNumber(gap.from) + 1;
+        warnings.push(`BR-8: ${days} day(s) missing — ${gap.from} to ${gap.to}`);
+      }
+    }
+
+    return { statementId, imported, duplicates, arithmetic, coverage, warnings };
   });
 }
 
@@ -316,6 +489,29 @@ export async function importStatementFile(
   },
 ): Promise<{ parse: ParsedStatementFile; result: ImportResult | null; error: string | null }> {
   const parse = parseStatementFile(input.fileText, { bank: input.bank });
+  return importParsedStatement(firmId, input, parse);
+}
+
+/** Import a statement uploaded as its original bytes (CSV, Excel, PDF, or OCR image). */
+export async function importStatementBytes(
+  firmId: string,
+  input: Omit<Parameters<typeof importStatementFile>[1], 'fileText'> & {
+    fileBytes: Buffer;
+    password?: string;
+    ocr?: boolean;
+  },
+): Promise<{ parse: ParsedStatementFile; result: ImportResult | null; error: string | null }> {
+  const parse = await parseStatementBytes(input.fileBytes, {
+    bank: input.bank, password: input.password, ocr: input.ocr,
+  });
+  return importParsedStatement(firmId, input, parse);
+}
+
+async function importParsedStatement(
+  firmId: string,
+  input: Omit<Parameters<typeof importStatementFile>[1], 'fileText'>,
+  parse: ParsedStatementFile,
+): Promise<{ parse: ParsedStatementFile; result: ImportResult | null; error: string | null }> {
 
   const opening = input.openingBalance ?? parse.openingBalance;
   const closing = input.closingBalance ?? parse.closingBalance;
@@ -331,6 +527,8 @@ export async function importStatementFile(
   }
 
   try {
+    await confirmStatementBankAccount(
+      firmId, input.clientId, input.bankAccountId, parse.statementAccountNumber);
     const result = await importStatement(firmId, {
       clientId: input.clientId,
       bankAccountId: input.bankAccountId,

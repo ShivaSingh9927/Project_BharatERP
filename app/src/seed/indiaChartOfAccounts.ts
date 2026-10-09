@@ -48,6 +48,7 @@ export const INDIA_COA: CoaRoot[] = [
           { name: 'TDS Receivable', accountType: 'tds_receivable', liquidityClass: 'current', code: '1050' },
           { name: 'Stock in Hand', accountType: 'stock', liquidityClass: 'current', code: '1060' },
           { name: 'Loans and Advances (Assets)', accountType: 'general', liquidityClass: 'current', code: '1070' },
+          { name: 'Personal Expenses Recoverable', accountType: 'general', liquidityClass: 'current', code: '1075' },
         ],
       },
       {

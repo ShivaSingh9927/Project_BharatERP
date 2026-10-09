@@ -1,0 +1,15 @@
+name = "bharaterp-email-intake"
+main = "src/index.js"
+compatibility_date = "2026-10-07"
+workers_dev = false
+addresses = [
+  "inbox+bridgecheck@nueralogic.com",
+  "inbox+531103ecb9ac0d7cbff4@nueralogic.com",
+]
+
+# These literal test addresses leave the existing inbox@ forwarding rule intact.
+# Switch inbox@ to this Worker only after an end-to-end test, then remove the
+# temporary test address from this file and redeploy.
+[[r2_buckets]]
+binding = "EMAIL_ARCHIVE"
+bucket_name = "bharaterp-email-intake"

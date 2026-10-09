@@ -20,6 +20,26 @@ beforeAll(async () => {
 afterAll(async () => closePools());
 
 describe('Ask Bharat read-only tools', () => {
+  it('answers profit from the posted P&L with an explicit period', async () => {
+    const reply = await answerAssistant(
+      tenant.firmId, tenant.clientId, 'how much profit am I making?', 'nexus');
+    expect(reply.supported).toBe(true);
+    expect(reply.answer).toMatch(/net profit of ₹0.00/);
+    expect(reply.answer).toMatch(/FY \d{4}-\d{2} to date/);
+    expect(reply.evidence).toContain('Profit and loss from posted ledger entries');
+  });
+
+  it('routes a profit question through DeepSeek without asking it to calculate', async () => {
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async () => '{"intent":"profit"}',
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId, 'what is the total profit', 'nexus', router);
+    expect(reply.supported).toBe(true);
+    expect(reply.answer).toContain('net profit');
+    expect(reply.audit?.intent).toBe('profit');
+  });
   it('answers payable questions from the ledger', async () => {
     const reply = await answerAssistant(
       tenant.firmId, tenant.clientId, 'How much do we owe suppliers?', 'payables');
@@ -40,7 +60,23 @@ describe('Ask Bharat read-only tools', () => {
     const reply = await answerAssistant(
       tenant.firmId, tenant.clientId, 'Predict annual revenue exactly', 'home');
     expect(reply.supported).toBe(false);
-    expect(reply.answer).toMatch(/cannot answer that reliably/);
+    expect(reply.answer).toMatch(/no supported book query for that subject/i);
+  });
+
+  it('explains why a short follow-up cannot be answered without chat context', async () => {
+    const reply = await answerAssistant(
+      tenant.firmId, tenant.clientId, 'now tell me', 'nexus');
+    expect(reply.supported).toBe(false);
+    expect(reply.answer).toMatch(/does not carry the prior chat turn/i);
+    expect(reply.evidence).toContain('Conversation context is not currently sent with each question');
+  });
+
+  it('explains when a bank balance cannot be reported', async () => {
+    const reply = await answerAssistant(
+      tenant.firmId, tenant.clientId, 'How much money do we have?', 'nexus');
+    expect(reply.supported).toBe(false);
+    expect(reply.answer).toMatch(/no bank account is connected/i);
+    expect(reply.action?.href).toBe('/reconcile');
   });
 
   it('gives contextual page help', async () => {
@@ -74,6 +110,13 @@ describe('Ask Bharat read-only tools', () => {
     expect(reply.action).toEqual({ href: '/sales', label: 'Add customer' });
   });
 
+  it('does not draft reminders when no customer invoice is overdue', async () => {
+    const reply = await answerAssistant(
+      tenant.firmId, tenant.clientId, 'Draft payment reminders', 'receivables');
+    expect(reply.supported).toBe(true);
+    expect(reply.answer).toMatch(/no overdue customer invoices/i);
+  });
+
   it('lets DeepSeek route natural wording but keeps figures in book tools', async () => {
     const router: LlmClient = {
       provider: 'deepseek', model: 'test',
@@ -87,6 +130,20 @@ describe('Ask Bharat read-only tools', () => {
     expect(reply.supported).toBe(true);
     expect(reply.answer).toBe('There are no unpaid supplier bills.');
     expect(reply.evidence).toContain('Payable ledger settlements');
+  });
+
+  it('understands a natural-language follow-up question through the read-only receivables tool', async () => {
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async () => '{"intent":"receivables"}',
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId,
+      'Who should I follow up with for collections this week?', 'home', router,
+    );
+    expect(reply.supported).toBe(true);
+    expect(reply.answer).toBe('No customer invoices are outstanding.');
+    expect(reply.action?.href).toBe('/receivables');
   });
 
   it('falls back safely when DeepSeek is unavailable', async () => {

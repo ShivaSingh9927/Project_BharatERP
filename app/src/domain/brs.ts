@@ -34,6 +34,7 @@ export interface Brs {
   difference: string;
   ties: boolean;
   exception: string | null;
+  openingSuggestion: { amount: string; date: string } | null;
 }
 
 /**
@@ -165,6 +166,17 @@ export async function bankReconciliationStatement(
 
     const difference = actual - computed;
     const ties = difference === 0n;
+    const firstStatement = await c.query<{ opening: string; date: string }>(
+      `SELECT opening_balance::text AS opening, period_from::text AS date
+       FROM bank_statements WHERE bank_account_id = $1
+       ORDER BY period_from ASC, uploaded_at ASC LIMIT 1`, [bankAccountId]);
+    const openingPosted = await c.query<{ found: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM ledger_entries
+        WHERE account_id = $1 AND is_opening) AS found`, [acct.account_id]);
+    const openingSuggestion = firstStatement.rows[0] && !openingPosted.rows[0]!.found
+      && paise(firstStatement.rows[0]!.opening) !== 0n
+      ? { amount: firstStatement.rows[0]!.opening, date: firstStatement.rows[0]!.date }
+      : null;
 
     return {
       bankAccountId,
@@ -175,6 +187,7 @@ export async function bankReconciliationStatement(
       actualBankBalance: money(actual),
       difference: money(difference),
       ties,
+      openingSuggestion,
       // BR-22: never rounded away. A residual means a real error on one side —
       // a missed statement page, a double-posted voucher, a wrong match — and
       // hiding it is how that error becomes permanent at period close.

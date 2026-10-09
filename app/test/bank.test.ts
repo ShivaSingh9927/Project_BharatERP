@@ -13,7 +13,8 @@ import { seedTenant, registerGstin, type SeededTenant } from '../src/seed/index.
 import { createInvoice } from '../src/domain/invoicing.ts';
 import { parseNarration, residueForModel } from '../src/domain/narration.ts';
 import {
-  verifyStatementArithmetic, transactionHash, importStatement, type StatementRow,
+  verifyStatementArithmetic, transactionHash, importStatement, statementCoverage,
+  type StatementRow,
 } from '../src/domain/statement.ts';
 import {
   scoreCandidate, rank, inferTdsShortfall, openInvoiceCandidates,
@@ -28,6 +29,10 @@ import { postVoucher } from '../src/domain/posting.ts';
 import { trialBalance } from '../src/reports/index.ts';
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
 import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
+import {
+  hasSavedStatementPassword, saveStatementPassword, savedStatementPassword,
+  statementPasswordSettings, setStatementAutoOpenConsent, forgetStatementPassword,
+} from '../src/domain/bankStatementPassword.ts';
 
 let t: SeededTenant;
 let customer: string;
@@ -115,6 +120,50 @@ describe('BR-2 — account numbers are never stored in full', () => {
     const row = r.rows[0]!;
     expect(row.account_number_last4).toBe('7788');
     expect(JSON.stringify(row)).not.toContain('50100123457788');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('BR-4 — protected statement passwords', () => {
+  it('stores only authenticated ciphertext and can reuse it for the account', async () => {
+    const password = 'ABCDE01011990';
+    await saveStatementPassword(t.firmId, {
+      clientId: t.clientId, bankAccountId, password, updatedBy: t.userId,
+    });
+
+    expect(await hasSavedStatementPassword(t.firmId, t.clientId, bankAccountId)).toBe(true);
+    expect(await savedStatementPassword(t.firmId, t.clientId, bankAccountId)).toBe(password);
+
+    const stored = await withFirm(t.firmId, (c) => c.query<{
+      ciphertext: Buffer; nonce: Buffer; auth_tag: Buffer;
+    }>('SELECT ciphertext, nonce, auth_tag FROM bank_statement_credentials WHERE bank_account_id = $1',
+      [bankAccountId]));
+    expect(stored.rows[0]!.ciphertext.toString('utf8')).not.toContain(password);
+    expect(stored.rows[0]!.nonce).toHaveLength(12);
+    expect(stored.rows[0]!.auth_tag).toHaveLength(16);
+  });
+
+  it('replaces a remembered password without retaining the old one', async () => {
+    await saveStatementPassword(t.firmId, {
+      clientId: t.clientId, bankAccountId,
+      password: 'replacement-password', updatedBy: t.userId,
+    });
+    expect(await savedStatementPassword(t.firmId, t.clientId, bankAccountId))
+      .toBe('replacement-password');
+  });
+
+  it('requires separate consent for background opening and permits revocation', async () => {
+    expect((await statementPasswordSettings(t.firmId, t.clientId, bankAccountId))
+      .autoOpenEmail).toBe(false);
+    await setStatementAutoOpenConsent(t.firmId, t.clientId, bankAccountId, t.userId, true);
+    expect((await statementPasswordSettings(t.firmId, t.clientId, bankAccountId))
+      .autoOpenEmail).toBe(true);
+    await setStatementAutoOpenConsent(t.firmId, t.clientId, bankAccountId, t.userId, false);
+    expect((await statementPasswordSettings(t.firmId, t.clientId, bankAccountId))
+      .autoOpenEmail).toBe(false);
+    await forgetStatementPassword(t.firmId, t.clientId, bankAccountId, t.userId);
+    expect(await statementPasswordSettings(t.firmId, t.clientId, bankAccountId))
+      .toEqual({ saved: false, autoOpenEmail: false });
   });
 });
 
@@ -225,6 +274,38 @@ describe('BR-7 / BR-8 — duplicate and gap detection (T-2, T-3)', () => {
     const c = { txnDate: '2026-06-03', narration: 'NEFT ACME', credit: '100.01' };
     expect(transactionHash(bankAccountId, a)).toBe(transactionHash(bankAccountId, b));
     expect(transactionHash(bankAccountId, b)).not.toBe(transactionHash(bankAccountId, c));
+  });
+
+  it('merges overlapping uploads into one continuous sync period', () => {
+    const coverage = statementCoverage([
+      { from: '2026-01-01', to: '2026-03-26' },
+      { from: '2026-03-01', to: '2026-07-21' },
+    ]);
+    expect(coverage.intervals).toEqual([{ from: '2026-01-01', to: '2026-07-21' }]);
+    expect(coverage.gaps).toEqual([]);
+    expect(coverage.nextExpectedFrom).toBe('2026-07-22');
+  });
+
+  it('shows the exact missing days between non-overlapping uploads', () => {
+    const coverage = statementCoverage([
+      { from: '2026-04-01', to: '2026-07-21' },
+      { from: '2026-01-01', to: '2026-03-26' },
+    ]);
+    expect(coverage.intervals).toEqual([
+      { from: '2026-01-01', to: '2026-03-26' },
+      { from: '2026-04-01', to: '2026-07-21' },
+    ]);
+    expect(coverage.gaps).toEqual([{ from: '2026-03-27', to: '2026-03-31' }]);
+  });
+
+  it('rejects a transaction dated outside the statement period', async () => {
+    await expect(importStatement(t.firmId, {
+      clientId: t.clientId, bankAccountId,
+      periodFrom: '2026-09-01', periodTo: '2026-09-30',
+      openingBalance: '0', closingBalance: '100',
+      rows: [{ txnDate: '2026-10-01', narration: 'NEFT-REF-ACME', credit: '100' }],
+      uploadedBy: t.userId,
+    })).rejects.toThrow(/outside statement period/);
   });
 });
 

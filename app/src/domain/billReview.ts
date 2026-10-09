@@ -202,6 +202,7 @@ export async function postReviewedBill(
   file: Buffer, index: number, confirm: Record<string, string>,
   approvedBy: string, readers: ReviewReaders,
   overrides: {
+    sourceUri?: string;
     expenseAccountId?: string; lineAccounts?: Array<string | null>;
     blockItc?: boolean;
     /**
@@ -250,7 +251,7 @@ export async function postReviewedBill(
   }
 
   const bill = await postProposal(firmId, proposal, {
-    approvedBy, confirm, sourceUri: 'review-upload',
+    approvedBy, confirm, sourceUri: overrides.sourceUri ?? 'review-upload',
     ...(overrides.tds === undefined ? {} : { tds: overrides.tds }),
   });
 
@@ -291,6 +292,11 @@ export interface ProposalView {
     /** A learned default, when this supplier's line has been classified before.
      *  Set by the review layer, not the pure proposal. */
     suggestedAccountId?: string;
+    /** AI suggestion is review-only and never grants posting authority. */
+    aiSuggestion?: {
+      accountId: string | null; confidence: number; reason: string;
+      evidence: string[]; basis: 'deepseek';
+    };
   }>;
   warnings: string[];
   blockers: string[];

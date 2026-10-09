@@ -1,8 +1,23 @@
-# India AI-Native ERP — Blueprint
+# BharatERP — Repository Guide
+
+This repository contains the BharatERP product, implementation, specifications,
+and original product research. **Start with [`AGENTS.md`](AGENTS.md),** then use
+the current-state docs below before choosing a task:
+
+- [Product objective and principles](docs/PROJECT_CONTEXT.md)
+- [Current implementation and handoff](docs/PROJECT_STATUS.md)
+- [Implemented architecture](docs/ARCHITECTURE.md)
+- [Durable product and technical decisions](docs/DECISIONS.md)
+- [Accounting specifications](specs/README.md)
+- [Local app setup and technical notes](app/README.md)
+
+The numbered `01-overview/` to `10-migration/` directories below are the
+original blueprint and research snapshot. Some of their status, stack, and
+roadmap statements are historical, not descriptions of the current code.
 
 > **Created:** July 3, 2026
 > **Author:** Shiva
-> **Status:** Planning / Blueprint Phase
+> **Status:** Historical planning blueprint; implementation is in `app/`
 > **Inspiration:** Campfire.ai — $103.5M funded AI-native ERP for US SaaS
 > **Goal:** Build India's first AI-native ERP with GST/TDS/e-invoicing built-in
 

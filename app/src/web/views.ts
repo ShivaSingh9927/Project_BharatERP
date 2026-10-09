@@ -16,6 +16,11 @@ import { STATUTORY_RATES } from '../domain/tax.ts';
 import type { QueueItem, MatchProposal } from '../domain/matching.ts';
 import type { Brs } from '../domain/brs.ts';
 import type { SalesDesk, SalesInvoiceDetail } from '../domain/sales.ts';
+import type { InboxDocument, DocumentInformationRequest, DocumentRequestAnswer } from '../domain/documentInbox.ts';
+import type { AssistantRunView } from '../domain/assistant.ts';
+import type { FollowUpItem } from '../domain/followUps.ts';
+import type { ActivityItem } from '../domain/activity.ts';
+import type { EmailInbox, IntakeMessage } from '../domain/emailIntake.ts';
 
 const esc = (v: unknown): string =>
   String(v ?? '').replace(/[&<>"']/g, (ch) =>
@@ -31,38 +36,681 @@ const inr = (v: string): string => {
   return `${neg ? '−' : ''}${grouped}.${frac.padEnd(2, '0').slice(0, 2)}`;
 };
 
+export function renderDocumentInbox(
+  documents: InboxDocument[], canReview = false, requestHistory: DocumentRequestAnswer[] = [],
+  classifier: { enabled: boolean; available: boolean } = { enabled: false, available: false },
+  canConfirmClass = true,
+): string {
+  const statusLabel = (status: string): string => ({
+    received: 'Received · waiting for CA',
+    in_review: 'CA is reviewing',
+    needs_information: 'Information requested',
+    processed: 'Completed',
+    dismissed: 'Dismissed as irrelevant · original retained',
+  }[status] ?? status);
+  const classLabels: Record<string, string> = {
+    bank_statement: 'Bank statement', purchase_bill: 'Purchase bill',
+    sales_invoice: 'Sales invoice', expense_receipt: 'Expense receipt',
+    tds_document: 'TDS document', gst_document: 'GST document', payroll: 'Payroll',
+    contract_legal: 'Contract / legal', other: 'Other', uncertain: 'Uncertain',
+  };
+  const documentClasses = Object.keys(classLabels);
+  const rows = documents.map((d) => `<tr id="doc-${esc(d.id)}">
+    <td>${d.available ? `<a href="/api/documents/${esc(d.id)}/download">${esc(d.originalName)}</a>
+      <div class="doc-class-suggestion"><b>${d.classSuggestion ? 'Nexus suggestion' : 'Document class review'}</b>
+        ${d.classSuggestion ? `<span>${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}${d.classSuggestion.subtype ? ` · ${esc(d.classSuggestion.subtype)}` : ''} · ${d.classSuggestion.confidence}% confidence</span>
+        <div class="why">${esc(d.classSuggestion.rationale)}</div>
+        ${d.classSuggestion.evidence.length ? `<details><summary>Evidence and explanation</summary><p class="why">${d.classSuggestion.evidence.map(esc).join(' · ')}</p></details>` : ''}` : '<span class="why">No AI suggestion yet. You can classify it manually.</span>'}
+        ${d.status !== 'dismissed' && canConfirmClass ? `<label>Confirm or correct class
+          <select class="document-class-choice" data-id="${esc(d.id)}">${documentClasses.map((value) => `<option value="${value}" ${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value ? 'selected' : ''}>${esc(classLabels[value]!)}</option>`).join('')}</select></label>
+          <button type="button" class="confirm-document-class" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm class'}</button>
+          ${d.classConfirmation ? `<span class="tag good">Confirmed · ${esc(classLabels[d.classConfirmation.documentClass] ?? d.classConfirmation.documentClass)} · ${esc(new Date(d.classConfirmation.confirmedAt).toLocaleString('en-IN'))}</span>` : '<span class="why">Confirming class does not import or post anything.</span>'}` : ''}
+        ${d.classConfirmation ? (d.classConfirmation.documentClass === 'bank_statement'
+          ? `<a class="doc-route" href="/import?document=${encodeURIComponent(d.id)}">Continue to statement preview →</a>`
+          : d.classConfirmation.documentClass === 'purchase_bill'
+            ? `<button type="button" class="review-document" data-id="${esc(d.id)}">Continue to bill review →</button>`
+            : d.classConfirmation.documentClass === 'sales_invoice' ? '<a class="doc-route" href="/sales">Open sales invoices →</a>'
+              : d.classConfirmation.documentClass === 'tds_document' ? '<a class="doc-route" href="/tds">Open TDS review →</a>'
+                : d.classConfirmation.documentClass === 'gst_document' ? '<a class="doc-route" href="/gstr3b">Open GST review →</a>'
+                  : '<span class="why">Class confirmed. Keep this file for the relevant reviewer.</span>') : ''}
+        ${!d.classSuggestion && classifier.enabled && classifier.available && d.status !== 'dismissed' ? `<button type="button" class="classify-document" data-id="${esc(d.id)}">Ask Nexus for a suggestion</button>` : ''}
+      </div>`
+      : `<span>${esc(d.originalName)}</span><div class="why">Original file is unavailable</div>`}</td>
+    <td>${esc(new Date(d.receivedAt).toLocaleString('en-IN'))}</td>
+    <td>${esc(d.available ? statusLabel(d.status) : 'Original unavailable')}
+      ${d.reviewNote ? `<div class="msg">CA note: ${esc(d.reviewNote)}</div>` : ''}
+      ${requestHistory.filter((item) => item.documentId === d.id && item.status === 'answered')
+        .map((item) => `<details><summary>Founder answer · ${esc(new Date(item.answeredAt!).toLocaleString('en-IN'))}</summary>
+          <div class="msg"><b>Asked:</b> ${esc(item.question)}</div>
+          ${item.answer ? `<div class="msg"><b>Answered:</b> ${esc(item.answer)}</div>` : ''}
+          ${item.attachmentIds.map((id) => {
+            const attachment = documents.find((doc) => doc.id === id);
+            return `<div><a href="/documents#doc-${esc(id)}">${esc(attachment?.originalName ?? 'Attached document')}</a></div>`;
+          }).join('')}</details>`).join('')}
+      ${d.reviewUpdatedAt ? `<div class="why">Updated ${esc(new Date(d.reviewUpdatedAt).toLocaleString('en-IN'))}</div>` : ''}</td>
+    <td class="num">${esc((d.size / 1024).toFixed(1))} KB</td>
+    <td>${canReview && d.available && d.status !== 'processed' ? `<div class="doc-review-actions">
+      <button type="button" class="mark-in-review" data-id="${esc(d.id)}">${d.status === 'dismissed' ? 'Restore for review' : 'Mark in review'}</button>
+      ${d.status !== 'dismissed' ? `
+      <textarea class="review-note" maxlength="1000" aria-label="Information needed for ${esc(d.originalName)}" placeholder="What should the founder provide?"></textarea>
+      <button type="button" class="request-info" data-id="${esc(d.id)}">Request information</button>
+      <textarea class="dismiss-reason" maxlength="1000" aria-label="Reason to dismiss ${esc(d.originalName)}" placeholder="Why is this file irrelevant or incorrect?"></textarea>
+      <button type="button" class="dismiss-document" data-id="${esc(d.id)}">Dismiss as irrelevant</button>` : ''}
+    </div>` : ''}</td>
+  </tr>`).join('');
+  return `<h1>Documents</h1>
+<p class="sub">Files received for this client. Each original is stored once and can be traced by its document ID.</p>
+<section class="panel"><h2>Nexus document-class suggestions</h2>
+  <p class="why">On by default. Nexus sends text from the first two PDF pages or supported text files to the configured AI service after sensitive identifiers and amounts are redacted. Filenames and document text can still contain identifying details. Suggestions are for review only; nothing imports or posts until a person confirms the document class. You can turn suggestions off for this firm.</p>
+  <span class="tag ${classifier.enabled ? 'good' : ''}">${classifier.enabled ? 'On' : 'Off for this firm'}</span>
+      ${!classifier.available ? '<span class="why">Nexus AI is not configured on this server.</span>' : ''}
+  <button type="button" id="toggle-document-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off for this firm' : 'Turn on for this firm'}</button>
+</section>
+<section class="panel">
+  <h2>Receive files</h2>
+  <input id="document-files" type="file" multiple aria-label="Choose documents">
+  <button class="primary" type="button" id="document-upload">Upload</button>
+  <p class="why">Up to 5 MB per file. Uploaded files enter the inbox for review; upload alone does not post to the books.</p>
+  <div id="document-upload-result" role="status"></div>
+</section>
+<section class="panel"><h2>Received originals</h2>
+  ${documents.length ? `<table><thead><tr><th>File</th><th>Received</th><th>Status / CA note</th><th>Size</th><th>CA actions</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<p class="empty">No documents have been received for this client yet.</p>'}
+</section>
+<script>(() => {
+  const files = document.getElementById('document-files');
+  const button = document.getElementById('document-upload');
+  const result = document.getElementById('document-upload-result');
+  const classifierToggle = document.getElementById('toggle-document-classifier');
+  if (classifierToggle) classifierToggle.onclick = async () => {
+    const enabled = ${classifier.enabled ? 'false' : 'true'};
+    classifierToggle.disabled = true;
+    try {
+      const response = await fetch('/api/document-classifier-consent', { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not update setting');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); classifierToggle.disabled = false; }
+  };
+  document.querySelectorAll('.classify-document').forEach((classify) => classify.onclick = async () => {
+    classify.disabled = true; result.textContent = 'Asking Nexus for a document-class suggestion…';
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(classify.dataset.id) + '/classify', { method: 'POST' });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not classify document');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); classify.disabled = false; }
+  });
+  document.querySelectorAll('.confirm-document-class').forEach((confirmClass) => confirmClass.onclick = async () => {
+    const choice = document.querySelector('.document-class-choice[data-id="' + confirmClass.dataset.id + '"]');
+    confirmClass.disabled = true; result.textContent = 'Saving the confirmed document class…';
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(confirmClass.dataset.id) + '/classification-review', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ documentClass: choice.value }),
+      });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not confirm class');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); confirmClass.disabled = false; }
+  });
+  document.querySelectorAll('.mark-in-review').forEach((button) => button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(button.dataset.id) + '/review', { method: 'POST' });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not update status');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+  });
+  document.querySelectorAll('.request-info').forEach((button) => button.onclick = async () => {
+    const note = button.parentElement.querySelector('.review-note').value.trim();
+    if (!note) { result.textContent = 'Write what information is missing first.'; return; }
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(button.dataset.id) + '/request-info', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ note }),
+      });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not send request');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+  });
+  document.querySelectorAll('.dismiss-document').forEach((button) => button.onclick = async () => {
+    const reason = button.parentElement.querySelector('.dismiss-reason').value.trim();
+    if (!reason) { result.textContent = 'Write why this file is irrelevant first.'; return; }
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(button.dataset.id) + '/dismiss', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }),
+      });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not dismiss file');
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+  });
+  document.querySelectorAll('.review-document').forEach((review) => {
+    review.onclick = async () => {
+      review.disabled = true;
+      try {
+        const response = await fetch('/api/bills/preview', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ documentIds: [review.dataset.id] }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || 'could not read this as a bill');
+        location.href = '/bills?new=1';
+      } catch (error) { result.textContent = String(error.message || error); review.disabled = false; }
+    };
+  });
+  button.onclick = async () => {
+    if (!files.files.length) { result.textContent = 'Choose at least one file.'; return; }
+    button.disabled = true;
+    try {
+      const messages = [];
+      let anyAccepted = false;
+      for (const file of files.files) {
+        if (file.size > 5 * 1024 * 1024) { messages.push(file.name + ': exceeds 5 MB'); continue; }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const response = await fetch('/api/documents', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: file.name, mimeType: file.type, data: btoa(binary) }),
+        });
+        const data = await response.json();
+        if (data.ok) anyAccepted = true;
+        messages.push(file.name + ': ' + (data.ok ? data.duplicate ? 'already received' : 'received' : data.error));
+      }
+      result.textContent = messages.join(' · ');
+      if (anyAccepted) location.reload();
+    } catch (error) { result.textContent = String(error.message || error); }
+    finally { button.disabled = false; }
+  };
+})();</script>`;
+}
+
+export function renderNexus(
+  clientName: string, runs: AssistantRunView[], followUps: FollowUpItem[] = [],
+  activity: ActivityItem[] = [],
+  documents: InboxDocument[] = [],
+  documentRequests: DocumentInformationRequest[] = [], canAnswerRequests = false,
+): string {
+  const turns = [...runs].reverse().map((run) => {
+    const linked = followUps.find((item) => item.sourceQuestion === run.question);
+    const followUpControl = linked
+      ? `<span class="nexus-run-status">${linked.status === 'open' ? 'In Review desk · Open' : 'In Review desk · Completed'}</span>`
+      : `<button type="button" class="nexus-follow" data-question="${esc(run.question)}" data-answer="${esc(run.answer)}">Add to review desk</button>`;
+    return `<div class="nexus-turn">
+    <div class="nexus-question">${esc(run.question)}</div>
+    <div class="nexus-answer">${esc(run.answer)}</div>
+    ${run.evidence.length ? `<div class="nexus-evidence">Based on: ${run.evidence.map(esc).join(' · ')}</div>` : ''}
+    ${followUpControl}
+  </div>`;
+  }).join('');
+  const openFollowUps = followUps.filter((item) => item.status === 'open');
+  const completedFollowUps = followUps.filter((item) => item.status === 'completed').slice(0, 3);
+  const needsFounder = documents.filter((doc) => doc.status === 'needs_information'
+    || (!doc.available && doc.status !== 'processed'));
+  const waitingForCa = documents.filter((doc) => doc.available
+    && ['received', 'in_review'].includes(doc.status));
+  const nextAction = needsFounder.find((doc) => doc.status === 'needs_information'
+    && documentRequests.some((request) => request.documentId === doc.id));
+  const missingOriginal = needsFounder.find((doc) => !doc.available);
+  const openItems = followUps.filter((item) => item.status === 'open');
+  const waitingRows = (items: InboxDocument[], owner: 'founder' | 'ca') => items.map((doc) => {
+    const request = documentRequests.find((item) => item.documentId === doc.id);
+    const title = owner === 'founder'
+      ? (!doc.available ? 'Founder: upload this file again' : 'Founder: information needed')
+      : doc.status === 'in_review' ? 'CA is reviewing this file' : 'Waiting for CA review';
+    const note = !doc.available ? 'The stored original is unavailable.'
+      : doc.reviewNote ?? doc.originalName;
+    return `<li><span class="waiting-title">${esc(title)} · ${esc(doc.originalName)}</span>
+      <span class="why">${esc(note)}</span>
+      ${owner === 'founder' && request && canAnswerRequests ? `<form class="nexus-request" data-request-id="${esc(request.id)}">
+        <label>Your answer<textarea name="answer" maxlength="2000" placeholder="Tell the CA what they need to know"></textarea></label>
+        <label>Attach supporting files (optional)<input name="files" type="file" multiple></label>
+        <button type="submit">Send answer</button><span class="why nexus-request-result" role="status"></span>
+      </form>` : ''}<a href="/documents#doc-${esc(doc.id)}">Open document →</a></li>`;
+  }).join('');
+  const progressRows = (items: FollowUpItem[]): string => items.map((item) =>
+    `<li><span class="progress-status">${item.status === 'open' ? 'In progress' : 'Completed'}</span>
+      <span>${esc(item.title)}</span></li>`).join('');
+  return `<div class="nexus">
+  <section class="nexus-chat" aria-label="Bharat Nexus conversation">
+    <div class="nexus-head"><h1>Bharat Nexus</h1>
+      <p>${esc(clientName)} · Ask about the books, received documents, and work needing attention.</p></div>
+    <div class="nexus-thread" id="nexus-thread" aria-live="polite">
+      ${turns || '<div class="nexus-answer">Hello. Ask me what has been received, what needs attention, or what the books show.</div>'}
+    </div>
+    <div class="nexus-compose">
+      <form id="nexus-form">
+        <textarea id="nexus-input" maxlength="500" aria-label="Message Bharat Nexus"
+          placeholder="Ask about this client’s books…"></textarea>
+        <button class="primary" id="nexus-send" type="submit">Send</button>
+      </form>
+      <form id="nexus-upload-form"><label>Send a statement, invoice, or receipt
+        <input id="nexus-upload-files" type="file" multiple required></label>
+        <button id="nexus-upload" type="submit">Upload files</button>
+        <span class="why" id="nexus-upload-result" role="status"></span>
+      </form>
+      <div class="why">Answers use this client’s records. The chat prepares reviewable work and does not post entries.</div>
+    </div>
+  </section>
+  <aside class="nexus-side" aria-label="Suggested questions and shortcuts">
+    <div class="panel nexus-next"><h2>Next step</h2>
+      ${nextAction && canAnswerRequests ? `<p>Answer the CA’s question about <b>${esc(nextAction.originalName)}</b> below.</p>`
+        : missingOriginal ? `<p>Upload <b>${esc(missingOriginal.originalName)}</b> again so it can be reviewed.</p>`
+        : waitingForCa.length ? '<p>Your files are with the CA. You can send another file or ask Nexus about your books.</p>'
+        : '<p>Send a statement, invoice, or receipt below, or ask Nexus a question about your books.</p>'}
+    </div>
+    <div class="panel nexus-waiting"><h2>What’s waiting</h2>
+      <section><b>Needs founder input · ${needsFounder.length}</b>
+        <ul>${waitingRows(needsFounder, 'founder') || '<li class="empty">No founder input is requested.</li>'}</ul>
+      </section>
+      <section><b>With the CA · ${waitingForCa.length}</b>
+        <ul>${waitingRows(waitingForCa, 'ca') || '<li class="empty">No documents are waiting for CA review.</li>'}</ul>
+      </section>
+      <section><b>Open follow-ups · <span id="nexus-open-followup-count">${openItems.length}</span></b>
+        <ul id="nexus-open-followups">${openItems.slice(0, 5).map((item) => `<li><span class="waiting-title">${esc(item.title)}</span>
+          <a href="/follow-ups#followup-${esc(item.id)}">Open follow-up →</a></li>`).join('')
+          || '<li class="empty">No open follow-ups.</li>'}</ul>
+      </section>
+    </div>
+    <div class="panel nexus-progress"><h2>Work in progress</h2>
+      <p class="nexus-progress-count"><b>${openFollowUps.length}</b> open follow-up${openFollowUps.length === 1 ? '' : 's'}</p>
+      <ul id="nexus-progress-list">${progressRows(openFollowUps) || '<li class="empty">No open follow-ups yet.</li>'}</ul>
+      ${completedFollowUps.length ? `<details><summary>Recently completed</summary><ul>${progressRows(completedFollowUps)}</ul></details>` : ''}
+      <a href="/follow-ups">Open Review desk →</a>
+    </div>
+    <div class="panel"><h2>Start here</h2>
+      <button class="nexus-prompt" type="button" data-prompt="What needs attention?">What needs attention?</button>
+      <button class="nexus-prompt" type="button" data-prompt="What documents have we received?">What documents have we received?</button>
+      <button class="nexus-prompt" type="button" data-prompt="How many bank transactions need reconciliation?">What needs bank review?</button>
+      <button class="nexus-prompt" type="button" data-prompt="How much GST credit is at risk?">How much GST credit is at risk?</button>
+    </div>
+    <div class="panel"><h2>Open a workspace</h2>
+      <a href="/follow-ups">Review desk</a><a href="/documents">Documents</a><a href="/reconcile">Bank reconciliation</a>
+      <a href="/bills">Bills</a><a href="/assistant-runs">AI activity log</a>
+    </div>
+    <div class="panel nexus-activity"><h2>Recent activity</h2>
+      ${activity.slice(0, 8).map(activityRow).join('') || '<p class="empty">No activity yet.</p>'}
+      <a href="/activity">View all activity →</a>
+    </div>
+  </aside>
+</div>
+<script>(() => {
+  const form = document.getElementById('nexus-form');
+  const input = document.getElementById('nexus-input');
+  const send = document.getElementById('nexus-send');
+  const thread = document.getElementById('nexus-thread');
+  const uploadFile = async (file) => {
+    if (file.size > 5 * 1024 * 1024) throw new Error(file.name + ' exceeds the 5 MB limit');
+    const data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = () => reject(new Error('could not read ' + file.name));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch('/api/documents', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: file.name, mimeType: file.type, data }),
+    });
+    const result = await response.json();
+    if (!result.ok) throw new Error(result.error || 'could not upload ' + file.name);
+    return result.document.id;
+  };
+  document.getElementById('nexus-upload-form').onsubmit = async (event) => {
+    event.preventDefault();
+    const button = document.getElementById('nexus-upload');
+    const result = document.getElementById('nexus-upload-result');
+    const files = [...document.getElementById('nexus-upload-files').files];
+    if (!files.length) return;
+    button.disabled = true; result.textContent = 'Receiving files…';
+    try {
+      for (const file of files) await uploadFile(file);
+      result.textContent = files.length + ' file(s) received. Waiting for CA review.';
+      location.reload();
+    } catch (error) { result.textContent = String(error.message || error); }
+    finally { button.disabled = false; }
+  };
+  document.querySelectorAll('.nexus-request').forEach((requestForm) => {
+    requestForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const button = requestForm.querySelector('button');
+      const result = requestForm.querySelector('.nexus-request-result');
+      button.disabled = true; result.textContent = 'Sending answer…';
+      try {
+        const attachmentIds = [];
+        const files = [...requestForm.querySelector('input[name="files"]').files];
+        if (files.length > 5) throw new Error('attach up to five files');
+        for (const file of files) attachmentIds.push(await uploadFile(file));
+        const response = await fetch('/api/document-requests/' + encodeURIComponent(requestForm.dataset.requestId) + '/answer', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ answer: requestForm.querySelector('textarea').value, attachmentIds }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.error || 'could not send answer');
+        result.textContent = 'Answer recorded. The document is with the CA.';
+        location.reload();
+      } catch (error) { result.textContent = String(error.message || error); }
+      finally { button.disabled = false; }
+    };
+  });
+  const saveFollowUp = async (button, question, response) => {
+    button.disabled = true;
+    try {
+      const saved = await fetch('/api/follow-ups', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: question.slice(0, 160), sourceQuestion: question, sourceAnswer: response }),
+      });
+      const result = await saved.json();
+      if (!result.ok) throw new Error(result.error || 'could not add follow-up');
+      button.textContent = 'Added to review desk';
+      button.classList.add('nexus-run-status');
+      button.classList.remove('nexus-follow');
+      const progressList = document.getElementById('nexus-progress-list');
+      if (progressList) {
+        if (progressList.querySelector('.empty')) progressList.replaceChildren();
+        const item = document.createElement('li');
+        const status = document.createElement('span'); status.className = 'progress-status';
+        status.textContent = 'In progress';
+        const title = document.createElement('span'); title.textContent = question.slice(0, 160);
+        item.append(status, title); progressList.prepend(item);
+        const count = document.querySelector('.nexus-progress-count b');
+        if (count) count.textContent = String(Number(count.textContent || '0') + 1);
+      }
+      const workList = document.getElementById('nexus-open-followups');
+      if (workList) {
+        if (workList.querySelector('.empty')) workList.replaceChildren();
+        const item = document.createElement('li');
+        const title = document.createElement('span'); title.className = 'waiting-title';
+        title.textContent = question.slice(0, 160);
+        const open = document.createElement('a');
+        open.href = '/follow-ups#followup-' + encodeURIComponent(result.id);
+        open.textContent = 'Open follow-up →';
+        item.append(title, open); workList.prepend(item);
+        const count = document.getElementById('nexus-open-followup-count');
+        if (count) count.textContent = String(Number(count.textContent || '0') + 1);
+      }
+      const link = document.createElement('a'); link.className = 'nexus-action';
+      link.href = '/follow-ups'; link.textContent = 'Open review desk';
+      button.insertAdjacentElement('afterend', link);
+    } catch (error) { button.textContent = String(error.message || error); button.disabled = false; }
+  };
+  document.querySelectorAll('.nexus-follow[data-question]').forEach((button) => {
+    button.onclick = () => saveFollowUp(button, button.dataset.question, button.dataset.answer);
+  });
+  const addTurn = (question) => {
+    const turn = document.createElement('div'); turn.className = 'nexus-turn';
+    const q = document.createElement('div'); q.className = 'nexus-question';
+    q.textContent = question; turn.appendChild(q); thread.appendChild(turn);
+    thread.scrollTop = thread.scrollHeight;
+    return turn;
+  };
+  const sendQuestion = async (question) => {
+    const q = String(question || '').trim(); if (!q || send.disabled) return;
+    const turn = addTurn(q); input.value = ''; send.disabled = true;
+    const answer = document.createElement('div'); answer.className = 'nexus-answer';
+    answer.textContent = 'Checking the records…'; turn.appendChild(answer);
+    try {
+      const response = await fetch('/api/assistant', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: q, page: 'nexus' }),
+      });
+      const data = await response.json();
+      if (!data.ok) throw new Error(data.error || 'could not answer');
+      answer.textContent = data.answer;
+      if (Array.isArray(data.evidence) && data.evidence.length) {
+        const evidence = document.createElement('div'); evidence.className = 'nexus-evidence';
+        evidence.textContent = 'Based on: ' + data.evidence.join(' · ');
+        turn.appendChild(evidence);
+      }
+      if (data.action && typeof data.action.href === 'string' && data.action.href.startsWith('/')) {
+        const action = document.createElement('a'); action.className = 'nexus-action';
+        action.href = data.action.href; action.textContent = data.action.label;
+        turn.appendChild(action);
+      }
+      const follow = document.createElement('button'); follow.type = 'button';
+      follow.className = 'nexus-follow'; follow.textContent = 'Add to review desk';
+      follow.onclick = () => saveFollowUp(follow, q, data.answer);
+      turn.appendChild(follow);
+    } catch (error) { answer.textContent = String(error.message || error); }
+    finally { send.disabled = false; input.focus(); thread.scrollTop = thread.scrollHeight; }
+  };
+  form.onsubmit = (event) => { event.preventDefault(); sendQuestion(input.value); };
+  input.onkeydown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendQuestion(input.value); }
+  };
+  document.querySelectorAll('[data-prompt]').forEach((button) => {
+    button.onclick = () => sendQuestion(button.dataset.prompt);
+  });
+  thread.scrollTop = thread.scrollHeight;
+})();</script>`;
+}
+
+function activityRow(item: ActivityItem): string {
+  const direction = item.kind === 'nexus_reply' ? 'In-app reply'
+    : item.kind === 'document_update' && item.status === 'needs_information'
+      ? 'Request recorded in app'
+      : item.direction === 'incoming' ? 'Received' : 'Workspace update';
+  const status = ({ received: 'Received', in_review: 'In review',
+    needs_information: 'Needs your answer', processed: 'Completed', open: 'Open',
+    completed: 'Completed', answered: 'Answered', unsupported: 'Needs clarification' } as Record<string, string>)[item.status]
+    ?? item.status.replaceAll('_', ' ');
+  return `<article class="activity-row">
+    <div class="activity-row-top"><b>${esc(item.title)}</b><span class="activity-status">${esc(status)}</span></div>
+    <div class="activity-detail">${esc(item.detail)}</div>
+    <div class="activity-meta">${esc(direction)} · ${esc(new Date(item.occurredAt).toLocaleString('en-IN'))}</div>
+    <a href="${esc(item.href)}">Open →</a>
+  </article>`;
+}
+
+export function renderActivity(items: ActivityItem[]): string {
+  return `<h1>Activity</h1>
+    <p class="sub">A timeline of what came in, what Bharat Nexus answered, and what is still waiting for someone to act.</p>
+    <section class="activity-feed">
+      ${items.map(activityRow).join('') || '<p class="empty">Activity will appear here when a document arrives, Nexus answers, or a follow-up changes.</p>'}
+    </section>`;
+}
+
+export function renderEmailInbox(inbox: EmailInbox): string {
+  const pending = inbox.messages.filter((message) => ['unassigned', 'failed'].includes(message.status));
+  const recent = inbox.messages.filter((message) => !['unassigned', 'failed'].includes(message.status));
+  const card = (message: IntakeMessage, actionable: boolean): string => `<article class="panel email-item" id="email-${esc(message.id)}">
+    <div class="email-item-top"><h3>${esc(message.subject || '(No subject)')}</h3>
+      <span class="pill">${esc(message.status)}</span></div>
+    <p><b>From:</b> ${esc(message.sender)}<br><b>To:</b> ${esc(message.recipients.join(', '))}</p>
+    <p class="why">${esc(new Date(message.receivedAt).toLocaleString('en-IN'))} ·
+      ${message.attachmentCount} attachment${message.attachmentCount === 1 ? '' : 's'} ·
+      ${esc(message.routingReason)}</p>
+    ${message.attachmentReviews?.length
+      ? `<p class="why">Files: ${message.attachmentReviews.map((file) =>
+        `${esc(file.name)} (${esc(file.status.replaceAll('_', ' '))})`).join(', ')}</p>`
+      : message.attachmentNames.length ? `<p class="why">Files: ${esc(message.attachmentNames.join(', '))}</p>` : ''}
+    ${message.bodyText ? `<details><summary>Read message</summary><p class="email-body">${esc(message.bodyText)}</p></details>` : ''}
+    ${message.processingError ? `<p class="msg">Processing issue: ${esc(message.processingError)}</p>` : ''}
+    ${actionable ? `<form class="email-assign" data-id="${esc(message.id)}">
+      <label>Assign to client <select name="clientId" required>
+        <option value="">Choose client</option>
+        ${inbox.clients.filter((client) => !message.clientId || client.id === message.clientId)
+          .map((client) => `<option value="${esc(client.id)}" ${client.id === message.suggestedClientId || client.id === message.clientId ? 'selected' : ''}>${esc(client.name)}</option>`).join('')}
+      </select></label>
+      <label><input type="checkbox" name="rememberSender"> Trust this sender for future emails from this client</label>
+      <button type="submit">${message.status === 'failed' ? 'Retry assignment' : 'Assign email'}</button>
+      <span class="why" role="status"></span>
+    </form>` : `<p><b>Client:</b> ${esc(message.clientName ?? 'Assigning…')}
+      ${message.routingMethod ? `· ${esc(message.routingMethod.replaceAll('_', ' '))}` : ''}</p>
+      ${message.documentIds.map((id) => `<a href="/documents#doc-${esc(id)}">Open received document →</a>`).join('')}`}
+  </article>`;
+  return `<h1>Shared email inbox</h1>
+    <p class="sub">Local intake test for the CA team. No live mailbox is connected yet. A message without a clear client match stays unassigned.</p>
+    <section class="panel"><h2>Client references</h2>
+      <p class="why">Use these in a sample recipient such as inbox+REFERENCE@example.test. The final domain will be configured when email delivery is connected.</p>
+      <div class="email-routes">${inbox.clients.map((client) => `<div><b>${esc(client.name)}</b>
+        <code>inbox+${esc(client.token)}</code></div>`).join('') || '<p>No clients are set up yet.</p>'}</div>
+    </section>
+    <section class="panel"><h2>Try a sample email</h2>
+      <form id="sample-email-form" class="email-sample">
+        <label>From<input name="sender" type="email" required placeholder="supplier@example.test"></label>
+        <label>To<input name="recipient" type="email" required placeholder="inbox+REFERENCE@example.test"></label>
+        <label>Subject<input name="subject" maxlength="500" placeholder="Invoice for September"></label>
+        <label>Message<textarea name="bodyText" maxlength="20000"></textarea></label>
+        <label>Attachments<input name="files" type="file" multiple></label>
+        <button type="submit">Receive sample email</button><span id="sample-email-result" role="status"></span>
+      </form>
+    </section>
+    <h2>Unassigned · ${pending.length}</h2>
+    ${pending.map((message) => card(message, true)).join('') || '<p class="empty">No email needs assignment.</p>'}
+    <h2>Recent intake</h2>
+    ${recent.map((message) => card(message, false)).join('') || '<p class="empty">No email has been assigned yet.</p>'}
+    <script>(() => {
+      const fileData = async (file) => {
+        if (file.size > 5 * 1024 * 1024) throw new Error(file.name + ' exceeds 5 MB');
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1]);
+          reader.onerror = () => reject(new Error('could not read ' + file.name));
+          reader.readAsDataURL(file);
+        });
+        return { name: file.name, mimeType: file.type, data };
+      };
+      const sample = document.getElementById('sample-email-form');
+      sample.onsubmit = async (event) => {
+        event.preventDefault();
+        const button = sample.querySelector('button');
+        const result = document.getElementById('sample-email-result');
+        button.disabled = true; result.textContent = 'Receiving sample…';
+        try {
+          const values = new FormData(sample);
+          const files = [...sample.querySelector('input[name="files"]').files];
+          if (files.length > 5 || files.reduce((sum, file) => sum + file.size, 0) > 5 * 1024 * 1024)
+            throw new Error('attach up to five files, 5 MB total');
+          const attachments = [];
+          for (const file of files) attachments.push(await fileData(file));
+          const response = await fetch('/api/email-inbox/sample', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sender: values.get('sender'), recipients: [values.get('recipient')],
+              subject: values.get('subject'), bodyText: values.get('bodyText'), attachments }),
+          });
+          const data = await response.json();
+          if (!data.ok) throw new Error(data.error || 'could not receive sample');
+          result.textContent = 'Received · ' + data.status;
+          location.reload();
+        } catch (error) { result.textContent = String(error.message || error); }
+        finally { button.disabled = false; }
+      };
+      document.querySelectorAll('.email-assign').forEach((form) => {
+        form.onsubmit = async (event) => {
+          event.preventDefault();
+          const button = form.querySelector('button'); const result = form.querySelector('[role="status"]');
+          const values = new FormData(form); button.disabled = true; result.textContent = 'Assigning…';
+          try {
+            const response = await fetch('/api/email-inbox/' + encodeURIComponent(form.dataset.id) + '/assign', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ clientId: values.get('clientId'),
+                rememberSender: values.get('rememberSender') === 'on' }),
+            });
+            const data = await response.json();
+            if (!data.ok) throw new Error(data.error || 'could not assign email');
+            location.reload();
+          } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+        };
+      });
+    })();</script>`;
+}
+
+export function renderFollowUps(items: FollowUpItem[]): string {
+  const open = items.filter((item) => item.status === 'open');
+  const done = items.filter((item) => item.status === 'completed');
+  const row = (item: FollowUpItem, canComplete: boolean): string => `<article id="followup-${esc(item.id)}" class="panel follow-up-item">
+    <div class="follow-up-title"><h2>${esc(item.title)}</h2><span class="pill">${esc(item.status)}</span></div>
+    ${item.details ? `<p>${esc(item.details)}</p>` : ''}
+    ${item.sourceQuestion ? `<details><summary>Chat context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
+      ${item.sourceAnswer ? `<p><b>Bharat Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
+    <small>Added ${esc(new Date(item.createdAt).toLocaleString('en-IN'))}</small>
+    ${canComplete ? `<button type="button" class="complete-follow-up" data-id="${esc(item.id)}">Mark complete</button>` : ''}
+  </article>`;
+  return `<h1>Review desk</h1>
+    <p class="sub">Track questions and follow-ups for this client. Completing an item only updates its status; it does not post to the books.</p>
+    <section class="panel"><h2>Add a follow-up</h2>
+      <form id="follow-up-form"><label>What needs review?<input name="title" maxlength="160" required placeholder="e.g. Confirm the missing bank statement"></label>
+      <label>Context<textarea name="details" maxlength="2000" placeholder="What should the CA check?"></textarea></label>
+      <button class="primary" type="submit">Add to queue</button><span id="follow-up-result" role="status"></span></form>
+    </section>
+    <h2>Open · ${open.length}</h2>
+    ${open.length ? open.map((item) => row(item, true)).join('') : '<p class="empty">Nothing is waiting for review.</p>'}
+    ${done.length ? `<details class="follow-up-completed"><summary>Completed · ${done.length}</summary>${done.map((item) => row(item, false)).join('')}</details>` : ''}
+    <script>(() => {
+      const form = document.getElementById('follow-up-form');
+      const result = document.getElementById('follow-up-result');
+      form.onsubmit = async (event) => {
+        event.preventDefault(); const data = new FormData(form);
+        const button = form.querySelector('button'); button.disabled = true;
+        try {
+          const response = await fetch('/api/follow-ups', { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ title: data.get('title'), details: data.get('details') }) });
+          const saved = await response.json(); if (!saved.ok) throw new Error(saved.error || 'could not add follow-up');
+          location.reload();
+        } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+      };
+      document.querySelectorAll('.complete-follow-up').forEach((button) => button.onclick = async () => {
+        button.disabled = true;
+        try {
+          const response = await fetch('/api/follow-ups/' + encodeURIComponent(button.dataset.id) + '/complete', { method: 'POST' });
+          const saved = await response.json(); if (!saved.ok) throw new Error(saved.error || 'could not complete item');
+          location.reload();
+        } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+      });
+    })();</script>`;
+}
+
 const CSS = `
 :root {
-  --bg: #fbfbfa; --panel: #fff; --ink: #1a1a18; --muted: #6b6b66;
+  color-scheme: light;
+  --bg: #fff; --canvas: #fff; --panel: #fff; --ink: #1a1a18; --muted: #6b7280;
   --line: #e3e3df; --accent: #1d4ed8; --good: #0f7b3f; --warn: #9a5b00;
   --bad: #b02020; --sel: #eef2ff; --mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17171a; --panel: #1e1e22; --ink: #e8e8e4; --muted: #9a9a94;
-    --line: #32323a; --accent: #7ea2ff; --good: #55c98a; --warn: #e0a54a;
-    --bad: #ef7676; --sel: #22283c;
-  }
-}
 * { box-sizing: border-box; }
 body {
-  margin: 0; background: var(--bg); color: var(--ink);
-  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0; background: var(--canvas); color: var(--ink);
+  font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-header {
-  display: flex; align-items: baseline; gap: 18px; padding: 10px 18px;
-  border-bottom: 1px solid var(--line); background: var(--panel);
-  position: sticky; top: 0; z-index: 5;
-}
-header b { font-size: 15px; }
-header .client { color: var(--muted); }
-nav { display: flex; gap: 4px; margin-left: auto; }
-nav a {
-  color: var(--ink); text-decoration: none; padding: 4px 10px; border-radius: 6px;
-}
-nav a:hover { background: var(--sel); }
-nav a.on { background: var(--accent); color: #fff; }
-.ask-toggle { white-space: nowrap; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
+.sidebar { display: flex; flex-direction: column; height: 100vh; min-height: 0; position: sticky; top: 0;
+  padding: 22px 12px 14px;
+  background: #f8f9fd; border-right: 1px solid #e1e5f0; }
+.brand { color: #162653; text-decoration: none; font: 700 21px/1 Georgia, serif; letter-spacing: -.03em;
+  padding: 0 13px 24px; }
+.brand-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 7px;
+  border-radius: 50%; background: #17275b; color: #fff; font: 700 13px/1 system-ui; vertical-align: 2px; }
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.nav-section { margin: 8px 0 0; }
+.nav-section summary { list-style: none; cursor: pointer; padding: 8px 13px; color: #79819a;
+  font-size: 11px; font-weight: 700; letter-spacing: .05em; border-radius: 7px; }
+.nav-section summary::-webkit-details-marker { display: none; }
+.nav-section summary::after { content: '⌄'; float: right; font-size: 13px; transition: transform .15s; }
+.nav-section[open] summary::after { transform: rotate(180deg); }
+.nav-section summary:hover { background: #e8ecf8; }
+.nav-section nav { flex: none; min-height: auto; overflow: visible; }
+.suggestion-details { margin: 0 0 10px; padding: 8px 10px; background: #fff;
+  border: 1px solid #e2e7f3; border-radius: 7px; }
+.suggestion-details summary { cursor: pointer; color: #34446f; font-size: 12px; font-weight: 600; }
+.suggestion-details p { margin: 8px 0 0; white-space: pre-wrap; }
+.nav-group { margin: 13px 0 4px; padding: 0 13px; color: #79819a; font-size: 11px; font-weight: 700;
+  letter-spacing: .05em; }
+.sidebar nav a { display: flex; gap: 10px; align-items: center; color: #29335a; text-decoration: none;
+  padding: 8px 12px; border-radius: 7px; font-size: 13px; font-weight: 550; }
+.sidebar nav a:hover { background: #e8ecf8; }
+.sidebar nav a.on { background: #17275b; color: #fff; box-shadow: 0 3px 8px rgba(23,39,91,.16); }
+.nav-icon { width: 15px; text-align: center; font-size: 14px; opacity: .85; }
+.workspace { min-width: 0; }
+header { position: sticky; top: 0; z-index: 5; min-height: 70px; display: flex; align-items: center;
+  gap: 16px; padding: 12px 30px; border-bottom: 1px solid #e1e5f0; background: rgba(255,255,255,.94);
+  backdrop-filter: blur(10px); }
+.page-context { min-width: 0; }
+.page-context b { display: none; }
+header .client { color: var(--muted); font-size: 12px; }
+.ask-toggle { margin-left: auto; white-space: nowrap; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
 .ask-shade { position: fixed; inset: 0; z-index: 19; background: rgba(0,0,0,.38); }
 .ask-drawer { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0;
   width: min(390px, 94vw); box-sizing: border-box; display: flex; flex-direction: column;
@@ -89,30 +737,99 @@ nav a.on { background: var(--accent); color: #fff; }
 .ask-compose form { display: flex; gap: 7px; }
 .ask-compose input { flex: 1; min-width: 0; background: var(--panel); }
 .ask-compose .why { margin-top: 7px; }
+.nexus { display: grid; grid-template-columns: minmax(0, 1fr) 245px; gap: 18px;
+  min-height: calc(100vh - 145px); }
+.nexus-chat { display: flex; flex-direction: column; min-height: 610px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.nexus-head { padding: 18px 22px; border-bottom: 1px solid var(--line); }
+.nexus-head h1 { margin: 0; }
+.nexus-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.nexus-thread { flex: 1; overflow-y: auto; padding: 22px; max-height: calc(100vh - 355px); }
+.nexus-turn { margin: 0 0 24px; }
+.nexus-question { width: fit-content; max-width: 85%; margin-left: auto; padding: 10px 14px;
+  border-radius: 10px 10px 2px 10px; background: #17275b; color: #fff; }
+.nexus-answer { max-width: 92%; margin-top: 10px; padding: 2px 0 2px 13px;
+  border-left: 2px solid #b5c4e4; line-height: 1.6; white-space: pre-wrap; }
+.nexus-evidence { margin: 6px 0 0 13px; color: var(--muted); font-size: 11px; }
+.nexus-action { display: inline-block; margin: 8px 0 0 13px; color: var(--accent); }
+.nexus-compose { padding: 16px 20px; border-top: 1px solid var(--line); }
+.nexus-compose form { display: flex; gap: 10px; align-items: flex-end; }
+.nexus-compose textarea { flex: 1; min-height: 58px; max-height: 150px; resize: vertical;
+  font: inherit; }
+.nexus-compose button { min-width: 80px; }
+.nexus-compose #nexus-upload-form { margin-top: 12px; align-items: center; flex-wrap: wrap; }
+.nexus-compose #nexus-upload-form label { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.nexus-request { display: grid; gap: 7px; margin: 7px 0; }
+.nexus-request label { display: grid; gap: 4px; font-size: 12px; }
+.nexus-request textarea { min-height: 58px; resize: vertical; font: inherit; }
+.nexus-request button { width: fit-content; }
+.email-routes { display: grid; gap: 8px; }
+.email-routes > div { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+.email-routes code { overflow-wrap: anywhere; }
+.email-sample, .email-assign { display: grid; gap: 10px; max-width: 640px; }
+.email-sample label, .email-assign label { display: grid; gap: 4px; }
+.email-sample input, .email-sample textarea, .email-assign select { font: inherit; }
+.email-sample textarea { min-height: 76px; }
+.email-sample button, .email-assign button { width: fit-content; }
+.email-item { margin-bottom: 12px; }
+.email-item-top { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+.email-item-top h3 { margin: 0; }
+.email-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.nexus-side h2 { margin-top: 0; }
+.nexus-prompt { width: 100%; text-align: left; margin: 0 0 8px; padding: 9px 11px; }
+.nexus-side .panel { margin-bottom: 12px; }
+.nexus-side a { display: block; margin: 7px 0; }
+.nexus-progress-count { color: var(--muted); }
+.nexus-progress-count b { color: var(--ink); font-size: 20px; }
+.nexus-progress ul { list-style: none; padding: 0; margin: 10px 0; }
+.nexus-progress li { display: grid; gap: 2px; padding: 9px 0; border-top: 1px solid var(--line); }
+.nexus-waiting section { margin: 8px 0 14px; }
+.nexus-waiting section:last-child { margin-bottom: 0; }
+.nexus-waiting ul { list-style: none; padding: 0; margin: 4px 0 0; }
+.nexus-waiting li { display: grid; gap: 3px; padding: 8px 0; border-top: 1px solid var(--line); }
+.nexus-waiting a { font-size: 12px; }
+.waiting-title { font-size: 12px; font-weight: 600; }
+.nexus-activity { max-height: 460px; overflow-y: auto; }
+.activity-feed { max-width: 850px; border-left: 1px solid var(--line); margin: 16px 0 0 8px; padding-left: 22px; }
+.activity-row { position: relative; padding: 0 0 18px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.activity-row::before { content: ''; position: absolute; left: -28px; top: 6px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--accent); border: 2px solid #fff; outline: 1px solid var(--line); }
+.activity-row-top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.activity-status { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.activity-detail { margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-meta { color: var(--muted); font-size: 11px; margin: 3px 0; }
+.activity-row a { font-size: 12px; }
+.progress-status { color: var(--good); font-size: 11px; font-weight: 700; }
+.nexus-run-status { display: inline-block; margin: 9px 0 0 12px; color: var(--good); font-size: 12px; font-weight: 650; }
+.nexus-follow { display: block; margin: 9px 0 0 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: #fff; padding: 6px 9px; color: #29335a; cursor: pointer; font-size: 12px; }
 @media (prefers-reduced-motion: no-preference) {
   .ask-drawer { animation: ask-in .16s ease-out; }
   @keyframes ask-in { from { transform: translateX(18px); opacity: .7; } }
 }
-main { padding: 18px; max-width: 1180px; }
-h1 { font-size: 17px; margin: 0 0 4px; }
-h2 { font-size: 14px; margin: 22px 0 8px; }
+main { padding: 30px; max-width: 1320px; }
+h1 { color: #142354; font-size: 25px; letter-spacing: -.035em; margin: 0 0 6px; }
+h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .sub { color: var(--muted); margin: 0 0 16px; }
 .panel {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; padding: 14px; margin-bottom: 16px;
+  background: var(--panel); border: 1px solid #e0e4ee;
+  border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(20,35,84,.025);
 }
+.doc-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.doc-actions a { font-size: 12px; }
+.doc-review-actions { display: grid; gap: 6px; min-width: 190px; }
+.doc-review-actions textarea { min-height: 54px; width: 100%; resize: vertical; }
 .strip { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
 .stat b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
 .stat span { color: var(--muted); font-size: 12px; }
 table { width: 100%; border-collapse: collapse; }
 th {
-  text-align: left; font-size: 11px; text-transform: uppercase;
-  letter-spacing: .04em; color: var(--muted); font-weight: 600;
+  text-align: left; font-size: 11px; letter-spacing: .02em; color: var(--muted); font-weight: 650;
   padding: 6px 8px; border-bottom: 1px solid var(--line);
 }
 td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
-tr.row { cursor: pointer; }
+tr.row { cursor: default; }
 tr.row:hover { background: var(--sel); }
 tr.row.sel { background: var(--sel); box-shadow: inset 3px 0 0 var(--accent); }
 .narr { font-family: var(--mono); font-size: 12px; word-break: break-all; }
@@ -131,18 +848,45 @@ button, select, input, textarea {
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
 }
 button { cursor: pointer; }
-button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button.primary { background: #17275b; color: #fff; border-color: transparent; box-shadow: 0 2px 5px rgba(23,39,91,.14); }
 button:disabled { opacity: .5; cursor: default; }
 textarea { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 12px; }
 .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.bank-review { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+.bank-review summary { cursor: pointer; color: var(--accent); font-size: 12px; }
+.bank-review-body { display: grid; grid-template-columns: repeat(2, minmax(130px, 1fr)); gap: 7px 10px;
+  margin-top: 8px; padding: 10px; border-left: 3px solid #c8d3f7; background: #f8faff; }
+.bank-review-body label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.bank-review-body [hidden] { display: none !important; }
+.bank-review-body input, .bank-review-body select { width: 100%; padding: 5px 7px; font-size: 12px; }
+.review-kind-field { display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  color: var(--muted); font-size: 11px; }
+.review-kind-picker { position: relative; width: 100%; min-width: 0; }
+.review-kind-picker summary { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  list-style: none; color: var(--ink); background: #fff; border: 1px solid #cfd5e2;
+  border-radius: 7px; padding: 7px 10px; font-size: 13px; }
+.review-kind-picker summary::-webkit-details-marker { display: none; }
+.review-kind-picker summary::after { content: '⌄'; flex: 0 0 auto; color: #59657e; }
+.review-kind-picker[open] summary::after { transform: rotate(180deg); }
+.review-kind-options { position: absolute; z-index: 8; top: calc(100% + 4px); left: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; width: min(360px, 84vw);
+  max-height: 260px; overflow-y: auto; padding: 5px; background: #fff; border: 1px solid #d8deea;
+  border-radius: 8px; box-shadow: 0 10px 26px rgba(23,39,91,.18); }
+.review-kind-options button { border-color: transparent; background: #fff; text-align: left;
+  font-size: 12px; line-height: 1.35; }
+.review-kind-options button:hover { background: #f2f5fc; }
+.review-kind-options button[aria-pressed="true"] { background: var(--sel); border-color: #b8c7f0; color: #17275b; }
+.bank-review-body .review-explain { grid-column: 1 / -1; margin: 0; }
+.bank-review-body .review-submit { justify-self: start; font-size: 12px; }
+@media (max-width: 900px) { .bank-review-body { grid-template-columns: 1fr; } }
 .warn { color: var(--warn); } .bad { color: var(--bad); } .good { color: var(--good); }
 /* A link that sits beside a button and should read as one. */
 /* Who is signed in, and the way out. Deliberately a form and not a link:
    signing out changes state, and a GET that changes state can be triggered by
    anything that renders a URL. */
-.who { margin-left: auto; display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: var(--muted); }
-.who button { padding: 3px 9px; font: inherit; font-size: 12px; }
+.who { margin-top: auto; padding: 14px 8px 0; border-top: 1px solid #e1e5f0; display: flex;
+  align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.who button { margin-left: auto; padding: 4px 8px; font: inherit; font-size: 12px; }
 .btnlink { display: inline-block; margin-left: 6px; padding: 3px 9px; font-size: 13px;
   border: 1px solid var(--line); border-radius: 6px; text-decoration: none;
   color: var(--ink); }
@@ -177,6 +921,11 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 tr.done { opacity: .5; }
 .warn { color: var(--warn, #b8860b); font-weight: 600; }
 .mt { margin-top: 26px; }
+.setup-step { border-left: 3px solid var(--line); padding: 10px 12px; margin: 8px 0;
+  background: var(--panel); }
+.setup-step b { display: block; margin-bottom: 3px; }
+.setup-step.good { border-left-color: var(--good); }
+.setup-step.warn { border-left-color: var(--warn); }
 .billcard { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
   margin: 12px 0; background: var(--panel); }
 .billcard.blocked { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
@@ -309,13 +1058,27 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
 .invoice-total { font-size: 22px; font-family: var(--mono); }
 @media (max-width: 900px) {
-  header { flex-wrap: wrap; }
-  nav { order: 3; width: 100%; overflow-x: auto; }
+  .app-shell { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; min-height: auto; padding: 12px; border-right: 0; border-bottom: 1px solid #e1e5f0; }
+  .brand { padding: 0 4px 10px; }
+  .sidebar > nav { flex-direction: row; overflow-x: auto; overflow-y: visible; padding-bottom: 3px; }
+  .nav-section { flex: 0 0 auto; position: relative; }
+  .nav-section > nav { position: absolute; top: 100%; left: 0; z-index: 8; min-width: 190px; max-height: 55vh;
+    overflow-y: auto; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(20,35,84,.16); }
+  .who { display: none; }
+  header { padding: 10px 16px; }
+  main { padding: 20px 16px; }
   .sales-grid { grid-template-columns: 1fr; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .customer-form { grid-template-columns: 1fr 1fr; }
   .ledger-proof { position: static; }
   .entry-scroll { overflow-x: auto; }
+  .nexus { grid-template-columns: 1fr; }
+  .nexus-chat { min-height: 560px; }
+  .nexus-thread { max-height: 55vh; }
+  .nexus-side { display: flex; gap: 10px; overflow-x: auto; }
+  .nexus-side .panel { flex: 0 0 230px; }
 }
 @media print {
   header, .no-print { display: none !important; }
@@ -328,25 +1091,35 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
 // ---------------------------------------------------------------------------
 
 export function renderShell(a: {
-  session: { clientName: string; displayName?: string; email?: string };
+  session: { clientName: string; displayName?: string; email?: string;
+    role?: string; boundClientId?: string | null };
   accounts: Array<{ id: string; bank_name: string; last4: string }>;
   active: string;
   accountId?: string;
   body: string;
 }): string {
+  const canSeeFirm = a.session.boundClientId == null &&
+    ['ca_partner', 'ca_staff', 'auditor'].includes(a.session.role ?? '');
+  const canManageEmail = a.session.boundClientId == null &&
+    ['ca_partner', 'ca_staff'].includes(a.session.role ?? '');
   const q = a.accountId ? `?account=${encodeURIComponent(a.accountId)}` : '';
-  const link = (href: string, key: string, label: string): string =>
-    `<a href="${href}" class="${a.active === key ? 'on' : ''}">${label}</a>`;
+  const link = (href: string, key: string, label: string, icon: string): string =>
+    `<a href="${href}" class="${a.active === key ? 'on' : ''}"><span class="nav-icon">${icon}</span>${label}</a>`;
+  const navSection = (label: string, keys: string[], links: string[]): string =>
+    `<details class="nav-section" ${keys.includes(a.active) ? 'open' : ''}>
+      <summary>${label}</summary><nav aria-label="${label}">${links.join('')}</nav>
+    </details>`;
   const prompts: Record<string, string[]> = {
     bills: ['How does this page work?', 'What needs attention?'],
     payables: ['How much do we owe suppliers?', 'What needs attention?'],
-    receivables: ['How much do customers owe?', 'What needs attention?'],
+    receivables: ['Draft payment reminders', 'How much do customers owe?'],
     reconcile: ['Prepare reconciliation review', 'How many bank transactions need reconciliation?'],
     gstr2b: ['How much GST credit is at risk?', 'How does this page work?'],
     gstr1: ['What is our GST position?', 'What needs attention?'],
     gstr3b: ['What is our GST position?', 'What needs attention?'],
     firm: ['What needs attention?', 'How much do we owe suppliers?'],
     home: ['What needs attention?', 'How much GST credit is at risk?'],
+    documents: ['What documents have we received?', 'What needs attention?'],
   };
   const quick = prompts[a.active] ?? ['What needs attention?', 'How does this page work?'];
   const pageName = a.active === 'gstr2b' ? 'GSTR-2B'
@@ -360,39 +1133,51 @@ export function renderShell(a: {
 <title>BharatERP — ${esc(a.session.clientName)}</title>
 <style>${CSS}</style></head>
 <body>
-<header>
-  <b>BharatERP</b>
-  <span class="client">${esc(a.session.clientName)}</span>
-  <nav>
-    ${link('/firm', 'firm', 'Firm')}
-    ${link('/assistant-runs', 'assistant-runs', 'AI log')}
-    ${link('/', 'home', 'Home')}
-    ${link('/accounts', 'accounts', 'Accounts')}
-    ${link('/sales', 'sales', 'Sales')}
-    ${link('/tally', 'tally', 'Tally import')}
-    ${link('/bills', 'bills', 'Bills')}
-    ${link('/payables', 'payables', 'Payables')}
-    ${link('/suppliers', 'suppliers', 'Suppliers')}
-    ${link('/import', 'import', 'Import')}
-    ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
-    ${link(`/brs${q}`, 'brs', 'BRS')}
-    ${link('/cash', 'cash', 'Cash')}
-    ${link('/gstr2b', 'gstr2b', 'GSTR-2B')}
-    ${link('/gstr1', 'gstr1', 'GSTR-1')}
-    ${link('/gstr3b', 'gstr3b', 'GSTR-3B')}
-    ${link('/tds', 'tds', 'TDS')}
-    ${link('/receivables', 'receivables', 'Receivables')}
-    ${link('/assets', 'assets', 'Assets')}
-    ${link('/returns', 'returns', 'Returns')}
+<div class="app-shell">
+<aside class="sidebar">
+  <a class="brand" href="/"><span class="brand-mark">B</span>BharatERP</a>
+  <nav aria-label="Main navigation">
+    ${navSection('WORKFLOW', ['home','firm','setup','activity','documents','email-inbox','nexus','follow-ups'], [
+      link('/', 'home', 'Home', '⌂'),
+      ...(canSeeFirm ? [link('/firm', 'firm', 'Firm', '◫')] : []),
+      link('/setup', 'setup', 'Setup', '✓'), link('/activity', 'activity', 'Activity', '◷'),
+      link('/documents', 'documents', 'Documents', '▤'),
+      ...(canManageEmail ? [link('/email-inbox', 'email-inbox', 'Email inbox', '✉')] : []),
+      link('/nexus', 'nexus', 'Bharat Nexus', '✦'), link('/follow-ups', 'follow-ups', 'Review desk', '✓'),
+    ])}
+    ${navSection('BOOKS', ['bills','sales','payables','receivables','suppliers'], [
+      link('/bills', 'bills', 'Bills', '▤'), link('/sales', 'sales', 'Sales', '↗'),
+      link('/payables', 'payables', 'Payables', '↓'), link('/receivables', 'receivables', 'Receivables', '↑'),
+      link('/suppliers', 'suppliers', 'Suppliers', '◉'),
+    ])}
+    ${navSection('BANKING', ['accounts','import','reconcile','brs','cash'], [
+      link('/accounts', 'accounts', 'Accounts', '▣'), link('/import', 'import', 'Import statement', '⇩'),
+      link(`/reconcile${q}`, 'reconcile', 'Reconcile', '≡'), link(`/brs${q}`, 'brs', 'BRS', '≐'),
+      link('/cash', 'cash', 'Cash', '₹'),
+    ])}
+    ${navSection('COMPLIANCE', ['gstr2b','gstr1','gstr3b','tds','returns','assets'], [
+      link('/gstr2b', 'gstr2b', 'GSTR-2B', '2'), link('/gstr1', 'gstr1', 'GSTR-1', '1'),
+      link('/gstr3b', 'gstr3b', 'GSTR-3B', '3'), link('/tds', 'tds', 'TDS', 'T'),
+      link('/returns', 'returns', 'Returns', '↶'), link('/assets', 'assets', 'Assets', '□'),
+    ])}
+    ${navSection('TOOLS', ['tally','assistant-runs'], [
+      link('/tally', 'tally', 'Tally import', '⇄'), link('/assistant-runs', 'assistant-runs', 'AI log', '◌'),
+    ])}
   </nav>
-  <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
-    aria-expanded="false">Ask Bharat</button>
   <form method="post" action="/logout" class="who">
     <span title="${esc(a.session.email ?? '')}">${esc(a.session.displayName ?? '')}</span>
     <button type="submit">Sign out</button>
   </form>
+</aside>
+<div class="workspace">
+<header>
+  <div class="page-context"><b>${esc(pageName)}</b><span class="client">${esc(a.session.clientName)}</span></div>
+  <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
+    aria-expanded="false">Ask Bharat</button>
 </header>
 <main>${a.body}</main>
+</div>
+</div>
 <div class="ask-shade" id="ask-shade" hidden></div>
 <aside class="ask-drawer" id="ask-drawer" aria-label="Ask Bharat" hidden>
   <div class="ask-head">
@@ -481,8 +1266,8 @@ export function renderAssistantRuns(runs: Array<{
   supported: boolean; durationMs: number; createdAt: string;
 }>): string {
   const route = (r: typeof runs[number]) => r.routingMode === 'deepseek'
-    ? `DeepSeek · ${esc(r.intent ?? 'unsupported')}`
-    : r.routingMode === 'deepseek_fallback' ? 'DeepSeek unavailable · local fallback'
+    ? `Nexus · ${esc(r.intent ?? 'unsupported')}`
+    : r.routingMode === 'deepseek_fallback' ? 'Nexus unavailable · local fallback'
     : 'Local deterministic tool';
   return `<section class="card wide"><h1>Ask Bharat AI log</h1>
     <p class="muted">A read-only record of what was asked, what route was used, and the evidence shown to this client.</p>
@@ -543,13 +1328,8 @@ function bankAccountForm(today: string, returnTo: string): string {
           <option value="fd">Fixed deposit</option>
         </select>
       </label>
-      <label>Opening balance in your books
-        <input id="opening-balance" value="0.00" inputmode="decimal">
-      </label>
-      <label>Balance date
-        <input id="opening-date" type="date" value="${esc(today)}">
-      </label>
     </div>
+    <p class="why" style="margin:12px 0 0">You do not need to know the balance now. Your first statement will be checked against this account before it is imported.</p>
     <div class="billactions">
       <button class="primary" id="save-bank">Save bank account</button>
       <span id="bank-result" class="muted" aria-live="polite"></span>
@@ -568,8 +1348,6 @@ function bankAccountForm(today: string, returnTo: string): string {
           accountNumber: document.getElementById('account-number').value,
           ifsc: document.getElementById('ifsc').value,
           kind: document.getElementById('bank-kind').value,
-          openingBalance: document.getElementById('opening-balance').value,
-          openingDate: document.getElementById('opening-date').value,
         }),
       });
       const r = await response.json();
@@ -1000,13 +1778,39 @@ export function renderTallyImport(): string {
 // ---------------------------------------------------------------------------
 
 export function renderImport(a: {
-  accounts: Array<{ id: string; bank_name: string; last4: string }>;
+  sourceDocument?: { id: string; name: string };
+  accounts: Array<{
+    id: string; bank_name: string; last4: string;
+    coverage: {
+      coveredFrom: string | null; coveredTo: string | null;
+      gaps: Array<{ from: string; to: string }>;
+      nextExpectedFrom: string | null;
+    };
+    saved?: boolean;
+    autoOpenEmail?: boolean;
+    hasSavedPassword?: boolean;
+  }>;
   banks: string[];
 }): string {
-  return `<h1>Import a statement</h1>
-<p class="sub">CSV, TSV or any delimited export. The file is checked against its
-own arithmetic before anything is saved — if it does not add up, the parse is
-wrong and the import is refused (BR-6).</p>
+  if (a.accounts.length === 0) {
+    return `<h1>Bank sync</h1>
+<p class="sub">A statement must be linked to a bank account before it can be imported or reconciled.</p>
+<div class="msg"><b>Add the bank account first.</b><br>
+This only records the account in BharatERP. It cannot access or move money in your bank.</div>
+<p><a href="/accounts"><button class="primary">Add bank account →</button></a></p>`;
+  }
+  const coverageByAccount = JSON.stringify(Object.fromEntries(
+    a.accounts.map((x) => [x.id, x.coverage]))).replace(/</g, '\\u003c');
+  const savedPasswordByAccount = JSON.stringify(Object.fromEntries(
+    a.accounts.map((x) => [x.id, x.saved ?? x.hasSavedPassword ?? false]))).replace(/</g, '\\u003c');
+  const autoOpenByAccount = JSON.stringify(Object.fromEntries(
+    a.accounts.map((x) => [x.id, x.autoOpenEmail ?? false]))).replace(/</g, '\\u003c');
+  return `<h1>Bank sync</h1>
+<p class="sub">Upload CSV, Excel or PDF bank statements. Overlapping dates are safe:
+transactions already present are skipped. Every file must pass its own balance
+and running-balance checks before anything is saved. This screen is for bank statements;
+  upload supplier and grocery invoices from <a href="/bills">Bills</a>.</p>
+${a.sourceDocument ? `<div class="msg">Using received document <b>${esc(a.sourceDocument.name)}</b>. Choose the bank account, then preview it below. <a href="/documents">Choose another file</a>.</div>` : ''}
 
 <div class="panel">
   <div class="strip" style="margin-bottom:12px">
@@ -1021,24 +1825,116 @@ wrong and the import is refused (BR-6).</p>
         ${a.banks.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join('')}
       </select>
     </label>
-    <label>File <input type="file" id="file" accept=".csv,.tsv,.txt"></label>
+    <label>File <input type="file" id="file" accept=".csv,.tsv,.txt,.xls,.xlsx,.pdf"${a.sourceDocument ? ' disabled' : ''}></label>
   </div>
-  <textarea id="text" placeholder="…or paste the statement here"></textarea>
+  <div class="strip" style="margin-bottom:12px">
+    <label>Statement password
+      <input type="password" id="statement-password" autocomplete="off"
+             placeholder="Only for protected PDF/Excel">
+    </label>
+    <label style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="remember-password">
+      Remember securely for this account
+    </label>
+    <label style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="auto-open-email">
+      Automatically open future emailed statements for this account
+    </label>
+    <button type="button" id="forget-password">Forget saved password</button>
+    <span class="why" id="password-status"></span>
+  </div>
+  <textarea id="text" placeholder="…or paste the statement here"${a.sourceDocument ? ' disabled' : ''}></textarea>
   <div class="strip" style="margin-top:10px">
     <button class="primary" id="preview">Preview <kbd>⏎</kbd></button>
     <button id="commit" disabled>Import</button>
     <span class="why" id="hint"></span>
   </div>
 </div>
+<div id="coverage"></div>
 <div id="out"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let previewed = false;
+let uploadedFile = null;
+const coverageByAccount = ${coverageByAccount};
+const savedPasswordByAccount = ${savedPasswordByAccount};
+const autoOpenByAccount = ${autoOpenByAccount};
+const sourceDocumentId = ${JSON.stringify(a.sourceDocument?.id ?? null)};
+
+function showPasswordStatus() {
+  const saved = savedPasswordByAccount[$('account').value];
+  $('statement-password').placeholder = saved
+    ? 'Leave blank to use saved password'
+    : 'Only for protected PDF/Excel';
+  $('password-status').textContent = saved
+    ? (autoOpenByAccount[$('account').value]
+      ? 'Password saved for this account. Leave the field blank and click Preview to use it. Future emailed PDFs can open for review; nothing imports automatically.'
+      : 'Password saved for this account. Leave the field blank and click Preview to use it.')
+    : 'Nothing saved for this account.';
+  $('forget-password').hidden = !saved;
+  $('auto-open-email').disabled = !saved && !$('remember-password').checked;
+}
+
+function showCoverage(value) {
+  const c = value || coverageByAccount[$('account').value];
+  if (!c || !c.coveredFrom) {
+    $('coverage').innerHTML = '<div class="msg">No statement imported yet. The first upload starts this account’s sync history.</div>';
+    return;
+  }
+  const gaps = c.gaps || [];
+  $('coverage').innerHTML = '<div class="panel"><div class="strip">'
+    + stat(c.coveredFrom + ' → ' + c.coveredTo, 'statement dates covered')
+    + stat(c.nextExpectedFrom, 'next upload can start')
+    + stat(gaps.length ? gaps.length : 'none', 'missing periods')
+    + '</div>'
+    + (gaps.length ? '<div class="msg bad"><b>Missing statement dates</b><ul>'
+      + gaps.map((g) => '<li>' + esc(g.from) + ' → ' + esc(g.to) + '</li>').join('')
+      + '</ul></div>' : '<div class="msg good">Coverage is continuous. No date gap found.</div>')
+    + '</div>';
+}
+$('account').addEventListener('change', () => {
+  $('statement-password').value = '';
+  $('remember-password').checked = false;
+  $('auto-open-email').checked = Boolean(autoOpenByAccount[$('account').value]);
+  showCoverage();
+  showPasswordStatus();
+});
+showCoverage();
+$('auto-open-email').checked = Boolean(autoOpenByAccount[$('account').value]);
+showPasswordStatus();
+$('remember-password').addEventListener('change', () => {
+  if (!$('remember-password').checked && !savedPasswordByAccount[$('account').value]) {
+    $('auto-open-email').checked = false;
+  }
+  showPasswordStatus();
+});
+$('forget-password').onclick = async () => {
+  const accountId = $('account').value;
+  const result = await post('/api/statement-password/forget', { bankAccountId: accountId });
+  if (!result.ok) { $('password-status').textContent = result.error; return; }
+  savedPasswordByAccount[accountId] = false;
+  autoOpenByAccount[accountId] = false;
+  $('auto-open-email').checked = false;
+  $('remember-password').checked = false;
+  $('statement-password').value = '';
+  showPasswordStatus();
+};
 
 $('file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
-  if (f) { $('text').value = await f.text(); $('hint').textContent = f.name; }
+  if (f) {
+    uploadedFile = f;
+    $('text').value = f.type.startsWith('text/') || /\.(csv|tsv|txt)$/i.test(f.name)
+      ? await f.text() : '';
+    $('hint').textContent = f.name;
+  }
+});
+
+const fileBase64 = (f) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(f);
 });
 
 const post = (url, body) => fetch(url, {
@@ -1048,20 +1944,45 @@ const post = (url, body) => fetch(url, {
 
 const money = (v) => v === null || v === undefined ? '—' : v;
 
+function transactionRow(x) {
+  return '<tr><td class="num">' + esc(x.txnDate) + '</td>'
+    + '<td class="narr">' + esc(x.narration) + '</td>'
+    + '<td class="num">' + (x.debit === '0.00' ? '' : esc(x.debit)) + '</td>'
+    + '<td class="num">' + (x.credit === '0.00' ? '' : esc(x.credit)) + '</td>'
+    + '<td class="num">' + esc(x.runningBalance ?? '') + '</td></tr>';
+}
+
 $('preview').onclick = async () => {
-  const r = await post('/api/preview', { fileText: $('text').value, bank: $('bank').value });
+  const r = await post('/api/preview', {
+    bankAccountId: $('account').value,
+    documentId: sourceDocumentId || undefined,
+    fileText: $('text').value,
+    fileBase64: uploadedFile ? await fileBase64(uploadedFile) : undefined,
+    bank: $('bank').value,
+    password: $('statement-password').value || undefined,
+    rememberPassword: $('remember-password').checked,
+    autoOpenEmail: $('auto-open-email').checked,
+  });
   if (!r.ok) {
     $('out').innerHTML = '<div class="msg bad"><b>Cannot read this file.</b><br>' + esc(r.error) + '</div>';
     $('commit').disabled = true;
     return;
   }
-  previewed = true;
   $('commit').disabled = false;
+  if (r.passwordRemembered) {
+    savedPasswordByAccount[$('account').value] = true;
+    $('statement-password').value = '';
+    showPasswordStatus();
+  }
+  autoOpenByAccount[$('account').value] = r.autoOpenEmail === true;
+  $('auto-open-email').checked = r.autoOpenEmail === true;
+  showPasswordStatus();
   $('out').innerHTML =
     '<div class="panel"><div class="strip">'
     + stat(r.bank, 'layout used') + stat(r.rowCount, 'rows read')
     + stat(money(r.openingBalance), 'opening') + stat(money(r.closingBalance), 'closing')
     + stat(r.periodFrom + ' → ' + r.periodTo, 'period')
+    + stat('••' + r.accountCheck.last4, 'account checked by ' + r.accountCheck.matchedBy)
     + '</div></div>'
     + (r.warnings.length ? '<div class="msg"><b>Notes</b><ul>'
         + r.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') + '</ul></div>' : '')
@@ -1070,21 +1991,31 @@ $('preview').onclick = async () => {
         + r.skippedRows.slice(0, 8).map((s) => '<li>line ' + s.index + ' — ' + esc(s.reason)
             + '<br><span class="narr">' + esc(s.text) + '</span></li>').join('')
         + '</ul></div>' : '')
-    + '<h2>First rows</h2><div class="panel"><table>'
+    + '<div class="strip"><h2 id="preview-row-heading">Transactions — showing '
+    + Math.min(12, r.rows.length) + ' of ' + r.rowCount + '</h2>'
+    + (r.rows.length > 12 ? '<button id="show-all-rows">Show all ' + r.rows.length + '</button>' : '')
+    + '</div><div class="panel"><table>'
     + '<tr><th>Date</th><th>Narration</th><th class="num">Debit</th>'
     + '<th class="num">Credit</th><th class="num">Balance</th></tr>'
-    + r.rows.map((x) => '<tr><td class="num">' + x.txnDate + '</td>'
-        + '<td class="narr">' + esc(x.narration) + '</td>'
-        + '<td class="num">' + (x.debit === '0.00' ? '' : x.debit) + '</td>'
-        + '<td class="num">' + (x.credit === '0.00' ? '' : x.credit) + '</td>'
-        + '<td class="num">' + (x.runningBalance ?? '') + '</td></tr>').join('')
+    + '<tbody id="preview-rows">' + r.rows.slice(0, 12).map(transactionRow).join('') + '</tbody>'
     + '</table></div>';
+  const showAll = $('show-all-rows');
+  if (showAll) showAll.onclick = () => {
+    $('preview-rows').innerHTML = r.rows.map(transactionRow).join('');
+    $('preview-row-heading').textContent = 'Transactions — showing all ' + r.rows.length;
+    showAll.remove();
+  };
 };
 
 $('commit').onclick = async () => {
   $('commit').disabled = true;
   const r = await post('/api/import', {
     bankAccountId: $('account').value, fileText: $('text').value, bank: $('bank').value,
+    documentId: sourceDocumentId || undefined,
+    fileBase64: uploadedFile ? await fileBase64(uploadedFile) : undefined,
+    password: $('statement-password').value || undefined,
+    rememberPassword: $('remember-password').checked,
+    autoOpenEmail: $('auto-open-email').checked,
   });
   const head = r.ok
     ? '<div class="msg good"><b>Imported ' + r.imported + ' row(s)</b>'
@@ -1096,6 +2027,10 @@ $('commit').onclick = async () => {
         + r.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') + '</ul></div>' : '')
     + (r.ok ? '<p><a href="/reconcile?account=' + encodeURIComponent($('account').value)
         + '"><button class="primary">Go to reconciliation →</button></a></p>' : '');
+  if (r.ok && r.coverage) {
+    coverageByAccount[$('account').value] = r.coverage;
+    showCoverage(r.coverage);
+  }
   $('commit').disabled = !r.ok;
 };
 
@@ -1107,8 +2042,12 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'TEXTAREA' && !(e.metaKey || e.ctrlKey)) return;
-  if (e.key === 'Enter') { e.preventDefault(); previewed ? $('commit').click() : $('preview').click(); }
+  // Enter in an import input previews only. Import requires activating its
+  // button explicitly, so a second Enter cannot commit financial rows.
+  if (e.key === 'Enter' && e.target.matches('input, select')) {
+    e.preventDefault();
+    $('preview').click();
+  }
 });
 </script>`;
 }
@@ -1149,11 +2088,87 @@ function proposalCell(p: MatchProposal, hint: string | null): string {
 
 export function renderQueue(
   queue: { items: QueueItem[]; totals: { unmatched: number; matched: number;
-           autoMatchable: number; ambiguous: number } },
+           autoMatchable: number; ambiguous: number; unsure: number } },
   brs: Brs,
   accountId: string,
+  review: {
+    expenseAccounts: Array<{ id: string; name: string }>;
+    transferAccounts: Array<{ id: string; name: string }>;
+    personalAccountName: string;
+  },
+  classifier: { enabled: boolean; available: boolean; called?: boolean } = {
+    enabled: false, available: false,
+  },
 ): string {
   const { items, totals } = queue;
+
+  const optionList = (accounts: Array<{ id: string; name: string }>, selected: string | null) =>
+    `<option value="">Choose account</option>${accounts.map((a) =>
+      `<option value="${esc(a.id)}" ${a.name === selected ? 'selected' : ''}>${esc(a.name)}</option>`
+    ).join('')}`;
+  const reviewControl = (it: QueueItem, i: number): string => {
+    const defaultKind = it.reviewClassification ?? it.fundingSuggestion?.classification
+      ?? (it.suggestedExpenseAccount ? 'business_expense' : 'unsure');
+    const outbound = it.direction === 'outbound';
+    const kindOptions = [
+      { value: 'unsure', label: 'Unsure — do not post' },
+      ...(outbound ? [
+        { value: 'business_expense', label: 'Business expense — receipt missing' },
+        { value: 'personal', label: 'Personal payment' },
+      ] : [
+        { value: 'share_application_pending', label: 'Share application — allotment pending' },
+        { value: 'related_party_loan_pending', label: 'Director / related-party loan — verify terms' },
+        { value: 'customer_advance_pending', label: 'Customer advance — verify order' },
+        { value: 'intercompany_transfer_pending', label: 'Company account transfer — verify both accounts' },
+        { value: 'refund_or_reversal_pending', label: 'Refund or reversal — find original payment' },
+        { value: 'bank_interest_pending', label: 'Bank interest — verify statement' },
+        { value: 'customer_receipt_pending', label: 'Customer payment — match invoice' },
+      ]),
+      { value: 'transfer', label: 'Transfer between company accounts' },
+    ];
+    const selectedKind = kindOptions.find((option) => option.value === defaultKind) ?? kindOptions[0]!;
+    const suggestion = !outbound && !it.proposal.best
+      ? `<details class="suggestion-details">
+          <summary>ⓘ Nexus suggestion${it.fundingSuggestion ? ` · ${it.fundingSuggestion.confidence}% confidence` : ''} · View details</summary>
+          <p class="why">${esc(it.fundingSuggestion?.reason
+            ?? 'No invoice match. Confirm who sent this and why before treating it as income, a loan, or share money.')}
+            ${it.fundingSuggestion ? `Suggestion only; confirm the sender and supporting records.${it.fundingSuggestion.evidence?.length
+              ? ` Evidence: ${it.fundingSuggestion.evidence.map((e) => `“${e}”`).join(', ')}.` : ''}${it.fundingSuggestion.question
+                ? ` Reviewer question: ${it.fundingSuggestion.question}` : ''}` : ''}</p>
+        </details>`
+      : '';
+    return `<details class="bank-review" ${!it.proposal.best ? 'open' : ''}>
+        <summary>${it.reviewClassification === 'unsure' ? 'Review this transaction again' : 'Review this transaction'}</summary>
+      <div class="bank-review-body" data-review="${i}">
+        ${suggestion}
+        <div class="review-kind-field">
+          <span>1. What best describes this transaction?</span>
+          <select class="review-kind" hidden aria-hidden="true" tabindex="-1">
+            ${kindOptions.map((option) => `<option value="${esc(option.value)}" ${selectedKind.value === option.value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
+          </select>
+          <details class="review-kind-picker">
+            <summary class="review-kind-current">${esc(selectedKind.label)}</summary>
+            <div class="review-kind-options">
+              ${kindOptions.map((option) => `<button type="button" data-kind="${esc(option.value)}" aria-pressed="${option.value === selectedKind.value}">${esc(option.label)}</button>`).join('')}
+            </div>
+          </details>
+        </div>
+        <label class="review-source">Who sent the money?
+          <input class="review-source-name" maxlength="160" placeholder="Confirm sender name"
+            value="${esc(it.reviewSourceName ?? it.fundingSuggestion?.sourceName ?? it.counterpartyName ?? '')}">
+        </label>
+        <label class="review-expense">Expense account
+          <select class="review-expense-account">${optionList(review.expenseAccounts, it.suggestedExpenseAccount)}</select>
+        </label>
+        <label class="review-transfer">Other account
+          <select class="review-transfer-account">${optionList(review.transferAccounts, null)}</select>
+        </label>
+        <label>Note <input class="review-note" maxlength="500" placeholder="What evidence supports this choice?" value="${esc(it.reviewNote ?? '')}"></label>
+        <p class="why review-explain"></p>
+        <button class="primary review-submit">Save answer</button>
+      </div>
+    </details>`;
+  };
 
   const rows = items.map((it, i) => `
     <tr class="row" data-i="${i}" id="r${i}"
@@ -1173,17 +2188,32 @@ export function renderQueue(
       </td>
       <td class="num">${it.direction === 'outbound' ? inr(it.debit) : ''}</td>
       <td class="num">${it.direction === 'inbound' ? inr(it.credit) : ''}</td>
-      <td>${proposalCell(it.proposal, it.suggestedClassification)}</td>
+      <td>${proposalCell(it.proposal, it.suggestedClassification)}${reviewControl(it, i)}</td>
     </tr>`).join('');
 
   return `<h1>Reconcile</h1>
 <p class="sub">Sorted by confidence — clear the top in bulk, spend your attention
 at the bottom. Nothing posts without you.</p>
 
+<div class="msg"><b>Review a transaction:</b> choose a type, fill in the sender or evidence if you know it, then select <b>Save answer</b>. If you are unsure, leave “Unsure” selected. Saving a review does not post or reconcile anything.</div>
+
+<div class="panel row-actions" style="justify-content:space-between;align-items:center">
+  <div><b>Nexus transaction suggestions</b>
+    <div class="why">Optional AI suggestions for unmatched incoming transactions. They are saved for review and never post automatically.</div>
+    <details class="suggestion-details"><summary>ⓘ What information is shared?</summary>
+      <p class="why">When enabled, redacted narration is sent to the configured AI provider for classification. Narration can still contain a payer or merchant name. Amounts, account numbers, and balances are not sent.</p>
+    </details>
+    ${classifier.enabled ? '<span class="tag good">Enabled</span>' : '<span class="tag">Off</span>'}
+    ${!classifier.available ? '<span class="why"> · Nexus AI is not configured on this server.</span>' : ''}
+  </div>
+  <button type="button" id="toggle-bank-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off' : 'Enable for this firm'}</button>
+</div>
+
 <div class="panel strip">
   <div class="stat"><b>${totals.unmatched}</b><span>unmatched</span></div>
   <div class="stat"><b class="good">${totals.autoMatchable}</b><span>high confidence</span></div>
   <div class="stat"><b class="${totals.ambiguous ? 'bad' : ''}">${totals.ambiguous}</b><span>ambiguous</span></div>
+  <div class="stat"><b class="${totals.unsure ? 'bad' : ''}">${totals.unsure}</b><span>marked unsure</span></div>
   <div class="stat"><b class="${brs.ties ? 'good' : 'bad'}">${inr(brs.difference)}</b><span>BRS difference</span></div>
   <div style="margin-left:auto" class="row-actions">
     <button class="primary" id="bulk" ${totals.autoMatchable === 0 ? 'disabled' : ''}>
@@ -1193,6 +2223,11 @@ at the bottom. Nothing posts without you.</p>
 </div>
 
 ${brs.ties ? '' : `<div class="msg bad"><b>The BRS does not tie.</b><br>${esc(brs.exception)}</div>`}
+${brs.openingSuggestion ? `<div class="msg">
+  <b>First statement starting balance: ${inr(brs.openingSuggestion.amount)}</b><br>
+  This amount is printed on the statement for ${esc(brs.openingSuggestion.date)}. Confirm it once to start this bank account in the books.
+  <p><button class="primary" id="use-statement-opening">Use this starting balance</button></p>
+</div>` : ''}
 
 <div id="msg"></div>
 
@@ -1200,7 +2235,7 @@ ${items.length === 0
   ? '<p class="empty">Nothing to reconcile. Import a statement to begin.</p>'
   : `<div class="panel" style="padding:0"><table>
       <tr><th>Date</th><th>Narration</th><th class="num">Out</th>
-          <th class="num">In</th><th>Proposed match</th></tr>
+          <th class="num">In</th><th>Match or classify</th></tr>
       ${rows}
     </table></div>`}
 
@@ -1223,17 +2258,109 @@ function paint() {
   rowsEl[sel] && rowsEl[sel].scrollIntoView({ block: 'nearest' });
 }
 if (rowsEl.length) paint();
-rowsEl.forEach((r, i) => r.onclick = () => { sel = i; paint(); });
 
 const post = (url, body) => fetch(url, {
   method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
 }).then((r) => r.json());
 
+const classifierToggle = document.getElementById('toggle-bank-classifier');
+if (classifierToggle) classifierToggle.onclick = async () => {
+  const enabled = ${classifier.enabled ? 'false' : 'true'};
+  if (enabled && !confirm('Enable Nexus bank suggestions for this firm? Redacted transaction narration will be sent to the configured AI service for suggestions.')) return;
+  classifierToggle.disabled = true;
+  const r = await post('/api/bank-classifier-consent', { enabled });
+  if (r.ok) location.reload();
+  else { classifierToggle.disabled = false; say(false, r.error); }
+};
+
+const useStatementOpening = document.getElementById('use-statement-opening');
+if (useStatementOpening) useStatementOpening.onclick = async () => {
+  useStatementOpening.disabled = true;
+  const r = await post('/api/bank-opening-from-statement', { bankAccountId: ${JSON.stringify(accountId)} });
+  if (r.ok) location.reload();
+  else { useStatementOpening.disabled = false; say(false, r.error); }
+};
+
 function say(ok, text) {
   document.getElementById('msg').innerHTML =
     '<div class="msg ' + (ok ? 'good' : 'bad') + '">' + text + '</div>';
 }
+
+function reviewHelp(kind, personalAccount) {
+  if (kind === 'business_expense') return 'Posts the full payment to the selected expense account. Receipt missing; GST credit ₹0.';
+  if (kind === 'personal') return 'Posts to ' + personalAccount + ', not to the business P&L.';
+  if (kind === 'transfer') return 'Posts between the bank and the selected balance-sheet account.';
+  if (kind === 'share_application_pending') return 'Records your answer, but does not post or mark this reconciled. Check the application and allotment documents before choosing the ledger account.';
+  if (kind === 'related_party_loan_pending') return 'Records your answer without posting. Confirm the lender and terms before accounting for the loan.';
+  if (kind === 'customer_advance_pending') return 'Records your answer without posting. Match the customer and order before accounting for the advance.';
+  if (kind === 'intercompany_transfer_pending') return 'Records your answer without posting. Verify both accounts are owned by the company.';
+  if (kind === 'refund_or_reversal_pending') return 'Records your answer without posting. Find and verify the original transaction.';
+  if (kind === 'bank_interest_pending') return 'Records your answer without posting. Verify interest in the bank advice before accounting for it.';
+  if (kind === 'customer_receipt_pending') return 'Records your answer without posting. Match it to a customer and invoice.';
+  return 'Saves this as unsure. Nothing posts and it remains in the review queue.';
+}
+
+document.querySelectorAll('.bank-review-body').forEach((box) => {
+  const kind = box.querySelector('.review-kind');
+  const kindPicker = box.querySelector('.review-kind-picker');
+  const kindCurrent = box.querySelector('.review-kind-current');
+  const expense = box.querySelector('.review-expense');
+  const transfer = box.querySelector('.review-transfer');
+  const source = box.querySelector('.review-source');
+  const explain = box.querySelector('.review-explain');
+  const refresh = () => {
+    const selected = kind.options[kind.selectedIndex];
+    kindCurrent.textContent = selected.textContent;
+    kindPicker.querySelectorAll('[data-kind]').forEach((choice) => {
+      choice.setAttribute('aria-pressed', String(choice.dataset.kind === kind.value));
+    });
+    expense.hidden = kind.value !== 'business_expense';
+    transfer.hidden = kind.value !== 'transfer';
+    source.hidden = !kind.value.endsWith('_pending');
+    explain.textContent = reviewHelp(kind.value, ${JSON.stringify(review.personalAccountName)});
+  };
+  kind.addEventListener('change', refresh);
+  kindPicker.querySelectorAll('[data-kind]').forEach((choice) => choice.onclick = (event) => {
+    event.preventDefault(); event.stopPropagation();
+    kind.value = choice.dataset.kind;
+    kind.dispatchEvent(new Event('change', { bubbles: true }));
+    kindPicker.open = false;
+  });
+  refresh();
+  box.querySelector('.review-submit').onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const row = box.closest('tr.row');
+    const accountId = kind.value === 'business_expense'
+      ? box.querySelector('.review-expense-account').value
+      : kind.value === 'transfer' ? box.querySelector('.review-transfer-account').value : undefined;
+    const r = await post('/api/review-bank-transaction', {
+      bankTransactionId: row.dataset.txn, classification: kind.value, accountId,
+      sourceName: box.querySelector('.review-source-name').value,
+      note: box.querySelector('.review-note').value,
+    });
+    if (!r.ok) { say(false, r.error); return; }
+    location.reload();
+  };
+});
+
+// Capture the pointer event before table/row handlers can stop propagation.
+// This keeps the picker open for clicks inside it and dismisses it on any
+// outside interaction, including clicks on another row's controls.
+document.addEventListener('pointerdown', (event) => {
+  if (!(event.target instanceof Node)) return;
+  document.querySelectorAll('.review-kind-picker[open]').forEach((picker) => {
+    if (!picker.contains(event.target)) picker.open = false;
+  });
+}, true);
+
+// Also dismiss when keyboard navigation moves focus outside the popover.
+document.addEventListener('focusin', (event) => {
+  if (!(event.target instanceof Node)) return;
+  document.querySelectorAll('.review-kind-picker[open]').forEach((picker) => {
+    if (!picker.contains(event.target)) picker.open = false;
+  });
+});
 
 async function accept(row, asTds) {
   if (!row.dataset.voucher) { say(false, 'No candidate to accept on this line.'); return false; }
@@ -1579,7 +2706,8 @@ interface ProposalViewV {
   /** Null when no supplier could be matched — nothing to hang master data on. */
   partyId: string | null;
   lines: Array<{ description: string; amount: string; hsn: string | null;
-    suggestedAccountId?: string }>;
+    suggestedAccountId?: string;
+    aiSuggestion?: { accountId: string | null; confidence: number; reason: string } }>;
   warnings: string[];
   blockers: string[];
   confirmations: Array<{ field: string; chose: string; instead: string; question: string }>;
@@ -1752,9 +2880,10 @@ function proposalCard(
   p: ProposalViewV, token: string,
   accounts: Array<{ id: string; name: string; itc: string | null }>,
   defaultAccountId: string | null,
+  canApprove = false,
 ): string {
   const badge = p.status === 'ready'
-    ? '<span class="tag good">Ready to post</span>'
+    ? `<span class="tag good">${canApprove ? 'Ready to post' : 'Ready for CA review'}</span>`
     : p.status === 'needs_answer'
       ? '<span class="tag warn">Needs your answer</span>'
       : '<span class="tag bad">Blocked</span>';
@@ -1792,7 +2921,7 @@ function proposalCard(
       ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('');
 
   const lineRows = p.lines.map((l, i) => {
-    const chosen = l.suggestedAccountId ?? defaultAccountId ?? '';
+    const chosen = l.suggestedAccountId ?? l.aiSuggestion?.accountId ?? defaultAccountId ?? '';
     return `
     <tr>
       <td>${esc(l.description || 'Line ' + (i + 1))}${
@@ -1801,6 +2930,11 @@ function proposalCard(
       <td>
         <select class="lineacct" data-line="${i}">${opt(chosen)}</select>
         ${l.suggestedAccountId ? '<span class="learned" title="learned from a previous bill">learned</span>' : ''}
+        ${!l.suggestedAccountId && l.aiSuggestion?.accountId
+          ? `<span class="learned" title="Nexus suggestion only; review before posting">AI suggestion · ${l.aiSuggestion.confidence}%</span>
+             <span class="why" title="${esc(l.aiSuggestion.reason)}">${esc(l.aiSuggestion.reason)}</span>` : ''}
+        ${!l.suggestedAccountId && l.aiSuggestion && !l.aiSuggestion.accountId
+          ? `<span class="why" title="Nexus could not confidently choose an account">AI unsure · ${l.aiSuggestion.confidence}%</span>` : ''}
       </td>
     </tr>`;
   }).join('');
@@ -1842,9 +2976,11 @@ function proposalCard(
     ${controls}
 
     <div class="billactions">
-      ${canPost
+      ${canPost && canApprove
         ? `<button class="primary post" data-index="${p.index}" data-token="${esc(token)}">
              ${p.status === 'needs_answer' ? 'Confirm & post' : 'Approve & post'}</button>`
+        : canPost
+          ? '<span class="muted">Your review is ready. A CA partner must approve it before it is posted to the books.</span>'
         : (p.form && p.form.fields.length > 0 && p.form.unfixable.length === 0
             ? '<span class="muted">Fill the fields above, check them, then post.</span>'
             : p.blockers.some((b) => NEEDS_PARTY_RCM.test(b)) && p.partyId !== null
@@ -1863,7 +2999,10 @@ export function renderBillReview(a: {
   hasExpenseAccount: boolean;
   accounts: Array<{ id: string; name: string; itc: string | null }>;
   defaultAccountId: string | null;
+  canApprove?: boolean;
+  classifier?: { enabled: boolean; available: boolean };
 }): string {
+  const canApprove = a.canApprove === true;
   const upload = `
     <div class="row">
       <label>Upload invoice PDFs or photos
@@ -1888,17 +3027,28 @@ export function renderBillReview(a: {
 
   return `<h1>Bills</h1>
 <p class="sub">Every figure is read on the page and checked before it can post.
-Nothing posts without you approving it.</p>
+${canApprove ? 'Nothing posts without your approval.' : 'You can prepare the review; a CA partner must approve before anything posts to the books.'}</p>
 
 ${a.hasExpenseAccount ? '' :
   '<div class="msg bad">This client has no Purchases account, so a bill has nowhere to post. Seed the chart of accounts first.</div>'}
 
 ${upload}
+${a.classifier ? `<section class="panel bill-ai-consent">
+  <div><b>Nexus expense-account suggestions</b>
+    <div class="why">Optional AI suggestions for expense accounts. Suggestions are editable and never post by themselves.</div>
+    <details class="suggestion-details"><summary>ⓘ What information is shared?</summary>
+      <p class="why">When enabled, the supplier name, line descriptions, HSN/SAC codes, and your expense-account names are sent to the configured AI service. Prices, totals, GSTINs, and the original invoice file are not sent.</p>
+    </details>
+    ${!a.classifier.available ? '<div class="why">Nexus AI is not configured on this server.</div>' : ''}
+  </div>
+  <label><input type="checkbox" id="bill-ai-toggle" ${a.classifier.enabled ? 'checked' : ''} ${a.classifier.available ? '' : 'disabled'}> Enable for this firm</label>
+  <span id="bill-ai-status" class="why" role="status"></span>
+</section>` : ''}
 <div id="msg"></div>
 
 ${summary}
 <div id="cards">
-  ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '', a.accounts, a.defaultAccountId)).join('')}
+  ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '', a.accounts, a.defaultAccountId, canApprove)).join('')}
 </div>
 
 ${a.posted.length === 0 ? '' : `
@@ -1913,8 +3063,26 @@ const post = (url, body) => fetch(url, {
   method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
 }).then((r) => r.json());
+const canApprove = ${canApprove ? 'true' : 'false'};
 const say = (ok, t) => { document.getElementById('msg').innerHTML =
   '<div class="msg ' + (ok ? 'good' : 'bad') + '">' + t + '</div>'; };
+
+const billAiToggle = document.getElementById('bill-ai-toggle');
+if (billAiToggle) billAiToggle.onchange = async () => {
+  const enabled = billAiToggle.checked;
+  if (enabled && !confirm('Enable Nexus expense-account suggestions for this firm? Supplier names, invoice line descriptions, HSN/SAC codes, and expense-account names will be sent to the configured AI service.')) {
+    billAiToggle.checked = false; return;
+  }
+  billAiToggle.disabled = true;
+  const status = document.getElementById('bill-ai-status'); status.textContent = 'Saving…';
+  try {
+    const r = await post('/api/bill-classifier-consent', { enabled });
+    if (!r.ok) throw new Error(r.error || 'could not save the setting');
+    status.textContent = enabled ? 'Enabled. New bill previews can receive suggestions.' : 'Disabled.';
+  } catch (error) {
+    billAiToggle.checked = !enabled; status.textContent = String(error.message || error);
+  } finally { billAiToggle.disabled = false; }
+};
 
 const pdfs = document.getElementById('pdfs'), run = document.getElementById('run');
 if (pdfs) pdfs.onchange = () => { run.disabled = !pdfs.files.length; };
@@ -2006,12 +3174,16 @@ document.querySelectorAll('button.prepare-expense').forEach((btn) => {
         box.dataset.prepared = '0';
         throw new Error((r.blockers || []).join(' '));
       }
-      out.innerHTML = '<span class="good">Ready. Review and post the expense.</span>';
+      out.innerHTML = '<span class="good">Ready for review.</span>';
       const actions = card.querySelector(':scope > .billactions');
-      actions.innerHTML = '<button class="primary post" data-index="' + box.dataset.index +
-        '" data-token="' + box.dataset.token + '">Approve ₹' + box.dataset.total +
-        ' expense</button>';
-      wirePost(actions.querySelector('button.post'));
+      if (canApprove) {
+        actions.innerHTML = '<button class="primary post" data-index="' + box.dataset.index +
+          '" data-token="' + box.dataset.token + '">Approve ₹' + box.dataset.total +
+          ' expense</button>';
+        wirePost(actions.querySelector('button.post'));
+      } else {
+        actions.textContent = 'Prepared. A CA partner must approve before it is posted.';
+      }
     } catch (error) {
       out.innerHTML = '<span class="bad">' + String(error.message || error).replace(/</g, '&lt;') + '</span>';
       btn.disabled = false;
@@ -2090,9 +3262,9 @@ document.querySelectorAll('button.setrcm').forEach((btn) => {
     btn.disabled = false;
     if (!f.ok) { out.textContent = f.error || 'saved, but could not re-read'; return; }
     if (f.ready) {
-      out.innerHTML = '<span class="good">Saved — this bill now posts.</span>';
+      out.innerHTML = '<span class="good">Saved — this bill is ready for CA review.</span>';
       const actions = card.querySelector(':scope > .billactions');
-      if (actions && !actions.querySelector('button.post')) {
+      if (canApprove && actions && !actions.querySelector('button.post')) {
         actions.innerHTML =
           '<button class="primary post" data-index="' + box.dataset.index +
           '" data-token="' + box.dataset.token + '">Approve & post</button>';
@@ -2118,9 +3290,9 @@ document.querySelectorAll('button.check').forEach((btn) => {
     btn.disabled = false;
     if (!r.ok) { out.textContent = r.error || 'could not check'; return; }
     if (r.ready) {
-      out.innerHTML = '<span class="good">These hold together — you can post now.</span>';
+      out.innerHTML = '<span class="good">These figures hold together — the bill is ready for review.</span>';
       const actions = card.querySelector(':scope > .billactions');
-      if (actions && !actions.querySelector('button.post')) {
+      if (canApprove && actions && !actions.querySelector('button.post')) {
         actions.innerHTML =
           '<button class="primary post" data-index="' + btn.dataset.index +
           '" data-token="' + btn.dataset.token + '">Approve & post</button>';
@@ -2820,7 +3992,7 @@ const RBUCKET_LABEL: Record<string, string> = {
 
 interface OutstandingInvoiceV {
   voucherId: string; invoiceNumber: string; partyId: string;
-  customerName: string; invoiceDate: string; dueDate: string;
+  customerName: string; customerPhone: string | null; invoiceDate: string; dueDate: string;
   grandTotal: string; outstanding: string; tdsWithheld: string;
   daysOverdue: number; bucket: string;
 }
@@ -2828,6 +4000,7 @@ interface OutstandingInvoiceV {
 export function renderReceivables(a: {
   invoices: OutstandingInvoiceV[];
   accounts: Array<{ id: string; name: string }>;
+  reminders?: boolean;
 }): string {
   const buckets: Record<string, bigint> = {
     not_due: 0n, d0_30: 0n, d31_60: 0n, d61_90: 0n, d90_plus: 0n };
@@ -2842,6 +4015,21 @@ export function renderReceivables(a: {
 
   const acctOptions = a.accounts.map((ac) =>
     `<option value="${esc(ac.id)}">${esc(ac.name)}</option>`).join('');
+  const overdue = a.invoices.filter((invoice) => invoice.daysOverdue > 0);
+  const reminderDrafts = !a.reminders ? '' : overdue.length === 0
+    ? '<div class="msg good">No overdue invoices need a reminder.</div>'
+    : `<section class="panel mt"><h2 style="margin-top:0">Payment reminder drafts</h2>
+      <p class="sub">Review each draft before opening WhatsApp. BharatERP does not send messages automatically.</p>
+      ${overdue.map((invoice) => {
+        const phone = (invoice.customerPhone ?? '').replace(/\D/g, '').replace(/^0+/, '');
+        const message = `Payment reminder from BharatERP: invoice ${invoice.invoiceNumber} for ₹${inr(invoice.outstanding)} was due on ${invoice.dueDate}. Please confirm the payment date.`;
+        return `<div class="reminder-card"><b>${esc(invoice.customerName)}</b>
+          <span class="muted"> · ${esc(invoice.invoiceNumber)} · ${inr(invoice.outstanding)} · ${invoice.daysOverdue}d overdue</span>
+          <p>${esc(message)}</p>
+          ${phone ? `<a class="btnlink" href="https://wa.me/${esc(phone)}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener">Review in WhatsApp</a>`
+            : '<span class="bad">No WhatsApp number saved for this customer.</span>'}
+        </div>`;
+      }).join('')}</section>`;
 
   const rows = a.invoices.map((i) => `
     <tr class="rrow">
@@ -2902,6 +4090,8 @@ reduce it without anything being maintained by hand.</p>
     }">${rupees(buckets[k] ?? 0n)}</b><span>${RBUCKET_LABEL[k]}</span></div>`).join('')}
   <div class="stat"><b>${rupees(total)}</b><span>total receivable</span></div>
 </div>
+
+${reminderDrafts}
 
 ${a.invoices.length === 0
   ? '<p class="sub mt">Nothing outstanding.</p>'
@@ -3401,11 +4591,57 @@ if (cs) cs.onclick = async () => {
 // The one screen that is not about a single client. It answers the question a
 // practice actually runs on: which of these needs me today?
 
+export function renderClientSetup(a: {
+  name: string; pan: string | null; gstin: string | null;
+  bankAccounts: number; teamMembers: number;
+}): string {
+  const done = [Boolean(a.pan), Boolean(a.gstin), a.bankAccounts > 0].filter(Boolean).length;
+  const step = (complete: boolean, title: string, note: string, href?: string) =>
+    `<div class="setup-step ${complete ? 'good' : 'warn'}"><b>${complete ? 'Done' : 'Next'} · ${esc(title)}</b>
+      <span>${esc(note)}</span>${href ? ` <a href="${esc(href)}">Open →</a>` : ''}</div>`;
+  return `<h1>Set up ${esc(a.name)}</h1>
+<p class="sub">Complete the basics before posting live books. You can return here any time.</p>
+<div class="panel strip">
+  <div class="stat"><b>${done}/3</b><span>core setup complete</span></div>
+  <div class="stat"><b>${a.teamMembers}</b><span>firm team members</span></div>
+</div>
+
+<section class="panel mt"><h2 style="margin-top:0">1. Company and GST details</h2>
+  <p class="sub">The PAN identifies the books. Add a GSTIN only when this client is registered.</p>
+  <label>Company name<input id="setup-name" value="${esc(a.name)}" maxlength="160"></label>
+  <div class="row"><label>PAN<input id="setup-pan" class="mono" value="${esc(a.pan ?? '')}" maxlength="10" placeholder="ABCDE1234F"></label>
+    <label>Primary GSTIN <span class="muted">optional</span><input id="setup-gstin" class="mono" value="${esc(a.gstin ?? '')}" maxlength="15" placeholder="27ABCDE1234F1Z5"></label>
+  </div>
+  <button class="primary" id="save-setup">Save company details</button><span id="setup-result" class="why"></span>
+</section>
+
+<section class="mt">
+  ${step(Boolean(a.pan), 'Company PAN', a.pan ? `PAN ${a.pan}` : 'Add the company PAN above.')}
+  ${step(Boolean(a.gstin), 'GST registration', a.gstin ? `GSTIN ${a.gstin}` : 'Optional for an unregistered client.')}
+  ${step(a.bankAccounts > 0, 'Bank account', a.bankAccounts ? `${a.bankAccounts} account(s) added.` : 'Add the account used for reconciliation.', '/accounts')}
+  ${step(false, 'Opening data', 'Import existing books from Tally or a bank statement.', '/tally')}
+  ${step(a.teamMembers > 1, 'CA team', a.teamMembers > 1 ? `${a.teamMembers} firm users can access this firm.` : 'Add staff and approval roles next.')}
+</section>
+
+<script>
+const postSetup = (body) => fetch('/api/client-setup', { method: 'POST',
+  headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+document.getElementById('save-setup').onclick = async () => {
+  const result = document.getElementById('setup-result');
+  const r = await postSetup({ name: document.getElementById('setup-name').value,
+    pan: document.getElementById('setup-pan').value, gstin: document.getElementById('setup-gstin').value });
+  if (!r.ok) { result.className = 'bad'; result.textContent = r.error; return; }
+  location.reload();
+};
+</script>`;
+}
+
 interface CockpitRowV {
   clientId: string; name: string; gstin: string | null;
   outputTax: string; creditAtRisk: string; reconciled: boolean;
   overduePayable: string; overdueCount: number; billsPosted: number;
   registrationIssues: number;
+  documentsWaiting: number; informationRequested: number;
   gstr1Due: string; gstr3bDue: string;
   daysToGstr1: number; daysToGstr3b: number; attention: number;
 }
@@ -3414,7 +4650,8 @@ export function renderCockpit(a: {
   period: string; periods: string[]; today: string;
   rows: CockpitRowV[];
   totals: { clients: number; outputTax: string; creditAtRisk: string;
-    overduePayable: string; needingAttention: number };
+    overduePayable: string; needingAttention: number;
+    documentsWaiting: number; informationRequested: number };
 }): string {
   const picker = `
     <form method="get" action="/firm" class="row">
@@ -3439,6 +4676,8 @@ export function renderCockpit(a: {
       out.push(`<span class="tag bad">${r.registrationIssues} supplier registration</span>`);
     }
     if (r.overdueCount > 0) out.push(`<span class="tag">${r.overdueCount} overdue</span>`);
+    if (r.documentsWaiting > 0) out.push(`<a class="tag warn" href="/documents?client=${esc(r.clientId)}">${r.documentsWaiting} docs to review</a>`);
+    if (r.informationRequested > 0) out.push(`<a class="tag bad" href="/documents?client=${esc(r.clientId)}">${r.informationRequested} info requested</a>`);
     return out.join(' ') || '<span class="muted">—</span>';
   };
 
@@ -3473,6 +4712,8 @@ ${picker}
   <div class="stat"><b>${inr(a.totals.outputTax)}</b><span>tax declared</span></div>
   <div class="stat"><b class="${a.totals.creditAtRisk === '0.00' ? '' : 'bad'}">${inr(a.totals.creditAtRisk)}</b><span>credit at risk</span></div>
   <div class="stat"><b>${inr(a.totals.overduePayable)}</b><span>overdue payables</span></div>
+  <div class="stat"><b>${a.totals.documentsWaiting}</b><span>documents to review</span></div>
+  <div class="stat"><b>${a.totals.informationRequested}</b><span>information requested</span></div>
 </div>
 
 ${a.rows.length === 0

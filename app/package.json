@@ -13,10 +13,14 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web/server.ts",
+    "email:import": "tsx src/integrations/runEmailImport.ts",
     "seed:demo": "tsx src/seed/demo.ts"
   },
   "dependencies": {
-    "pg": "^8.13.1"
+    "@aws-sdk/client-s3": "^3.1147.0",
+    "office-crypto": "^0.1.0",
+    "pg": "^8.13.1",
+    "postal-mime": "^4.0.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -57,6 +57,8 @@ export interface ParsedStatementFile {
   closingBalance: string | null;
   periodFrom: string | null;
   periodTo: string | null;
+  /** Read only while this file is being checked; never persisted. */
+  statementAccountNumber: string | null;
   skippedRows: Array<{ index: number; reason: string; text: string }>;
   warnings: string[];
 }
@@ -201,7 +203,7 @@ function clean(raw: string): string {
  * the value is read from beneath its own heading rather than from wherever a
  * number happens to appear.
  */
-function mineLabel(rows: string[][], labels: string[]): string | null {
+export function mineLabel(rows: string[][], labels: string[]): string | null {
   const lower = labels.map((l) => l.toLowerCase());
 
   for (const [r, row] of rows.entries()) {
@@ -249,6 +251,37 @@ function mineDateRange(
     if (parsed.length >= 2) return { from: parsed[0]!, to: parsed[parsed.length - 1]! };
   }
   return { from: null, to: null };
+}
+
+/**
+ * Read the account identity printed on a statement. The complete number is
+ * deliberately kept only in the in-memory parse so the importer can compare
+ * its fingerprint with the saved account; it is never returned to the UI or
+ * written to the database.
+ */
+function mineAccountNumber(rows: string[][]): string | null {
+  const label = /(?:account\s*(?:number|no\.?|#)|a\/?c\s*(?:number|no\.?|#))/i;
+  for (const row of rows) {
+    const joined = row.join(' ');
+    const found = label.exec(joined);
+    if (!found) continue;
+    const after = joined.slice((found.index ?? 0) + found[0].length);
+    // PDF text can put a currency or account-type word immediately after the
+    // number on the same line. Prefer the numeric run so that a following
+    // label cannot become part of the account fingerprint.
+    const numeric = /(?:^|\D)(\d[\d\s-]{4,}\d)(?!\d)/.exec(after)?.[1]
+      ?.replace(/[\s-]+/g, '');
+    if (numeric && /^\d{6,34}$/.test(numeric)) return numeric;
+    const masked = /([X*]{2,}[\s-]*\d{4})(?!\d)/i.exec(after)?.[1]
+      ?.replace(/[\s-]+/g, '').toUpperCase();
+    if (masked) return masked;
+    // Statements use either a full number or a masked value such as XXXX1234.
+    const token = after.match(/[A-Z0-9*][A-Z0-9*\s-]{4,38}/i)?.[0];
+    if (!token) continue;
+    const account = token.replace(/[\s-]+/g, '').toUpperCase();
+    if (/^[A-Z0-9*]{6,34}$/.test(account) && /\d{4}/.test(account)) return account;
+  }
+  return null;
 }
 
 /**
@@ -556,6 +589,7 @@ function buildFromColumns(
   }
 
   const { from, to } = mineDateRange(preamble, dateFormat);
+  const statementAccountNumber = mineAccountNumber(rows);
 
   return {
     bank: a.bankLabel,
@@ -567,6 +601,7 @@ function buildFromColumns(
     closingBalance,
     periodFrom: from ?? out[0]!.txnDate,
     periodTo: to ?? out[out.length - 1]!.txnDate,
+    statementAccountNumber,
     skippedRows,
     warnings,
   };

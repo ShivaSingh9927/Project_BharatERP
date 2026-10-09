@@ -46,6 +46,7 @@ export interface RecordInput {
   /** Where the original lives. The auditor's evidence (Lesson 11). */
   sourceUri: string;
   channel?: 'email' | 'whatsapp' | 'upload' | 'scan' | 'api';
+  reviewedBy?: string;
   mimeType?: string;
   fileSize?: number;
   pageCount?: number;
@@ -66,13 +67,18 @@ async function upsertSourceDocument(
     const r = await c.query<{ id: string }>(
       `INSERT INTO source_documents
          (firm_id, client_id, channel, original_blob_uri, mime_type,
-          file_size, page_count, sha256, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'processed')
-       ON CONFLICT (client_id, sha256) DO UPDATE SET status = 'processed'
+          file_size, page_count, sha256, status, review_note, review_updated_at,
+          review_updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'processed',NULL,now(),$9)
+       ON CONFLICT (client_id, sha256) DO UPDATE
+         SET status = 'processed', review_note = NULL,
+             review_updated_at = now(),
+             review_updated_by = COALESCE(EXCLUDED.review_updated_by,
+                                          source_documents.review_updated_by)
        RETURNING id`,
       [firmId, input.clientId, input.channel ?? 'upload', input.sourceUri,
        input.mimeType ?? 'application/pdf', input.fileSize ?? null,
-       input.pageCount ?? null, sha256]);
+       input.pageCount ?? null, sha256, input.reviewedBy ?? null]);
     return r.rows[0]!.id;
   });
 }

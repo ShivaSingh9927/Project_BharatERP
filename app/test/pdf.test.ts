@@ -209,6 +209,16 @@ describe('row grouping', () => {
 
 // ---------------------------------------------------------------------------
 describe('column inference', () => {
+  it('uses one balance transition for a two-row credit-only PDF', () => {
+    const rows = [
+      ['05/10/26', 'UPI EXAMPLE', '0000624531110990', '05/10/26', '', '100.00', '1,000.00'],
+      ['06/10/26', 'UPI EXAMPLE', '0000624531130468', '06/10/26', '', '500.00', '1,500.00'],
+    ];
+    const r = inferColumnRoles(rows);
+    expect(r.columns).toMatchObject({ txnDate: 0, debit: null, credit: 5, balance: 6 });
+    expect(r.notes.join(' ')).toContain('one balance transition');
+  });
+
   it('does not mistake a reference number for an amount column', () => {
     // `0000624531110990` parses as a number. Only the two-decimal test
     // distinguishes money from a reference, and without it the reference
@@ -291,6 +301,30 @@ describe('column inference', () => {
 
 // ---------------------------------------------------------------------------
 describe('a real HDFC PDF layout', () => {
+  it('reads a one-transaction credit statement only when its balances prove the columns', () => {
+    const start = HDFC_TEXT.indexOf('\n 02/09/2026');
+    const summary = HDFC_TEXT.indexOf('\n              STATEMENT SUMMARY');
+    const lastRow = HDFC_TEXT.split('\n').find((line) =>
+      line.startsWith(' 05/09/2026     UPI-EXAMPLE PAYEE-PAYTM'))!;
+    const single = (HDFC_TEXT.slice(0, start) + '\n' + lastRow + '\n'
+      + HDFC_TEXT.slice(summary))
+      .replace('162,636.17', '125,364.37');
+    const p = parsePdfText(single);
+    expect(p.rows).toHaveLength(1);
+    expect(p.rows[0]!.credit).toBe('55.00');
+    expect(p.rows[0]!.debit).toBe('0.00');
+    expect(p.rows[0]!.runningBalance).toBe('125419.37');
+    expect(verifyStatementArithmetic(p.openingBalance!, p.closingBalance!, p.rows).ok).toBe(true);
+  });
+
+  it('does not append the word following the account number', () => {
+    const text = HDFC_TEXT.replace(
+      'Account No          : 00000000000000',
+      'Account No          : 00000000000000 RUPEES',
+    );
+    expect(parsePdfText(text).statementAccountNumber).toBe('00000000000000');
+  });
+
   it('identifies the bank from the page text', () => {
     const p = parsePdfText(HDFC_TEXT);
     expect(p.columnSource).toBe('inferred');
@@ -326,6 +360,14 @@ describe('a real HDFC PDF layout', () => {
     const wrapped = p.rows.find((r) => r.narration.includes('PTYBL'))!;
     expect(wrapped.narration).toContain('YESB0PTMUPI');
     expect(wrapped.narration).not.toContain('Y ESB0PTMUPI');
+  });
+
+  it('does not append the summary and footer to the final narration', () => {
+    const p = parsePdfText(HDFC_TEXT);
+    const last = p.rows.at(-1)!;
+    expect(last.narration).not.toMatch(/STATEMENT SUMMARY|Opening Balance|Closing Bal/);
+    expect(p.openingBalance).toBe('162636.17');
+    expect(p.closingBalance).toBe('125419.37');
   });
 
   it('reads the period from the From/To line', () => {

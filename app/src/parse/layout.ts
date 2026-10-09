@@ -18,12 +18,14 @@
  */
 
 import { ValidationError } from '../domain/types.ts';
-import { parseStatementTable, type ParsedStatementFile, type ColumnMap } from './statementFile.ts';
+import { mineLabel, parseStatementTable, type ParsedStatementFile, type ColumnMap } from './statementFile.ts';
 import { TEMPLATES, templateByName, candidateTemplates,
          type BankTemplate } from './bankTemplates.ts';
 import type { DateFormat } from './values.ts';
 import { fixedWidthToGrid, groupRows, joinWrapped } from './fixedWidth.ts';
 import { inferColumnRoles, makeRowStartTest } from './columnRoles.ts';
+import { parseAmount } from './values.ts';
+import { paise } from '../domain/tax.ts';
 
 /** Transaction-type markers that SBI prints ABOVE the dated line (§ groupRows). */
 const FORWARD_MARKERS = [
@@ -105,7 +107,20 @@ export function parseLayoutText(
   const inferred = inferColumnRoles(dated);
   const isRowStart = makeRowStartTest(inferred.columns.txnDate);
 
-  const grouped = groupRows(doc.rows, isRowStart, FORWARD_MARKERS);
+  // A footer after the last dated row belongs to the statement, not to that
+  // transaction. Keep it in the raw grid for balance and account mining, but
+  // stop narration grouping at an explicit summary heading. Otherwise a short
+  // statement's final narration absorbs its summary grid and legal footer.
+  const lastDated = doc.rows.reduce(
+    (last, r, i) => (r.length > 0 && isRowStart(r) ? i : last), -1);
+  const summaryStart = doc.rows.findIndex((r, i) =>
+    i > lastDated && (
+      /^(?:statement\s+)?summary\b/i.test(r.join(' ').trim()) ||
+      /opening\s+bal(?:ance)?.*\b(?:dr|cr)\s+count\b/i.test(r.join(' '))
+    ));
+  const grouped = groupRows(
+    summaryStart >= 0 ? doc.rows.slice(0, summaryStart) : doc.rows,
+    isRowStart, FORWARD_MARKERS);
   if (grouped.length === 0) {
     throw new ValidationError(
       `no transaction rows were recognised in this ${words.noun}. The columns ` +
@@ -119,6 +134,46 @@ export function parseLayoutText(
   // which column is which.
   const refined = inferColumnRoles(grouped.map((g) => g.cells));
   const columns = refined.columns;
+
+  // With one transaction there is no row-to-row balance transition. Accept
+  // a direction only when the statement's own opening/closing balances and
+  // the row's running balance uniquely prove one decimal movement cell.
+  if (grouped.length === 1 && columns.debit === null
+      && columns.credit === null && columns.amount === null) {
+    const one = grouped[0]!.cells;
+    const outside = [
+      ...doc.rows.slice(0, doc.rows.findIndex((r) => r.length > 0 && isRowStart(r))),
+      ...doc.rows.slice(lastDated + 1),
+    ];
+    const opening = mineLabel(outside,
+      ['opening balance', 'opening bal', 'balance b/f', 'brought forward']);
+    const closing = mineLabel(outside,
+      ['closing balance', 'closing bal', 'balance c/f', 'carried forward']);
+    const decimalPaise = (cell: string): bigint | null => {
+      if (!/\.\d{2}(?:\D|$)/.test(cell)) return null;
+      try {
+        const parsed = parseAmount(cell);
+        return parsed.blank ? null : paise(parsed.negative ? `-${parsed.value}` : parsed.value);
+      } catch { return null; }
+    };
+    if (opening !== null && closing !== null) {
+      const delta = paise(closing) - paise(opening);
+      const decimals = one.map((cell, i) => ({ i, amount: decimalPaise(cell) }))
+        .filter((x): x is { i: number; amount: bigint } => x.amount !== null);
+      const balance = decimals.at(-1);
+      const movements = decimals.filter((x) => x.i < (balance?.i ?? 0)
+        && (x.amount === delta || x.amount === -delta));
+      if (delta !== 0n && balance?.amount === paise(closing)
+          && movements.length === 1) {
+        columns.balance = balance.i;
+        if (delta > 0n) columns.credit = movements[0]!.i;
+        else columns.debit = movements[0]!.i;
+        refined.notes.push('a one-row statement identified its money columns ' +
+          'from its stated opening and closing balances; the statement-level ' +
+          'balance check must still pass');
+      }
+    }
+  }
 
   // Fold each transaction's continuation lines into its narration cell, so the
   // shared builder sees one row per transaction.
@@ -149,8 +204,6 @@ export function parseLayoutText(
   // the flattened transactions in their original order.
   const firstDated = doc.rows.findIndex((r) => r.length > 0 && isRowStart(r));
   const preamble = firstDated > 0 ? doc.rows.slice(0, firstDated) : [];
-  const lastDated = doc.rows.reduce(
-    (last, r, i) => (r.length > 0 && isRowStart(r) ? i : last), -1);
   const trailer = lastDated >= 0 ? doc.rows.slice(lastDated + 1) : [];
 
   const rebuilt = [...preamble, ...flattened, ...trailer];

@@ -15,6 +15,9 @@ import { money, paise } from './tax.ts';
 import { extractJson, type LlmClient } from '../parse/llmTable.ts';
 import { reconciliationQueue } from './matching.ts';
 import { salesDesk } from './sales.ts';
+import { listDocuments } from './documentInbox.ts';
+import { emailReceiptHistory } from './emailIntake.ts';
+import { profitAndLoss } from '../reports/index.ts';
 
 export interface AssistantReply {
   answer: string;
@@ -55,17 +58,22 @@ export interface AssistantRunView {
   createdAt: string;
 }
 
-type AssistantIntent = 'receivables' | 'payables' | 'prepare_payment' | 'prepare_reconciliation' | 'prepare_invoice' | 'gst' | 'bank' |
+type AssistantIntent = 'receivables' | 'payables' | 'prepare_payment' | 'prepare_reconciliation' | 'prepare_invoice' | 'draft_reminders' | 'documents' | 'profit' | 'gst' | 'bank' |
   'attention' | 'page_help' | 'unsupported';
 
 const ROUTER_PROMPT = `You route questions for an Indian accounting application.
 Return JSON only: {"intent":"one_allowed_value"}.
-Allowed values: receivables, payables, prepare_payment, prepare_reconciliation, prepare_invoice, gst, bank, attention, page_help, unsupported.
+Allowed values: receivables, payables, prepare_payment, prepare_reconciliation, prepare_invoice, draft_reminders, documents, profit, gst, bank, attention, page_help, unsupported.
 
-Choose receivables for money customers owe; payables for money owed to suppliers;
+Choose receivables for money customers owe, overdue customer invoices, collections, or follow-ups;
+choose payables for money owed to suppliers, overdue supplier bills, or supplier-payment follow-ups;
 choose prepare_payment when the user asks to prepare, draft, or schedule a supplier payment;
 choose prepare_reconciliation when the user asks to prepare, draft, or review bank reconciliation matches;
 choose prepare_invoice when the user asks to create, prepare, or draft a sales invoice;
+choose draft_reminders when the user asks to draft, prepare, or write payment reminders for customers;
+choose documents for received files, uploaded invoices, receipts, missing files,
+email attachments, or who sent a statement and when it arrived;
+choose profit for profit, loss, earnings, margin, revenue less expenses, or how much the business is making;
 gst for GST, ITC, GSTR-2B or tax credit; bank for bank accounts, statements or
 reconciliation; attention for status, priorities or what to do next; page_help
 for questions about the current screen. Choose unsupported for everything else.
@@ -79,6 +87,9 @@ const canonicalQuestion: Record<Exclude<AssistantIntent, 'unsupported'>, string>
   prepare_payment: 'Prepare a supplier payment.', gst: 'What is the GST and ITC position?',
   prepare_reconciliation: 'Prepare bank reconciliation review.',
   prepare_invoice: 'Prepare a sales invoice.',
+  draft_reminders: 'Draft payment reminders.',
+  documents: 'What documents have we received?',
+  profit: 'What is our profit?',
   bank: 'What is the bank reconciliation position?',
   attention: 'What needs attention next?',
   page_help: 'How does this page work?',
@@ -92,6 +103,12 @@ export async function answerAssistantWithAi(
   page: string,
   client: LlmClient | null,
 ): Promise<AssistantReply> {
+  // A filing deadline cannot be inferred from the accounting dashboard.
+  // Keep a clear refusal ahead of model routing, which may otherwise mistake
+  // "next" for the generic attention/status intent.
+  if (/\bitr\b|income[ -]tax return/i.test(question)) {
+    return withAudit(unsupportedItrDeadline(), { routingMode: 'deterministic' });
+  }
   if (!client) return withAudit(
     await answerAssistant(firmId, clientId, question, page),
     { routingMode: 'deterministic' },
@@ -107,6 +124,16 @@ export async function answerAssistantWithAi(
     const intent = routed && typeof routed.intent === 'string'
       ? routed.intent as AssistantIntent
       : 'unsupported';
+    if (intent === 'receivables') {
+      return withAudit(await answerReceivables(firmId, clientId, question), {
+        routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
+      });
+    }
+    if (intent === 'payables') {
+      return withAudit(await answerPayables(firmId, clientId, question), {
+        routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
+      });
+    }
     if (intent === 'prepare_payment') {
       return withAudit(await preparePaymentAssistant(firmId, clientId, question), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
@@ -119,6 +146,21 @@ export async function answerAssistantWithAi(
     }
     if (intent === 'prepare_invoice') {
       return withAudit(await prepareInvoiceAssistant(firmId, clientId, question), {
+        routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
+      });
+    }
+    if (intent === 'draft_reminders') {
+      return withAudit(await draftRemindersAssistant(firmId, clientId), {
+        routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
+      });
+    }
+    if (intent === 'documents') {
+      return withAudit(await answerDocuments(firmId, clientId, question), {
+        routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
+      });
+    }
+    if (intent === 'profit') {
+      return withAudit(await answerProfit(firmId, clientId, question), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
@@ -142,6 +184,109 @@ export async function answerAssistantWithAi(
 }
 
 const withAudit = (reply: AssistantReply, audit: AssistantAudit): AssistantReply => ({ ...reply, audit });
+
+function unsupportedItrDeadline(): AssistantReply {
+  return {
+    answer: 'I cannot determine your next income-tax return deadline from these books. The filing type and assessment year are needed, and BharatERP does not yet have a verified ITR calendar.',
+    evidence: ['ITR filing calendar is not connected'], supported: false,
+  };
+}
+
+async function answerDocuments(
+  firmId: string, clientId: string, question = '',
+): Promise<AssistantReply> {
+  const [documents, messages] = await Promise.all([
+    listDocuments(firmId, clientId), emailReceiptHistory(firmId, clientId),
+  ]);
+  const pending = documents.filter((d) => d.status === 'received' || d.status === 'pending_review');
+  const wantsHistory = /\b(when|who|sent|shared|received|emailed|history|timeline|all|which)\b/i.test(question);
+  const shownDocuments = documents.slice(0, wantsHistory ? 20 : 3);
+  const documentLines = shownDocuments.map((document) => {
+    const at = new Date(document.receivedAt).toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short',
+    });
+    return `${document.originalName} (${at}; ${document.status})`;
+  });
+  const shown = messages.slice(0, wantsHistory ? 20 : 3);
+  const receiptLines = shown.map((message) => {
+    const at = new Date(message.receivedAt).toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short',
+    });
+    const files = message.attachments.length
+      ? message.attachments.map((file) => {
+        const state = file.documentStatus === 'dismissed'
+          ? 'dismissed as irrelevant by CA'
+          : file.status === 'statement_ready'
+          ? `opened for review for ${file.bankName ?? 'bank'} ••${file.bankLast4 ?? '????'}` +
+            (file.periodFrom && file.periodTo ? `, ${file.periodFrom} to ${file.periodTo}` : '') +
+            (file.rowCount !== null ? `, ${file.rowCount} rows` : '')
+          : file.status === 'needs_password' ? 'needs password or CA review'
+          : file.status === 'other_file' ? 'other file, not verified as a statement'
+          : file.status === 'needs_review' ? 'needs CA review'
+          : 'not yet inspected';
+        return `${file.name} (${state})`;
+      }).join(', ')
+      : 'no attachment';
+    return `${at}: email listed ${message.sender} as sender; ${files}`;
+  });
+  return {
+    answer: documents.length === 0 && messages.length === 0
+      ? 'No documents or emails have been received for this client yet. Upload a bank statement, invoice, or receipt in Documents.'
+      : `${documents.length}${documents.length === 100 ? '+' : ''} document(s) are in this client’s inbox; ${pending.length} await processing or review. ` +
+        (documentLines.length ? `Recent documents: ${documentLines.join('; ')}. ` : '') +
+        (documents.length > shownDocuments.length ? `Open Documents for ${documents.length - shownDocuments.length} older file(s). ` : '') +
+        (receiptLines.length ? `Email history (latest ${shown.length}): ${receiptLines.join('; ')}. ` : '') +
+        `${messages.length > shown.length ? `Open the inbox for ${messages.length - shown.length} older email(s). ` : ''}` +
+        'An email sender address is unverified, a received attachment is not proof it is a valid bank statement, and no email automatically posts transactions.',
+    evidence: ['Client document inbox', 'Email receipt and attachment review records'],
+    action: { href: '/documents', label: 'Open documents' }, supported: true,
+  };
+}
+
+/** A P&L is always a range. State the chosen range instead of presenting an
+ * unlabelled number as "total profit". The default is current FY to date. */
+export function profitPeriod(question: string, today: string): { from: string; to: string; label: string } {
+  const [year, month] = today.split('-').map(Number) as [number, number, number];
+  const q = question.toLowerCase();
+  if (/\b(last|previous) month\b/.test(q)) {
+    const first = new Date(Date.UTC(year, month - 2, 1));
+    const last = new Date(Date.UTC(year, month - 1, 0));
+    const from = first.toISOString().slice(0, 10);
+    return { from, to: last.toISOString().slice(0, 10), label: `for ${from.slice(0, 7)}` };
+  }
+  if (/\b(this|current) month\b|\bmonthly\b/.test(q)) {
+    return { from: `${today.slice(0, 7)}-01`, to: today,
+      label: `for ${today.slice(0, 7)} to date` };
+  }
+  const fyStart = month >= 4 ? year : year - 1;
+  if (/\b(last|previous) (financial|fiscal) year\b/.test(q)) {
+    return { from: `${fyStart - 1}-04-01`, to: `${fyStart}-03-31`,
+      label: `for FY ${fyStart - 1}-${String(fyStart).slice(-2)}` };
+  }
+  return { from: `${fyStart}-04-01`, to: today,
+    label: `for FY ${fyStart}-${String(fyStart + 1).slice(-2)} to date` };
+}
+
+async function answerProfit(
+  firmId: string, clientId: string, question: string,
+): Promise<AssistantReply> {
+  const dateParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (name: string) => dateParts.find((p) => p.type === name)!.value;
+  const today = `${part('year')}-${part('month')}-${part('day')}`;
+  const period = profitPeriod(question, today);
+  const pl = await profitAndLoss(firmId, clientId, period.from, period.to);
+  const amount = paise(pl.netProfit);
+  const result = amount < 0n ? `a net loss of ₹${money(-amount)}`
+    : `a net profit of ₹${pl.netProfit}`;
+  return {
+    answer: `The posted books show ${result} ${period.label} (${period.from} to ${period.to}). ` +
+      `Revenue ₹${pl.revenue}; cost of goods ₹${pl.cogs}; operating expenses ₹${pl.operatingExpenses}; ` +
+      `non-operating expenses ₹${pl.nonOperating}. This can change when more transactions are posted.`,
+    evidence: ['Profit and loss from posted ledger entries'], supported: true,
+  };
+}
 
 /** Stores a run after its response has been computed. The ledger stays read-only. */
 export async function recordAssistantRun(
@@ -278,6 +423,22 @@ export async function answerAssistant(
   const q = question.trim().toLowerCase();
   if (q.length === 0) throw new Error('ask a question first');
 
+  if (/\bitr\b|income[ -]tax return/.test(q)) return unsupportedItrDeadline();
+
+  if (/\b(profit|loss|earnings?|margin|making)\b/.test(q)) {
+    return answerProfit(firmId, clientId, question);
+  }
+
+  if (/\b(documents?|files?|uploads?|receipts?|attachments?)\b/.test(q)
+    || (/\b(statements?|emails?)\b/.test(q)
+      && /\b(when|who|sent|shared|received|emailed|history|timeline|all|which)\b/.test(q))) {
+    return answerDocuments(firmId, clientId, question);
+  }
+
+  if (/\b(draft|prepare|write)\b.*\b(reminders?|follow.?up|collection)\b|\b(reminders?|follow.?up|collection)\b.*\b(draft|prepare|write)\b/.test(q)) {
+    return draftRemindersAssistant(firmId, clientId);
+  }
+
   if (/\b(prepare|draft|schedule)\b.*\b(payment|pay)\b|\b(payment|pay)\b.*\b(prepare|draft|schedule)\b/.test(q)) {
     return preparePaymentAssistant(firmId, clientId, question);
   }
@@ -291,29 +452,11 @@ export async function answerAssistant(
   }
 
   if (/\b(customer|receivable|collect|unpaid invoice|who owes)\b/.test(q)) {
-    const invoices = await outstandingInvoices(firmId, clientId);
-    const overdue = invoices.filter((invoice) => invoice.daysOverdue > 0);
-    return {
-      answer: invoices.length === 0
-        ? 'No customer invoices are outstanding.'
-        : `Customers owe ₹${total(invoices.map((invoice) => invoice.outstanding))} across ${invoices.length} invoice${invoices.length === 1 ? '' : 's'}. ` +
-          `${overdue.length} ${overdue.length === 1 ? 'is' : 'are'} overdue.`,
-      evidence: ['Posted sales invoices', 'Receivable ledger settlements'],
-      action: { href: '/receivables', label: 'Open receivables' }, supported: true,
-    };
+    return answerReceivables(firmId, clientId, question);
   }
 
   if (/\b(payable|supplier|vendor|we owe|do we owe)\b/.test(q)) {
-    const bills = await outstandingBills(firmId, clientId);
-    const overdue = bills.filter((bill) => bill.daysOverdue > 0);
-    return {
-      answer: bills.length === 0
-        ? 'There are no unpaid supplier bills.'
-        : `You owe suppliers ₹${total(bills.map((bill) => bill.outstanding))} across ${bills.length} bill${bills.length === 1 ? '' : 's'}. ` +
-          `${overdue.length} ${overdue.length === 1 ? 'is' : 'are'} overdue.`,
-      evidence: ['Posted purchase bills', 'Payable ledger settlements'],
-      action: { href: '/payables', label: 'Open payables' }, supported: true,
-    };
+    return answerPayables(firmId, clientId, question);
   }
 
   if (/\b(gst|itc|input credit|2b|tax credit)\b/.test(q)) {
@@ -349,6 +492,29 @@ export async function answerAssistant(
     };
   }
 
+  // A balance is not the same as the number of connected accounts or open
+  // reconciliation lines. Explain this capability gap explicitly.
+  if (/\b(how much|amount|total|current|available)\b.*\b(money|cash|balance|funds?)\b|\b(balance|cash|funds?)\b.*\b(how much|total|available|in the bank)\b/.test(q)) {
+    const bank = await withFirm(firmId, async (c) => {
+      const accounts = await c.query<{ n: string }>(
+        'SELECT count(*)::text AS n FROM bank_accounts WHERE client_id = $1', [clientId]);
+      const open = await c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM bank_transactions bt
+         WHERE bt.client_id = $1 AND NOT bt.is_ignored
+           AND NOT EXISTS (
+             SELECT 1 FROM reconciliation_matches rm
+             WHERE rm.bank_transaction_id = bt.id AND rm.unmatched_at IS NULL)`, [clientId]);
+      return { accounts: Number(accounts.rows[0]!.n), open: Number(open.rows[0]!.n) };
+    });
+    return {
+      answer: bank.accounts === 0
+        ? 'I can’t give a cash or bank total because no bank account is connected to this client yet. Add the account and import a statement first.'
+        : `I can’t give a reliable total cash/bank balance yet: Ask Bharat currently reports connected accounts and reconciliation status, but does not calculate the posted ledger balance. There \${bank.open === 1 ? 'is' : 'are'} \${bank.open} unreconciled statement transaction\${bank.open === 1 ? '' : 's'}, so the ledger may also differ from the bank. Reconcile those entries, then use the bank account register for a verified book balance.`,
+      evidence: ['Bank account register', 'Unmatched statement transactions', 'Current assistant balance reporting limitation'],
+      action: { href: '/reconcile', label: 'Review bank reconciliation' }, supported: false,
+    };
+  }
+
   if (/\b(attention|status|summary|today|what should|next)\b/.test(q)) {
     const dashboard = await loadDashboard(firmId, clientId);
     const parts = [
@@ -368,9 +534,126 @@ export async function answerAssistant(
     return pageHelp[page]!;
   }
 
+  const isShortFollowUp = /^(now tell me|tell me|and\??|what about that\??|why\??|then what\??|go on|continue)$/i.test(question.trim());
   return {
-    answer: 'I cannot answer that reliably yet. Try asking about payables, receivables, GST credit, bank reconciliation, or what needs attention.',
-    evidence: ['Supported book tools only'], supported: false,
+    answer: isShortFollowUp
+      ? 'I can’t tell what “that” refers to because Ask Bharat currently treats each message as a separate question and does not carry the prior chat turn into this request. Please restate the subject (for example, “What is our bank balance?”).'
+      : 'I can’t answer this reliably because there is no supported book query for that subject yet. I can currently answer questions about profit, payables, receivables, documents, GST credit, bank reconciliation, and items needing attention.',
+    evidence: isShortFollowUp ? ['Conversation context is not currently sent with each question'] : ['No matching supported book query'], supported: false,
+  };
+}
+
+const wantsList = (question: string): boolean =>
+  /\b(which|who|list|show|overdue|late|follow.?up|pending)\b/i.test(question);
+
+/** Resolves a named supplier only when the name appears exactly in the question. */
+function namedBillMatches<T extends { supplierName: string; billNumber: string }>(
+  rows: T[], question: string,
+): T[] {
+  const q = question.toLowerCase();
+  return rows.filter((row) => q.includes(row.supplierName.toLowerCase())
+    || q.includes(row.billNumber.toLowerCase()));
+}
+
+const normalizedName = (value: string): string => value.toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+function nameInQuestion(name: string, question: string): boolean {
+  const q = ` ${normalizedName(question)} `;
+  const full = normalizedName(name);
+  const common = full.replace(/(?: (?:private|pvt|limited|ltd|llp|inc|company|co))+$/, '');
+  return (common.length >= 3 && q.includes(` ${common} `)) || q.includes(` ${full} `);
+}
+
+/** Only extract a name from clear named-customer questions. */
+export function requestedCustomerName(question: string): string | null {
+  const m = /\b(?:what|how much)\s+does\s+(.+?)\s+(?:still\s+)?owe\b/i.exec(question);
+  return m?.[1]?.trim() ?? null;
+}
+
+/** Match the name a human says even when the ledger carries a legal suffix. */
+export function namedInvoiceMatches<T extends { customerName: string; invoiceNumber: string }>(
+  rows: T[], question: string,
+): T[] {
+  return rows.filter((row) => nameInQuestion(row.customerName, question)
+    || (row.invoiceNumber.length > 0
+      && question.toLowerCase().includes(row.invoiceNumber.toLowerCase())));
+}
+
+async function answerPayables(
+  firmId: string, clientId: string, question: string,
+): Promise<AssistantReply> {
+  const bills = await outstandingBills(firmId, clientId);
+  if (bills.length === 0) {
+    return { answer: 'There are no unpaid supplier bills.', evidence: ['Payable ledger settlements'],
+      action: { href: '/payables', label: 'Open payables' }, supported: true };
+  }
+  const named = namedBillMatches(bills, question);
+  const focus = named.length > 0 ? named : bills;
+  const overdue = focus.filter((bill) => bill.daysOverdue > 0);
+  const showRows = named.length > 0 || wantsList(question);
+  const detail = showRows && overdue.length > 0
+    ? ` Overdue: ${overdue.slice(0, 5).map((bill) =>
+      `${bill.supplierName} ₹${bill.outstanding} (${bill.daysOverdue}d, ${bill.billNumber})`).join('; ')}.`
+    : '';
+  const label = named.length > 0 ? named[0]!.supplierName : 'suppliers';
+  return {
+    answer: `You owe ${label} ₹${total(focus.map((bill) => bill.outstanding))} across ${focus.length} bill${focus.length === 1 ? '' : 's'}. ${overdue.length} ${overdue.length === 1 ? 'is' : 'are'} overdue.${detail}`,
+    evidence: ['Posted purchase bills', 'Payable ledger settlements'],
+    action: { href: '/payables', label: 'Open payables' }, supported: true,
+  };
+}
+
+async function answerReceivables(
+  firmId: string, clientId: string, question: string,
+): Promise<AssistantReply> {
+  const invoices = await outstandingInvoices(firmId, clientId);
+  if (invoices.length === 0) {
+    return { answer: 'No customer invoices are outstanding.', evidence: ['Receivable ledger settlements'],
+      action: { href: '/receivables', label: 'Open receivables' }, supported: true };
+  }
+  const named = namedInvoiceMatches(invoices, question);
+  const requested = requestedCustomerName(question);
+  if (requested && named.length === 0) {
+    const customers = await withFirm(firmId, async (c) => {
+      const r = await c.query<{ name: string; legal_name: string | null }>(
+        `SELECT name, legal_name FROM parties
+         WHERE client_id = $1 AND party_type = 'customer'`, [clientId]);
+      return r.rows;
+    });
+    const known = customers.filter((customer) =>
+      nameInQuestion(customer.name, requested)
+      || (customer.legal_name !== null && nameInQuestion(customer.legal_name, requested)));
+    return {
+      answer: known.length === 0
+        ? `I could not find a customer named ${requested} for this client. I will not use the total owed by other customers as their balance.`
+        : known.length > 1
+          ? `More than one customer matches ${requested}. Please choose the customer in Receivables.`
+          : `${known[0]!.name} has no outstanding invoice in the posted books.`,
+      evidence: ['Customer register', 'Posted sales invoices', 'Receivable ledger settlements'],
+      action: { href: '/receivables', label: 'Open receivables' }, supported: true,
+    };
+  }
+  const parties = [...new Set(named.map((invoice) => invoice.customerName))];
+  if (parties.length > 1) {
+    return {
+      answer: `I found more than one matching customer: ${parties.join(', ')}. Which one do you mean?`,
+      evidence: ['Posted sales invoices', 'Receivable ledger settlements'],
+      action: { href: '/receivables', label: 'Open receivables' }, supported: true,
+    };
+  }
+  const focus = named.length > 0 ? named : invoices;
+  const overdue = focus.filter((invoice) => invoice.daysOverdue > 0);
+  const showRows = named.length > 0 || wantsList(question);
+  const detail = showRows && overdue.length > 0
+    ? ` Overdue: ${overdue.slice(0, 5).map((invoice) =>
+      `${invoice.customerName} ₹${invoice.outstanding} (${invoice.daysOverdue}d, ${invoice.invoiceNumber})`).join('; ')}.`
+    : '';
+  const label = named.length > 0 ? named[0]!.customerName : 'customers';
+  return {
+    answer: `${label} ${named.length > 0 ? 'owes' : 'owe'} ₹${total(focus.map((invoice) => invoice.outstanding))} across ${focus.length} invoice${focus.length === 1 ? '' : 's'}. ${overdue.length} ${overdue.length === 1 ? 'is' : 'are'} overdue.${detail}`,
+    evidence: ['Posted sales invoices', 'Receivable ledger settlements'],
+    action: { href: '/receivables', label: 'Open receivables' }, supported: true,
   };
 }
 
@@ -487,5 +770,23 @@ async function prepareInvoiceAssistant(
     answer: `Invoice draft ready for ${matches[0]!.name}.${amount ? ` I copied ₹${amount} as the taxable line value.` : ''}${rate ? ` I copied ${rate}% GST.` : ''} Confirm ${missing} before posting.`,
     evidence: ['Customer register', 'GST registration register', 'Income ledger'],
     action: { href: `/sales?${params.toString()}`, label: 'Review invoice draft' }, supported: true,
+  };
+}
+
+/** Generates review-only WhatsApp drafts from overdue invoices. */
+async function draftRemindersAssistant(firmId: string, clientId: string): Promise<AssistantReply> {
+  const overdue = (await outstandingInvoices(firmId, clientId))
+    .filter((invoice) => invoice.daysOverdue > 0);
+  if (overdue.length === 0) {
+    return {
+      answer: 'There are no overdue customer invoices, so no payment reminders are needed.',
+      evidence: ['Posted sales invoices', 'Receivable ledger settlements'], supported: true,
+    };
+  }
+  const sendable = overdue.filter((invoice) => Boolean(invoice.customerPhone)).length;
+  return {
+    answer: `${overdue.length} overdue invoice${overdue.length === 1 ? '' : 's'} need follow-up. I prepared reviewable WhatsApp drafts for ${sendable} customer${sendable === 1 ? '' : 's'} with phone numbers; nothing will send until you click a message.`,
+    evidence: ['Posted sales invoices', 'Customer contact details', 'Receivable ledger settlements'],
+    action: { href: '/receivables?reminders=1', label: 'Review reminder drafts' }, supported: true,
   };
 }

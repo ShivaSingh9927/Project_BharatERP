@@ -275,10 +275,40 @@ export function inferColumnRoles(rows: string[][]): InferredColumns {
     credit = movement[1] ?? null;
     amount = movement.length === 1 ? movement[0]! : null;
     if (movement.length === 1) { debit = null; credit = null; }
-    notes.push(
-      'no column reproduced the running balance, so the money columns were ' +
-      'guessed from their shape. This parse is unverified — check the balance ' +
-      'figures line by line.');
+    let oneTransitionProven = false;
+    // A two-transaction statement has only one balance transition, so the
+    // usual two-agreement arithmetic rule cannot identify an amount column.
+    // If both rows populate the same decimal column, use that one transition
+    // solely when it proves both the column and its debit/credit direction.
+    // Numeric references are excluded by the decimal requirement.
+    if (movement.length === 0 && rows.length === 2 && balance !== null) {
+      const balanceIndex = balance;
+      const firstBalance = paiseOf(rows[0]?.[balanceIndex]);
+      const secondBalance = paiseOf(rows[1]?.[balanceIndex]);
+      if (firstBalance !== null && secondBalance !== null) {
+        const delta = secondBalance - firstBalance;
+        const candidates = shaped.filter((s) => s.index < balanceIndex
+          && rows.every((row) => paiseOf(row[s.index]) !== null
+            && /[.,]\d{2}(?:\D|$)/.test(row[s.index] ?? '')));
+        for (const candidate of [...candidates].reverse()) {
+          const value = paiseOf(rows[1]?.[candidate.index]);
+          if (value === null || value === 0n) continue;
+          if (delta === value) { credit = candidate.index; break; }
+          if (delta === -value) { debit = candidate.index; break; }
+        }
+        if (debit !== null || credit !== null) {
+          oneTransitionProven = true;
+          notes.push('a two-row statement supplied only one balance transition; ' +
+            'it identified one movement column, pending the statement-level balance check');
+        }
+      }
+    }
+    if (!oneTransitionProven) {
+      notes.push(
+        'no column reproduced the running balance, so the money columns were ' +
+        'guessed from their shape. This parse is unverified — check the balance ' +
+        'figures line by line.');
+    }
   }
 
   // --- narration ---------------------------------------------------------
