@@ -16,6 +16,27 @@ classification for bank and bill lines, Nexus document-class suggestions,
 email attachment intake, and founder/CA review flows. Refer to route handlers,
 domain code, migrations, and tests for exact behavior.
 
+## Nexus obligation timeline storage
+
+- Phase 1a storage is implemented in migrations
+  `app/src/migrations/048_obligation_timeline.sql` and
+  `app/src/migrations/049_obligation_event_ordering.sql`: stable client-scoped
+  obligation identity, append-only workflow events, and separate outcome fact
+  records with their own lifecycle events. Migration 049 binds request keys to
+  identities and serializes per-obligation event ordering.
+- The domain API can list a client's obligation history, record an observed
+  obligation idempotently, and append a restricted workflow event. Without a
+  verified profile/rule path, events cannot transition to `open` or `prepared`.
+  The API does not generate statutory obligations or infer filing, payment,
+  or acknowledgment.
+- Migrations 048 and 049 were applied to the configured local database on
+  2026-10-09. Focused tests cover tenant isolation, duplicate requests,
+  serialized event history, and absence of inferred filing. Statutory rules
+  and evidence sufficiency remain subject to CA review as described in the
+  Nexus plan/spec.
+- After phase 1a, Node 22 typecheck passed and the full local test suite
+  passed: 59 test files, 942 tests. This storage is not yet exposed in the UI.
+
 ## Recently changed document workflow
 
 - Document class suggestions are on by default; firms may explicitly turn
