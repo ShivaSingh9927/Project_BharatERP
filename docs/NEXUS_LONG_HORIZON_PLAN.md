@@ -138,6 +138,22 @@ the visible review list; stale or closed sources are labeled without a link.
 Notice priority is fixed by event type; no legal deadline or priority is
 inferred. External delivery remains out of scope.
 
+**Phase 3b checkpoint (2026-10-09):** migration 053 adds per-client recipient
+preferences and an idempotent alert-to-email outbox. Preferences default to
+opted out and `pending_review`; the existing account schema does not establish
+recipient mailbox ownership or authorization, so human verification is a
+required gate. Outbox entries copy only the alert title/message and are held
+until opt-in and verified review. This is storage only: no sender, worker,
+settings UI, digest, or quiet-hour behavior is connected, and no email has
+been sent. The reviewer flag is not proof of mailbox ownership; sending also
+requires the destination to pass Cloudflare's verification/onboarding and the
+outbound sender domain to be configured. Alerts are enqueued only for
+preferences present when an alert is created; adding a recipient never
+backfills historic alerts, and a reviewed address cannot be edited in place.
+Preference changes never release held pre-consent alerts. Revoking email
+delivery holds queued or retrying work, and re-enabling affects only alerts
+created afterward.
+
 - Derive alert events from obligation/task transitions with deterministic
   priority rules. Critical events are timely; routine items go into a
   configurable digest. Include direct links, minimal private data, delivery

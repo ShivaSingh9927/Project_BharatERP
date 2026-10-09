@@ -111,6 +111,44 @@ domain code, migrations, and tests for exact behavior.
   `npm test -- --run test/attentionView.test.ts test/obligationTimeline.test.ts`
   (2 files, 7 tests).
 
+### Nexus alert email outbox (Phase 3b checkpoint, 2026-10-09)
+
+- Migrations `053_nexus_alert_email_outbox.sql` and
+  `054_nexus_alert_outbox_write_boundary.sql` add client-scoped preferences
+  and a durable outbox, with firm RLS and composite client-scope constraints.
+  New preferences default to email disabled and `pending_review`. The current
+  schema has no
+  proof of outgoing recipient mailbox ownership or authority; queue rows stay
+  held until a reviewer records verification and a human opts in.
+- Migration `055_nexus_alert_outbox_snapshot_boundary.sql` fixes alert-time
+  recipient snapshots: recipients added later do not receive historical
+  alerts, and an address cannot be edited on an existing preference. The
+  reviewer flag records a human review, not mailbox ownership proof.
+- Migration `056_nexus_alert_outbox_consent_boundary.sql` keeps pre-opt-in or
+  pre-review alerts held permanently. Disabling a preference moves queued or
+  retrying deliveries to `held_disabled`; later re-enabling does not revive
+  them. Only alerts created while a preference is enabled and reviewed enter
+  the queue.
+- Alert inserts and preference changes idempotently materialize one outbox row
+  per alert/recipient. Payloads contain only the alert's deterministic title
+  and message; they do not copy documents, attachments, email bodies, or
+  accounting records. Attempt count, retry timing, error code, and provider ID
+  fields are ready for a later sender integration. No sender is implemented,
+  and no email has been sent.
+- This checkpoint has no preference UI, digest, or quiet-hour behavior. The
+  sender choice is Cloudflare Email Service on the existing domain; outbound
+  sending onboarding/configuration remains a required integration step and is
+  separate from inbound routing. The recipient must also pass Cloudflare's
+  verified-destination requirements before sending can be enabled. Migrations
+  053–056 were applied to the configured local database; apply all four in
+  each other target database.
+- Node 22.23.3 typecheck passed. `npm test -- --run
+  test/alertEmailOutbox.test.ts` passed (1 file, 3 tests), covering default
+  holds, opt-in and reviewer gating, alert-time recipient snapshots,
+  consent revocation and re-enable behavior, immutable recipient addresses,
+  deduplication, tenant scoping, and denial of direct outbox writes by the
+  application role.
+
 ## Recently changed document workflow
 
 - Document class suggestions are on by default; firms may explicitly turn
