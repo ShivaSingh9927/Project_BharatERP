@@ -55,6 +55,7 @@ ready — go back and understand the logic properly.
 | [bank-and-reconciliation.md](bank-and-reconciliation.md) | Statement ingestion, narration parsing, matching engine, BRS, cheques | Draft |
 | [gst-engine.md](gst-engine.md) | GSTR-1/3B/9, 2A/2B, IMS, reconciliation, ITC set-off, filing | Draft |
 | [provenance.md](provenance.md) | **Cross-cutting** — every number traceable to source, rule, arithmetic, approver | Draft |
+| [nexus-obligations-and-agents.md](nexus-obligations-and-agents.md) | Nexus obligations, specialist task contracts, verification, retries, and alerts | Draft — product and CA review required |
 
 **Build order:** `audit-trail` and `gl-engine` are foundational — everything
 else writes into the ledger, so immutability and the posting rules must be

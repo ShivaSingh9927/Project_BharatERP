@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "notice": "Synthetic contract fixtures only; no values or citations assert Indian law.",
+  "cases": [
+    {
+      "id": "ordinary_obligation",
+      "input": { "profile": "synthetic_verified_profile_A", "rule": "synthetic_approved_rule_v1", "period": "synthetic_period_01" },
+      "expected": { "workflow_state": "open", "outcome_facts": [], "rule_version_retained": true, "stable_identity": true }
+    },
+    {
+      "id": "registration_variation",
+      "input": { "profile": "synthetic_profile_B", "obligation_profile": "synthetic_profile_A" },
+      "expected": { "materialize_from_mismatched_profile": false, "result": "needs_human_review" }
+    },
+    {
+      "id": "deadline_extension",
+      "input": { "candidate_source": "synthetic_official_looking_notice", "proposed_effective_date": "2099-08-17" },
+      "expected": { "candidate_recorded": true, "active_rule_changed": false, "ca_approval_required": true }
+    },
+    {
+      "id": "later_amendment",
+      "input": { "earlier_rule": "synthetic_rule_v1", "later_source": "synthetic_amendment_v2" },
+      "expected": { "earlier_version_preserved": true, "impact_review_required": true, "historical_events_rewritten": false }
+    },
+    {
+      "id": "contradictory_sources",
+      "input": { "sources": ["synthetic_source_A", "synthetic_source_B"], "claims_conflict": true },
+      "expected": { "verifier_outcome": "conflict", "active_rule_changed": false, "human_review_required": true }
+    },
+    {
+      "id": "source_retrieval_failed",
+      "input": { "source_copy_available": false, "exact_passage_available": false },
+      "expected": { "verifier_outcome": "insufficient_evidence", "activation_allowed": false }
+    },
+    {
+      "id": "wrong_client_reference",
+      "input": { "envelope_client": "synthetic_client_A", "record_client": "synthetic_client_B" },
+      "expected": { "result_accepted": false, "task_state": "needs_human_review", "foreign_details_disclosed": false }
+    },
+    {
+      "id": "duplicate_alert",
+      "input": { "tenant": "synthetic_firm_A", "source_event": "synthetic_event_1", "processing_count": 2 },
+      "expected": { "logical_alert_count": 1, "dedupe_key_required": true }
+    },
+    {
+      "id": "three_failed_reviews",
+      "input": { "initial_attempt": "failed_review", "retry_results": ["failed_review", "failed_review", "failed_review"] },
+      "expected": { "maximum_attempts": 4, "task_state": "needs_human_review", "linked_follow_up_count": 1, "all_attempts_preserved": true }
+    },
+    {
+      "id": "filing_proof_missing",
+      "input": { "submission_reported": true, "authoritative_acknowledgment_linked": false },
+      "expected": { "workflow_state": "submitted_unverified", "filed_fact_state": "proposed_or_absent", "confirmed_filed_fact": false }
+    },
+    {
+      "id": "independent_outcome_facts",
+      "input": { "confirmed_facts": ["filed", "acknowledged"], "workflow_state": "closed" },
+      "expected": { "facts_are_independent_of_workflow_state": true, "filed_implies_paid": false, "acknowledged_implies_filed": false }
+    },
+    {
+      "id": "missing_configured_evidence_policy",
+      "input": { "fact_kind": "paid", "source_linked": true, "evidence_policy_configured": false },
+      "expected": { "fact_state": "proposed", "workflow_state": "needs_human_review", "confirmed": false }
+    },
+    {
+      "id": "human_confirmation",
+      "input": { "authorized_reviewer": true, "proposal_supported": true, "decision": "confirmed" },
+      "expected": { "decision_identity_recorded": true, "scope_limited_to_confirmed_action": true }
+    }
+  ]
+}
