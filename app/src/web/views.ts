@@ -626,10 +626,14 @@ export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssign
     <div class="follow-up-title"><h2>${esc(item.title)}</h2><span class="pill">${esc(item.status)}</span></div>
     ${item.details ? `<p>${esc(item.details)}</p>` : ''}
     <p class="sub">Priority: <b>${esc(item.priority)}</b> · Assignee: ${esc(item.assigneeName ?? 'Unassigned')} · Due: ${esc(item.dueDate ?? 'No due date')}</p>
+    <p><b>Next action:</b> ${item.status === 'completed' ? 'Completed by a user' : item.blockerReason ? `Resolve blocker: ${esc(item.blockerReason)}` : item.snoozedUntil ? `Review after ${esc(item.snoozedUntil)}` : 'Review this item'}</p>
     ${item.sourceQuestion ? `<details><summary>Chat context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
       ${item.sourceAnswer ? `<p><b>Bharat Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
     <small>Added ${esc(new Date(item.createdAt).toLocaleString('en-IN'))}</small>
-    ${canComplete ? `<button type="button" class="complete-follow-up" data-id="${esc(item.id)}">Mark complete</button>` : ''}
+    ${item.history.length ? `<details><summary>Activity history · ${item.history.length}</summary><ol>${item.history.map((event) => `<li>${esc(event.eventType.replaceAll('_', ' '))}${event.reason ? `: ${esc(event.reason)}` : ''}${event.snoozedUntil ? ` until ${esc(event.snoozedUntil)}` : ''} · ${esc(event.actorName)} · ${esc(new Date(event.recordedAt).toLocaleString('en-IN'))}</li>`).join('')}</ol></details>` : '<p class="sub">No activity recorded yet.</p>'}
+    ${canComplete ? `<form class="blocker-follow-up" data-id="${esc(item.id)}"><label>Record blocker or reason<textarea name="reason" maxlength="2000" required placeholder="What is preventing the review?"></textarea></label><button type="submit">Save blocker</button></form>
+      <form class="snooze-follow-up" data-id="${esc(item.id)}"><label>Snooze until<input type="date" name="until" required></label><button type="submit">Snooze</button></form>
+      <button type="button" class="complete-follow-up" data-id="${esc(item.id)}">Mark complete</button><span class="follow-up-action-result" role="status"></span>` : ''}
   </article>`;
   return `<h1>Review desk</h1>
     <p class="sub">Track questions and follow-ups for this client. Completing an item only updates its status; it does not post to the books.</p>
@@ -666,6 +670,20 @@ export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssign
           location.reload();
         } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
       });
+      const submitAction = async (form, action, payload) => {
+        form.onsubmit = async (event) => {
+          event.preventDefault(); const button = form.querySelector('button'); button.disabled = true;
+          const result = form.closest('article').querySelector('.follow-up-action-result');
+          try {
+            const response = await fetch('/api/follow-ups/' + encodeURIComponent(form.dataset.id) + '/' + action,
+              { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(new FormData(form))) });
+            const saved = await response.json(); if (!saved.ok) throw new Error(saved.error || 'could not update follow-up');
+            location.reload();
+          } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+        };
+      };
+      document.querySelectorAll('.blocker-follow-up').forEach((form) => submitAction(form, 'blocker', (data) => ({ reason: data.get('reason') })));
+      document.querySelectorAll('.snooze-follow-up').forEach((form) => submitAction(form, 'snooze', (data) => ({ until: data.get('until') })));
     })();</script>`;
 }
 

@@ -10,11 +10,14 @@ describe('client attention page', () => {
       { id: 'fu-open', title: 'Review missing statement', details: 'Check source pages', sourceQuestion: 'Where is it?',
         sourceAnswer: 'Nexus noted a missing statement.', assigneeUserId: 'user', assigneeName: 'Asha CA',
         dueDate: '2026-10-08', priority: 'high', status: 'open', createdBy: 'user', completedBy: null,
-        createdAt: '2026-10-08T10:00:00.000Z', completedAt: null },
+        createdAt: '2026-10-08T10:00:00.000Z', completedAt: null, blockerReason: 'Waiting for bank statement',
+        snoozedUntil: '2026-10-12', history: [{ id: 'event-1', eventType: 'blocker_recorded',
+          reason: 'Waiting for bank statement', snoozedUntil: null, actorName: 'Asha CA', recordedAt: '2026-10-08T11:00:00.000Z' }] },
       { id: 'fu-done', title: 'Check supplier name', details: '', sourceQuestion: null, sourceAnswer: null,
         assigneeUserId: null, assigneeName: null, dueDate: null, priority: 'normal',
         status: 'completed', createdBy: 'user', completedBy: 'user',
-        createdAt: '2026-10-01T10:00:00.000Z', completedAt: '2026-10-07T10:00:00.000Z' },
+        createdAt: '2026-10-01T10:00:00.000Z', completedAt: '2026-10-07T10:00:00.000Z',
+        blockerReason: null, snoozedUntil: null, history: [] },
     ];
     const obligation = (id: string, state: ObligationTimelineItem['workflowState']): ObligationTimelineItem => ({
       id, clientId: 'client-1', registrationId: null, kind: 'GST review', periodKey: 'FY26-Q2',
@@ -73,6 +76,28 @@ describe('client attention page', () => {
     expect(html).toContain('name="priority"');
     expect(html).toContain('assigneeUserId: data.get');
     expect(html).toContain("'/api/follow-ups/'");
+  });
+
+  it('shows human follow-up actions, next action, and recorded activity', () => {
+    const item: FollowUpItem = { id: 'fu-1', title: 'Obtain statement', details: '', sourceQuestion: null, sourceAnswer: null,
+      assigneeUserId: null, assigneeName: null, dueDate: null, priority: 'normal', status: 'open', createdBy: 'user',
+      completedBy: null, createdAt: '2026-10-08T10:00:00.000Z', completedAt: null,
+      blockerReason: 'Bank has not sent it', snoozedUntil: '2026-10-12',
+      history: [{ id: 'ev', eventType: 'snoozed', reason: null, snoozedUntil: '2026-10-12', actorName: 'Owner', recordedAt: '2026-10-08T11:00:00.000Z' }] };
+    const html = renderFollowUps([item]);
+    expect(html).toContain('Resolve blocker: Bank has not sent it');
+    expect(html).toContain('Activity history · 1');
+    expect(html).toContain('Owner');
+    expect(html).toContain('name="reason"');
+    expect(html).toContain('name="until"');
+    expect(html).toContain("'blocker'");
+    expect(html).toContain("'snooze'");
+    expect(html).toContain('Mark complete');
+    const completedHtml = renderFollowUps([{ ...item, status: 'completed', completedBy: 'user',
+      completedAt: '2026-10-09T11:00:00.000Z' }]);
+    expect(completedHtml).toContain('<b>Next action:</b> Completed by a user');
+    expect(completedHtml).not.toContain('Resolve blocker: Bank has not sent it');
+    expect(completedHtml).not.toContain('Review after 2026-10-12');
   });
 
   it('does not link an alert to a closed obligation hidden from the review list', () => {

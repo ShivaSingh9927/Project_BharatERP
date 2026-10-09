@@ -117,11 +117,13 @@ instrument and its amendments; an index page is only a discovery aid.
   `/follow-ups` collects and displays the values; `/attention` displays them
   and marks past due dates as overdue. Assignment is validated against firm
   and client scope. Completion remains an explicit human action.
-- Remaining: linked obligation/document, blocker, activity history, snooze,
-  and a stronger confirmation criterion. Avoid duplicate tasks for the same event.
-- Still planned: linked obligation/document, blocker, activity history,
-  snooze, and a confirmation-required completion criterion. Avoid duplicate
-  tasks for the same event.
+- **Follow-up activity checkpoint (2026-10-09):** migration 052 adds append-only
+  user-attributed history for creation, blocker recording, snooze, and explicit
+  completion. The review desk displays history and the current next action.
+  Blocker and snooze only modify follow-up metadata; no obligation or filing is
+  marked complete, and snooze causes no automatic state change.
+- Remaining: linked obligation/document and a stronger confirmation criterion.
+  Avoid duplicate tasks for the same event.
 - Show `needs decision`, `blocked`, `due soon`, `overdue`, and `recently done`.
 - Exit gate: each item has one clear next action and an audit trail; an AI
   suggestion cannot mark a filing complete.

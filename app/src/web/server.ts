@@ -94,7 +94,8 @@ import { receiveDocument, listDocuments, getDocumentBytes,
          answerDocumentRequest, confirmDocumentClass } from '../domain/documentInbox.ts';
 import { renderDocumentInbox, renderNexus, renderFollowUps, renderActivity,
          renderEmailInbox, renderAttention } from './views.ts';
-import { createFollowUp, completeFollowUp, listFollowUps, listFollowUpAssignees } from '../domain/followUps.ts';
+import { createFollowUp, completeFollowUp, listFollowUps, listFollowUpAssignees,
+  recordFollowUpBlocker, snoozeFollowUp } from '../domain/followUps.ts';
 import { listObligationTimeline } from '../domain/obligationTimeline.ts';
 import { listNexusAlerts } from '../domain/alerts.ts';
 import { recentActivity } from '../domain/activity.ts';
@@ -574,6 +575,26 @@ async function handle(
       session.firmId, session.clientId, session.userId, completeFollowUpMatch[1]!);
     return json(res, completed ? 200 : 404,
       { ok: completed, ...(completed ? {} : { error: 'open follow-up not found' }) });
+  }
+
+  const blockerFollowUpMatch = /^\/api\/follow-ups\/([0-9a-f-]+)\/blocker$/i.exec(path);
+  if (req.method === 'POST' && blockerFollowUpMatch) {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const saved = await recordFollowUpBlocker(session.firmId, session.clientId, session.userId,
+        blockerFollowUpMatch[1]!, body.reason);
+      return json(res, saved ? 200 : 404, { ok: saved, ...(saved ? {} : { error: 'open follow-up not found' }) });
+    } catch (error) { return json(res, 400, { ok: false, error: (error as Error).message }); }
+  }
+
+  const snoozeFollowUpMatch = /^\/api\/follow-ups\/([0-9a-f-]+)\/snooze$/i.exec(path);
+  if (req.method === 'POST' && snoozeFollowUpMatch) {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const saved = await snoozeFollowUp(session.firmId, session.clientId, session.userId,
+        snoozeFollowUpMatch[1]!, body.until);
+      return json(res, saved ? 200 : 404, { ok: saved, ...(saved ? {} : { error: 'open follow-up not found' }) });
+    } catch (error) { return json(res, 400, { ok: false, error: (error as Error).message }); }
   }
 
   if (req.method === 'GET' && path === '/api/documents') {

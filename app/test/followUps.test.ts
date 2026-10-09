@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { seedTenant, type SeededTenant } from '../src/seed/index.ts';
 import { ownerPool, closePools } from '../src/db/pool.ts';
-import { createFollowUp, listFollowUps, listFollowUpAssignees } from '../src/domain/followUps.ts';
+import { createFollowUp, completeFollowUp, listFollowUps, listFollowUpAssignees, recordFollowUpBlocker, snoozeFollowUp } from '../src/domain/followUps.ts';
 import { ValidationError } from '../src/domain/types.ts';
 
 let tenant: SeededTenant;
@@ -52,5 +52,20 @@ describe('follow-up routing metadata', () => {
       { title: 'Wrong client', assigneeUserId: scopedUser })).rejects.toBeInstanceOf(ValidationError);
     await expect(createFollowUp(tenant.firmId, tenant.clientId, tenant.userId,
       { title: 'Wrong firm', assigneeUserId: otherFirm.userId })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('records human blocker and snooze actions as tenant-scoped append-only history', async () => {
+    const id = await createFollowUp(tenant.firmId, tenant.clientId, tenant.userId, { title: 'Wait for records' });
+    expect(await recordFollowUpBlocker(tenant.firmId, tenant.clientId, tenant.userId, id, 'Supplier copy is missing')).toBe(true);
+    expect(await snoozeFollowUp(tenant.firmId, tenant.clientId, tenant.userId, id, '2026-11-02')).toBe(true);
+    const item = (await listFollowUps(tenant.firmId, tenant.clientId)).find((row) => row.id === id)!;
+    expect(item).toMatchObject({ status: 'open', blockerReason: 'Supplier copy is missing', snoozedUntil: '2026-11-02' });
+    expect(item.history.map((event) => event.eventType)).toEqual(['created', 'blocker_recorded', 'snoozed']);
+    expect(item.history[1]).toMatchObject({ reason: 'Supplier copy is missing', actorName: expect.any(String) });
+    expect((await listFollowUps(otherFirm.firmId, otherFirm.clientId)).some((row) => row.id === id)).toBe(false);
+    expect(await completeFollowUp(tenant.firmId, tenant.clientId, tenant.userId, id)).toBe(true);
+    expect((await listFollowUps(tenant.firmId, tenant.clientId, true)).find((row) => row.id === id)?.history.map((event) => event.eventType))
+      .toEqual(['created', 'blocker_recorded', 'snoozed', 'completed']);
+    await expect(ownerPool.query(`UPDATE follow_up_events SET reason='edited' WHERE follow_up_id=$1`, [id])).rejects.toThrow();
   });
 });

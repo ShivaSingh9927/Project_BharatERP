@@ -73,6 +73,25 @@ domain code, migrations, and tests for exact behavior.
   (2 files, 8 tests) and `npm test -- --run test/attentionView.test.ts`
   (1 file, 4 tests).
 
+### Follow-up history and human actions (Phase 2 checkpoint, 2026-10-09)
+
+- Migration `052_follow_up_activity_history.sql` adds an append-only,
+  firm/client-scoped event history for follow-up creation, blocker recording,
+  snoozing, and explicit user completion. Existing follow-up rows remain in
+  place; their history starts with actions recorded after this migration.
+- `/follow-ups` shows the current next action and event history. A signed-in
+  user can record a blocker/reason, snooze an open item to a chosen date, or
+  explicitly click Mark complete. These actions only update follow-up metadata;
+  they do not mark an obligation or legal filing complete. Snooze dates do not
+  cause automatic state transitions or notifications.
+- Migration 052 is applied to the configured local database. Apply it in each
+  other target database with `npm run migrate`.
+- With Node 22.23.3,
+  `npm run typecheck` passed and focused tests passed:
+  `npm test -- --run test/followUps.test.ts test/attentionView.test.ts`
+  (2 files, 8 tests). The initial sandboxed DB connection was denied; the same
+  local migration and tests then ran with approved local DB access.
+
 ## Nexus in-app alert slice
 
 - Phase 3a adds durable client-scoped alert events in
