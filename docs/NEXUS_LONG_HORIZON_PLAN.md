@@ -190,9 +190,13 @@ created afterward.
   capability allowlists and a task-scoped reader checks both the capability
   and exact client-owned reference before returning limited record fields.
   The reader is not yet wired to model or worker execution.
-- Remaining: worker/coordinator execution, persisted task-state transition
-  verifier decision/human review flow,
-  human review flow, linked exhaustion follow-up, and restart/resume execution.
+- **Phase 4 verifier decision gate (2026-10-10):** verifier attempts now persist
+  `accepted`, `retry`, or `needs_human_review` separately from their result.
+  Acceptance requires zero findings, retry requires non-critical findings,
+  and the database refuses `completed` without stored verifier acceptance.
+- Remaining: worker/coordinator model invocation, human review UI,
+  linked exhaustion follow-up, and
+  restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.
 - Coordinator routes work; specialists have allowlisted tools and cannot call

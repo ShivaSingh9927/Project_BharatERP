@@ -81,8 +81,9 @@ describe('Nexus specialist task records',()=>{
     const id=await createNexusTask(base(tenant.clientId,'task-finding-links'));
     await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
     await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'needs review'},idempotencyKey:'finding-specialist-1'});
-    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'retry'},verifierFindings:[{summary:'Missing supporting source',severity:'review',claim_ref:'proposal'}],idempotencyKey:'finding-verifier-1'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'retry'},verificationDecision:'retry',verifierFindings:[{summary:'Missing supporting source',severity:'review',claim_ref:'proposal'}],idempotencyKey:'finding-verifier-1'});
     const reviewed=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    expect(reviewed?.status).toBe('retry_ready');
     const findingId=(reviewed?.attempts[1]?.verifier_findings as Array<{finding_id:string}>)[0]!.finding_id;
     await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'retry_ready'});
     await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
@@ -102,5 +103,17 @@ describe('Nexus specialist task records',()=>{
     await expect(readNexusTaskRecord({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,capability:'purchase_bill.read',recordRef:ref})).rejects.toBeInstanceOf(ValidationError);
     await expect(readNexusTaskRecord({firmId:other.firmId,clientId:other.clientId,taskId:id,capability:'source_document.read',recordRef:ref})).rejects.toBeInstanceOf(ValidationError);
     await expect(createNexusTask({...base(tenant.clientId,'task-wrong-capability'),permittedReads:['bank_statement.read']})).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('requires verifier acceptance before a task can complete',async()=>{
+    const id=await createNexusTask(base(tenant.clientId,'task-verifier-accept'));
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'completed',resultSchemaVersion:1,result:{proposal:'supported'},idempotencyKey:'accept-specialist'});
+    await expect(withFirm(tenant.firmId,c=>c.query(`UPDATE nexus_specialist_tasks SET status='completed' WHERE id=$1`,[id]))).rejects.toThrow(/requires verifier acceptance/);
+    await expect(appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'accepted'},verificationDecision:'accepted',verifierFindings:[{summary:'Unresolved issue'}],idempotencyKey:'accept-with-finding'})).rejects.toBeInstanceOf(ValidationError);
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'accepted'},verificationDecision:'accepted',idempotencyKey:'accept-clean'});
+    const task=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    expect(task?.status).toBe('completed');
+    await expect(transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'completed'})).resolves.toMatchObject({status:'completed',duplicate:true});
   });
 });

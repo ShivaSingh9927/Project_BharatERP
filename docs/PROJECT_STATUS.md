@@ -199,6 +199,16 @@ domain code, migrations, and tests for exact behavior.
   purchase-bill totals; it never returns original file paths, hashes, or bytes.
   Node 22.23.3 typecheck and focused task tests passed (1 file, 5 tests). The
   capability reader is not connected to a worker or model yet.
+- **Phase 4 verifier decision gate (2026-10-10):** migration 061 stores an
+  explicit verifier decision on verifier attempts. A verifier can accept only
+  with no findings, send non-critical findings to a retry, or escalate to
+  human review. The database refuses task completion without a persisted
+  verifier acceptance. Legacy prototype verifier attempts retain a null
+  decision; no historical acceptance is inferred. Migration 061 is applied to
+  the local DB. Typecheck and focused tests passed (1 file, 6 tests); the full
+  suite passed (63 files, 960 tests). The verifier decision API is not
+  connected to a model or worker, and there is no human review UI or follow-up
+  creation on exhausted attempts.
 
 ## Recently changed document workflow
 
