@@ -204,7 +204,17 @@ created afterward.
   ordinals and enforces both caps; three verifier-directed retries fit within
   the intended initial-plus-three specialist budget. An unsuccessful fourth
   specialist run escalates to human review.
-- Remaining: worker/coordinator model invocation, human review UI,
+- **Phase 4 runner foundation (2026-10-10):** migration 064 adds a separate,
+  attributed, off-by-default firm consent for sending scoped task metadata to
+  the configured model. The domain runner retrieves only the task's declared
+  references, calls a prompted specialist and verifier, validates JSON and
+  source quotes, stores attempts, and follows the retry/escalation path. A
+  compare-and-set claim prevents a second invocation from joining a running
+  task. Focused tests cover the consent gate, accepted run, and duplicate-run
+  rejection. No HTTP route or user-facing task creation/review flow invokes
+  this runner yet; tasks left `running` by a process interruption still need
+  an explicit safe resume policy.
+- Remaining: coordinator API and user-facing task creation/review UI,
   restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.

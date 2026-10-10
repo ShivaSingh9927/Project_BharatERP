@@ -224,6 +224,14 @@ domain code, migrations, and tests for exact behavior.
   integration scenario exercised three verifier-directed retries and escalated
   the fourth unsuccessful specialist run. Migration 063 is applied locally;
   typecheck and focused task tests passed (1 file, 8 tests).
+- **Phase 4 runner foundation (2026-10-10):** migration 064 adds separate
+  attributed firm consent for Nexus specialist tasks, default off. The domain
+  runner reads only declared scoped records, invokes a specialist and verifier,
+  validates structured output and source quotes, stores attempts, and routes
+  retries or escalations. Concurrent duplicate invocations cannot join an
+  already running task. Migration 064 is applied locally; typecheck and focused
+  Nexus tests passed (2 files, 10 tests). The runner is not yet connected to a
+  route or UI, and interrupted `running` tasks need a safe resume policy.
 
 ## Recently changed document workflow
 

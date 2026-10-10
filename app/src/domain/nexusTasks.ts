@@ -36,6 +36,26 @@ const kindCapability: Record<NexusRecordRef['kind'], string> = {
   source_document: 'source_document.read', bank_statement: 'bank_statement.read',
   obligation: 'obligation.read', purchase_bill: 'purchase_bill.read',
 };
+export async function nexusTaskAiEnabled(firmId:string):Promise<boolean> {
+  return withFirm(firmId,async c=>{
+    const result=await c.query<{enabled:boolean}>(`SELECT llm_nexus_tasks AS enabled FROM firm_ai_settings WHERE firm_id=$1`,[firmId]);
+    return result.rows[0]?.enabled===true;
+  });
+}
+export async function setNexusTaskAiEnabled(firmId:string,userId:string,enabled:boolean,provider:string,model:string):Promise<void> {
+  await withFirm(firmId,async c=>{
+    await c.query(`INSERT INTO firm_ai_settings
+      (firm_id,llm_nexus_tasks,llm_nexus_tasks_by,llm_nexus_tasks_at,llm_provider,llm_model)
+      VALUES($1,$2,$3,CASE WHEN $2 THEN now() ELSE NULL END,$4,$5)
+      ON CONFLICT(firm_id) DO UPDATE SET
+        llm_nexus_tasks=EXCLUDED.llm_nexus_tasks,
+        llm_nexus_tasks_by=EXCLUDED.llm_nexus_tasks_by,
+        llm_nexus_tasks_at=EXCLUDED.llm_nexus_tasks_at,
+        llm_provider=CASE WHEN EXCLUDED.llm_nexus_tasks THEN EXCLUDED.llm_provider ELSE firm_ai_settings.llm_provider END,
+        llm_model=CASE WHEN EXCLUDED.llm_nexus_tasks THEN EXCLUDED.llm_model ELSE firm_ai_settings.llm_model END`,
+      [firmId,enabled,userId,provider,model]);
+  });
+}
 const refTables: Record<NexusRecordRef['kind'], { table: string; alias: string }> = {
   source_document: { table: 'source_documents', alias: 'd' },
   obligation: { table: 'obligation_timeline_items', alias: 'd' },
@@ -104,6 +124,7 @@ export async function createNexusTask(args: { firmId:string; clientId:string; pu
   }
   const permittedReads=args.permittedReads.map(x=>(x as string).trim());
   const recordRefs=refs(args.recordRefs), ruleRefs=args.ruleVersionRefs ?? [];
+  if(recordRefs.some(ref=>!permittedReads.includes(kindCapability[ref.kind]))) throw new ValidationError('every record type needs its matching read capability','NXT-1');
   if (!Array.isArray(ruleRefs) || ruleRefs.length > 50 || ruleRefs.some((x)=>typeof x!=='string'||x.length>120)) throw new ValidationError('enter valid rule references','NXT-1');
   const checkpoint=args.checkpoint == null ? null : object(args.checkpoint,'checkpoint');
   if (checkpoint && JSON.stringify(checkpoint).length > 8000) throw new ValidationError('checkpoint is too large','NXT-1');
