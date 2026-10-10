@@ -76,4 +76,19 @@ describe('Nexus specialist task records',()=>{
     const noDirectInsert=await appPool.query(`SELECT has_table_privilege(current_user,'nexus_specialist_task_attempts','UPDATE') AS can_update`);
     expect(noDirectInsert.rows[0]?.can_update).toBe(false);
   });
+
+  it('links retries to findings from the latest verifier attempt',async()=>{
+    const id=await createNexusTask(base(tenant.clientId,'task-finding-links'));
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'needs review'},idempotencyKey:'finding-specialist-1'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'retry'},verifierFindings:[{summary:'Missing supporting source',severity:'review',claim_ref:'proposal'}],idempotencyKey:'finding-verifier-1'});
+    const reviewed=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    const findingId=(reviewed?.attempts[1]?.verifier_findings as Array<{finding_id:string}>)[0]!.finding_id;
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'retry_ready'});
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+    await expect(appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'retry'},addressesFindingIds:[randomUUID()],idempotencyKey:'finding-retry-bad-ref'})).rejects.toBeInstanceOf(ValidationError);
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'retry'},addressesFindingIds:[findingId],idempotencyKey:'finding-retry-1'});
+    const final=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    expect(final?.attempts[2]?.addressed_findings).toEqual([findingId]);
+  });
 });

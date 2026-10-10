@@ -182,8 +182,16 @@ domain code, migrations, and tests for exact behavior.
   direct application-role update. Migration 059 is applied to the configured
   local database. Node 22.23.3 typecheck passed and the focused task tests
   passed (1 file, 3 tests), including rejected state jumps and serialization.
-  Model execution, verifier decision records/finding linkage, read-tool
-  enforcement, worker resume, and exhaustion follow-up remain unimplemented.
+  Model execution, verifier decision records, read-tool enforcement, worker
+  resume, and exhaustion follow-up remain unimplemented.
+- **Phase 4 retry evidence links (2026-10-10):** migration 060 adds immutable
+  `addressed_findings` to task attempts. Verifier findings are normalized to
+  server-generated IDs and a specialist retry can reference only findings on
+  the latest verifier attempt. The domain rejects stale/unknown links and
+  specialists cannot author verifier findings. Migration 060 is applied to
+  the configured local DB; Node 22.23.3 typecheck and focused integration tests
+  passed (1 file, 4 tests). The verifier decision flow and automatic retry
+  coordinator remain unimplemented.
 
 ## Recently changed document workflow
 

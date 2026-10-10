@@ -181,8 +181,13 @@ created afterward.
   `verifying`. Specialist results move to review, blocked, or failed states;
   an explicit coordinator transition is required before retry. Invalid jumps
   are rejected even through direct application-role updates.
+- **Phase 4 retry evidence links (2026-10-10):** migration 060 gives verifier
+  findings stable server-generated IDs. A specialist retry records the IDs it
+  addresses, and the domain accepts only findings from the latest verifier
+  attempt. This records the link; it does not yet judge whether the retry
+  actually resolves the finding.
 - Remaining: worker/coordinator execution, persisted task-state transition
-  permitted-read tool enforcement, retry finding linkage, verifier and
+  permitted-read tool enforcement, verifier decision/human review flow,
   human review flow, linked exhaustion follow-up, and restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.

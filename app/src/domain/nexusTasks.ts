@@ -124,7 +124,7 @@ export async function getNexusTask(firmId:string,clientId:string,taskId:string) 
     const r=await c.query<DbTask>(`${taskSelect} WHERE id=$1 AND client_id=$2`,[taskId,clientId]);
     if(!r.rows[0]) return null;
     const [attempts,events]=await Promise.all([
-      c.query(`SELECT id,ordinal,agent_role,model_version,input_refs,outcome,result_schema_version,result,verifier_findings,error_category,started_at,ended_at,recorded_at FROM nexus_specialist_task_attempts WHERE task_id=$1 ORDER BY ordinal`,[taskId]),
+      c.query(`SELECT id,ordinal,agent_role,model_version,input_refs,outcome,result_schema_version,result,verifier_findings,addressed_findings,error_category,started_at,ended_at,recorded_at FROM nexus_specialist_task_attempts WHERE task_id=$1 ORDER BY ordinal`,[taskId]),
       c.query(`SELECT id,event_ordinal,event_type,attempt_id,detail,recorded_at FROM nexus_specialist_task_events WHERE task_id=$1 ORDER BY event_ordinal`,[taskId]),
     ]);
     return {...mapTask(r.rows[0]),attempts:attempts.rows,events:events.rows};
@@ -158,15 +158,28 @@ export async function transitionNexusTaskStatus(args:{firmId:string;clientId:str
 }
 
 export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string;taskId:string;agentRole:unknown;modelVersion?:unknown;
- inputRefs?:unknown;outcome:unknown;resultSchemaVersion:number;result:unknown;verifierFindings?:unknown;errorCategory?:unknown;
+ inputRefs?:unknown;outcome:unknown;resultSchemaVersion:number;result:unknown;verifierFindings?:unknown;addressesFindingIds?:unknown;errorCategory?:unknown;
  startedAt?:Date;endedAt?:Date;idempotencyKey:unknown}):Promise<{ordinal:number;duplicate:boolean}> {
   const key=text(args.idempotencyKey,200,'idempotency key'), role=text(args.agentRole,40,'agent role');
   if(!specialists.has(role as NexusSpecialist)) throw new ValidationError('agent role is not allowed','NXT-1');
   if(!['completed','partial','blocked','failed'].includes(String(args.outcome))) throw new ValidationError('attempt outcome is not allowed','NXT-1');
   const result=object(args.result,'result');
   if(!Number.isInteger(args.resultSchemaVersion)||args.resultSchemaVersion<1) throw new ValidationError('enter a valid result schema version','NXT-1');
-  const inputRefs=refs(args.inputRefs ?? []), findings=args.verifierFindings ?? [];
-  if(!Array.isArray(findings)||findings.length>100) throw new ValidationError('enter valid verifier findings','NXT-1');
+  const inputRefs=refs(args.inputRefs ?? []), rawFindings=args.verifierFindings ?? [], addressed=args.addressesFindingIds ?? [];
+  if(!Array.isArray(rawFindings)||rawFindings.length>100) throw new ValidationError('enter valid verifier findings','NXT-1');
+  if(!Array.isArray(addressed)||addressed.length>100||addressed.some(x=>typeof x!=='string'||!/^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.test(x))) {
+    throw new ValidationError('enter valid verifier finding references','NXT-1');
+  }
+  if(role==='verifier'&&addressed.length) throw new ValidationError('verifier attempts cannot address findings','NXT-1');
+  if(role!=='verifier'&&rawFindings.length) throw new ValidationError('only verifier attempts may create findings','NXT-1');
+  const findings=rawFindings.map(raw=>{
+    const finding=object(raw,'verifier finding');
+    const summary=text(finding.summary,1000,'finding summary');
+    const severity=finding.severity??'review';
+    if(!['review','critical'].includes(String(severity))) throw new ValidationError('finding severity is not allowed','NXT-1');
+    const claimRef=finding.claim_ref==null?null:text(finding.claim_ref,200,'claim reference');
+    return {finding_id:randomUUID(),summary,severity,claim_ref:claimRef};
+  });
   const startedAt=args.startedAt??new Date(),endedAt=args.endedAt??new Date();
   if(!(startedAt instanceof Date)||!(endedAt instanceof Date)||Number.isNaN(startedAt.getTime())||Number.isNaN(endedAt.getTime())||endedAt<startedAt) throw new ValidationError('enter valid attempt times','NXT-1');
   return withFirm(args.firmId,async c=>{
@@ -181,11 +194,18 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
     if(duplicate.rowCount){ if(duplicate.rows[0]!.task_id!==args.taskId||duplicate.rows[0]!.outcome!==args.outcome) throw new ValidationError('idempotency key was already used for another attempt','NXT-4'); return {ordinal:duplicate.rows[0]!.ordinal,duplicate:true}; }
     const expectedRunStatus=role==='verifier'?'verifying':'running';
     if(task.rows[0]!.status!==expectedRunStatus) throw new ValidationError(`task must be ${expectedRunStatus} before this attempt`,'NXT-5');
+    if(addressed.length){
+      const latestVerifier=await c.query<{verifier_findings:unknown}>(`SELECT verifier_findings FROM nexus_specialist_task_attempts WHERE task_id=$1 AND agent_role='verifier' ORDER BY ordinal DESC LIMIT 1`,[args.taskId]);
+      if(!latestVerifier.rowCount) throw new ValidationError('there are no verifier findings to address','NXT-5');
+      const findings=latestVerifier.rows[0]!.verifier_findings;
+      const known=Array.isArray(findings)?new Set(findings.map((x)=>x&&typeof x==='object'?(x as Record<string,unknown>).finding_id:null)):new Set();
+      if(addressed.some(id=>!known.has(id))) throw new ValidationError('retry references a finding outside the latest verifier review','NXT-5');
+    }
     const ordinal=task.rows[0]!.current_attempt+1;
     if(ordinal>task.rows[0]!.max_attempts) throw new ValidationError('task attempt budget is exhausted','NXT-3');
-    const attempt=await c.query<{id:string}>(`INSERT INTO nexus_specialist_task_attempts(firm_id,client_id,task_id,ordinal,agent_role,model_version,input_refs,outcome,result_schema_version,result,verifier_findings,error_category,started_at,ended_at,idempotency_key)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,[
-      args.firmId,args.clientId,args.taskId,ordinal,role,args.modelVersion==null?null:text(args.modelVersion,160,'model version'),JSON.stringify(inputRefs),args.outcome,args.resultSchemaVersion,JSON.stringify(result),JSON.stringify(findings),args.errorCategory==null?null:text(args.errorCategory,80,'error category'),startedAt,endedAt,key]);
+    const attempt=await c.query<{id:string}>(`INSERT INTO nexus_specialist_task_attempts(firm_id,client_id,task_id,ordinal,agent_role,model_version,input_refs,outcome,result_schema_version,result,verifier_findings,addressed_findings,error_category,started_at,ended_at,idempotency_key)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,[
+      args.firmId,args.clientId,args.taskId,ordinal,role,args.modelVersion==null?null:text(args.modelVersion,160,'model version'),JSON.stringify(inputRefs),args.outcome,args.resultSchemaVersion,JSON.stringify(result),JSON.stringify(findings),JSON.stringify(addressed),args.errorCategory==null?null:text(args.errorCategory,80,'error category'),startedAt,endedAt,key]);
     const attemptId=attempt.rows[0]!.id;
     const count=await c.query<{n:number}>(`SELECT COALESCE(max(event_ordinal),0)+1 AS n FROM nexus_specialist_task_events WHERE task_id=$1`,[args.taskId]);
     await c.query(`INSERT INTO nexus_specialist_task_events(firm_id,client_id,task_id,event_ordinal,event_type,attempt_id,detail,idempotency_key)
