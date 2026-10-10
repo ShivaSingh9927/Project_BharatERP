@@ -24,6 +24,17 @@ const taskTransitions: Record<NexusTaskStatus, ReadonlySet<NexusTaskStatus>> = {
 const readCapabilities = new Set([
   'source_document.read', 'bank_statement.read', 'obligation.read', 'purchase_bill.read',
 ]);
+const specialistCapabilities: Record<NexusSpecialist, ReadonlySet<string>> = {
+  document: new Set(['source_document.read', 'purchase_bill.read']),
+  banking: new Set(['bank_statement.read', 'obligation.read']),
+  gst: new Set(['obligation.read', 'purchase_bill.read']),
+  tds: new Set(['obligation.read', 'purchase_bill.read', 'bank_statement.read']),
+  verifier: readCapabilities,
+};
+const kindCapability: Record<NexusRecordRef['kind'], string> = {
+  source_document: 'source_document.read', bank_statement: 'bank_statement.read',
+  obligation: 'obligation.read', purchase_bill: 'purchase_bill.read',
+};
 const refTables: Record<NexusRecordRef['kind'], { table: string; alias: string }> = {
   source_document: { table: 'source_documents', alias: 'd' },
   obligation: { table: 'obligation_timeline_items', alias: 'd' },
@@ -83,7 +94,8 @@ export async function createNexusTask(args: { firmId:string; clientId:string; pu
   const purpose=text(args.purpose,1000,'purpose'), idempotencyKey=text(args.idempotencyKey,200,'idempotency key');
   if (typeof args.specialist !== 'string' || !specialists.has(args.specialist as NexusSpecialist)) throw new ValidationError('specialist is not allowed','NXT-1');
   if (!Array.isArray(args.permittedReads) || args.permittedReads.length > readCapabilities.size
-    || args.permittedReads.some((x)=>typeof x!=='string'||!readCapabilities.has(x.trim()))) {
+    || args.permittedReads.some((x)=>typeof x!=='string'||!readCapabilities.has(x.trim())
+      ||!specialistCapabilities[args.specialist as NexusSpecialist].has(x.trim()))) {
     throw new ValidationError('read capability is not allowed','NXT-1');
   }
   const permittedReads=args.permittedReads.map(x=>(x as string).trim());
@@ -133,6 +145,47 @@ export async function getNexusTask(firmId:string,clientId:string,taskId:string) 
 export async function listNexusTasks(firmId:string,clientId:string,limit=50) {
   const bounded=Math.max(1,Math.min(100,Math.trunc(limit)||50));
   return withFirm(firmId,async c=>{ await assertClient(c,clientId); const r=await c.query<DbTask>(`${taskSelect} WHERE client_id=$1 ORDER BY created_at DESC,id LIMIT $2`,[clientId,bounded]); return r.rows.map(mapTask); });
+}
+
+/** Read one referenced record through the task's server-authored capability
+ * allowlist. Source files and raw document contents are never returned here. */
+export async function readNexusTaskRecord(args:{firmId:string;clientId:string;taskId:string;
+  capability:unknown;recordRef:unknown}):Promise<{kind:NexusRecordRef['kind'];id:string;data:Record<string,unknown>}> {
+  const capability=text(args.capability,80,'read capability');
+  if(!readCapabilities.has(capability)) throw new ValidationError('read capability is not allowed','NXT-1');
+  const [ref]=refs([args.recordRef]);
+  if(kindCapability[ref!.kind]!==capability) throw new ValidationError('capability does not match the record type','NXT-1');
+  return withFirm(args.firmId,async c=>{
+    await assertClient(c,args.clientId);
+    const task=await c.query<{envelope:Record<string,unknown>}>(`SELECT envelope FROM nexus_specialist_tasks WHERE id=$1 AND client_id=$2`,[args.taskId,args.clientId]);
+    if(!task.rowCount) throw new ValidationError('task is unavailable','NXT-2');
+    const envelope=task.rows[0]!.envelope;
+    const permitted=envelope.permitted_reads;
+    const allowedRefs=envelope.record_refs;
+    if(!Array.isArray(permitted)||!permitted.includes(capability)
+      ||!Array.isArray(allowedRefs)||!allowedRefs.some((x)=>x&&typeof x==='object'
+        &&(x as Record<string,unknown>).kind===ref!.kind&&(x as Record<string,unknown>).id===ref!.id)) {
+      throw new ValidationError('record is outside the task read scope','NXT-1');
+    }
+    let data:Record<string,unknown>|undefined;
+    if(ref!.kind==='source_document') {
+      const r=await c.query<Record<string,unknown>>(`SELECT id,channel,received_at,mime_type,file_size,page_count,status
+        FROM source_documents WHERE id=$1 AND client_id=$2`,[ref!.id,args.clientId]); data=r.rows[0];
+    } else if(ref!.kind==='bank_statement') {
+      const r=await c.query<Record<string,unknown>>(`SELECT id,period_from,period_to,row_count,parse_status,parser_version,uploaded_at
+        FROM bank_statements WHERE id=$1 AND client_id=$2`,[ref!.id,args.clientId]); data=r.rows[0];
+    } else if(ref!.kind==='obligation') {
+      const r=await c.query<Record<string,unknown>>(`SELECT i.id,i.obligation_kind,i.period_key,i.created_at,
+        (SELECT e.workflow_state FROM obligation_workflow_events e WHERE e.obligation_id=i.id ORDER BY e.event_ordinal DESC LIMIT 1) AS latest_workflow_state
+        FROM obligation_timeline_items i WHERE i.id=$1 AND i.client_id=$2`,[ref!.id,args.clientId]); data=r.rows[0];
+    } else {
+      const r=await c.query<Record<string,unknown>>(`SELECT voucher_id AS id,supplier_legal_name,bill_number,bill_date,
+        taxable_value,total_cgst,total_sgst,total_igst,total_cess,grand_total,itc_eligibility,gstr2b_status,approval_status
+        FROM purchase_bills WHERE voucher_id=$1 AND client_id=$2`,[ref!.id,args.clientId]); data=r.rows[0];
+    }
+    if(!data) throw new ValidationError('referenced record is unavailable','NXT-2');
+    return {kind:ref!.kind,id:ref!.id,data};
+  });
 }
 
 /** Move a durable task through the bounded runner lifecycle. Database trigger

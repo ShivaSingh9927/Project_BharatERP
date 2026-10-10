@@ -186,8 +186,12 @@ created afterward.
   addresses, and the domain accepts only findings from the latest verifier
   attempt. This records the link; it does not yet judge whether the retry
   actually resolves the finding.
+- **Phase 4 read boundary (2026-10-10):** specialists have role-specific
+  capability allowlists and a task-scoped reader checks both the capability
+  and exact client-owned reference before returning limited record fields.
+  The reader is not yet wired to model or worker execution.
 - Remaining: worker/coordinator execution, persisted task-state transition
-  permitted-read tool enforcement, verifier decision/human review flow,
+  verifier decision/human review flow,
   human review flow, linked exhaustion follow-up, and restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.

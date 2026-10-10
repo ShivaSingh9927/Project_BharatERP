@@ -2,7 +2,7 @@ import { afterAll,beforeAll,describe,expect,it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { seedTenant,type SeededTenant } from '../src/seed/index.ts';
 import { appPool,ownerPool,withFirm,closePools } from '../src/db/pool.ts';
-import { appendNexusTaskAttempt,createNexusTask,getNexusTask,listNexusTasks,transitionNexusTaskStatus } from '../src/domain/nexusTasks.ts';
+import { appendNexusTaskAttempt,createNexusTask,getNexusTask,listNexusTasks,readNexusTaskRecord,transitionNexusTaskStatus } from '../src/domain/nexusTasks.ts';
 import { ValidationError } from '../src/domain/types.ts';
 
 let tenant:SeededTenant; let other:SeededTenant; let sourceId:string;
@@ -90,5 +90,17 @@ describe('Nexus specialist task records',()=>{
     await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'retry'},addressesFindingIds:[findingId],idempotencyKey:'finding-retry-1'});
     const final=await getNexusTask(tenant.firmId,tenant.clientId,id);
     expect(final?.attempts[2]?.addressed_findings).toEqual([findingId]);
+  });
+
+  it('enforces task read capabilities, references, and client scope',async()=>{
+    const ref={kind:'source_document',id:sourceId};
+    const id=await createNexusTask({...base(tenant.clientId,'task-scoped-read'),recordRefs:[ref]});
+    const read=await readNexusTaskRecord({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,capability:'source_document.read',recordRef:ref});
+    expect(read).toMatchObject({kind:'source_document',id:sourceId,data:{id:sourceId,channel:'upload'}});
+    expect(read.data).not.toHaveProperty('original_blob_uri');
+    expect(read.data).not.toHaveProperty('sha256');
+    await expect(readNexusTaskRecord({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,capability:'purchase_bill.read',recordRef:ref})).rejects.toBeInstanceOf(ValidationError);
+    await expect(readNexusTaskRecord({firmId:other.firmId,clientId:other.clientId,taskId:id,capability:'source_document.read',recordRef:ref})).rejects.toBeInstanceOf(ValidationError);
+    await expect(createNexusTask({...base(tenant.clientId,'task-wrong-capability'),permittedReads:['bank_statement.read']})).rejects.toBeInstanceOf(ValidationError);
   });
 });

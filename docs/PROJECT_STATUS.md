@@ -192,6 +192,13 @@ domain code, migrations, and tests for exact behavior.
   the configured local DB; Node 22.23.3 typecheck and focused integration tests
   passed (1 file, 4 tests). The verifier decision flow and automatic retry
   coordinator remain unimplemented.
+- **Phase 4 read boundary (2026-10-10):** the task domain now validates each
+  specialist's capability set and exposes a read-only fetch that requires the
+  task's declared capability and exact client-scoped record reference. It
+  returns limited document metadata, statement metadata, obligation state, or
+  purchase-bill totals; it never returns original file paths, hashes, or bytes.
+  Node 22.23.3 typecheck and focused task tests passed (1 file, 5 tests). The
+  capability reader is not connected to a worker or model yet.
 
 ## Recently changed document workflow
 
