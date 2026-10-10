@@ -173,6 +173,17 @@ domain code, migrations, and tests for exact behavior.
   idempotency, safe capability names, same-client reference checks, immutable
   attempt/event history, database status auditing, concurrent ordinals, and
   the four-attempt limit.
+- **Phase 4 transition guard (2026-10-10):** migration 059 adds a database
+  trigger enforcing an explicit task status graph. The domain API exposes a
+  compare-and-set status transition and attempt recording requires `running`
+  for specialists or `verifying` for the verifier. Specialist outcomes move
+  into review, blocked, or failed states; only the explicit coordinator
+  transition can prepare a retry. Invalid status jumps fail even through a
+  direct application-role update. Migration 059 is applied to the configured
+  local database. Node 22.23.3 typecheck passed and the focused task tests
+  passed (1 file, 3 tests), including rejected state jumps and serialization.
+  Model execution, verifier decision records/finding linkage, read-tool
+  enforcement, worker resume, and exhaustion follow-up remain unimplemented.
 
 ## Recently changed document workflow
 

@@ -2,7 +2,7 @@ import { afterAll,beforeAll,describe,expect,it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { seedTenant,type SeededTenant } from '../src/seed/index.ts';
 import { appPool,ownerPool,withFirm,closePools } from '../src/db/pool.ts';
-import { appendNexusTaskAttempt,createNexusTask,getNexusTask,listNexusTasks } from '../src/domain/nexusTasks.ts';
+import { appendNexusTaskAttempt,createNexusTask,getNexusTask,listNexusTasks,transitionNexusTaskStatus } from '../src/domain/nexusTasks.ts';
 import { ValidationError } from '../src/domain/types.ts';
 
 let tenant:SeededTenant; let other:SeededTenant; let sourceId:string;
@@ -33,15 +33,21 @@ describe('Nexus specialist task records',()=>{
 
   it('serializes concurrent appends, deduplicates keys, and enforces the four-attempt budget',async()=>{
     const id=await createNexusTask(base(tenant.clientId,'task-concurrency'));
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running',expectedStatus:'queued'});
     await expect(appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',
       inputRefs:[{kind:'source_document',id:sourceId}],outcome:'partial',resultSchemaVersion:1,result:{proposal:'advisory'},idempotencyKey:'attempt-out-of-scope'})).rejects.toBeInstanceOf(ValidationError);
     const append=(key:string)=>appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',
       outcome:'partial',resultSchemaVersion:1,result:{proposal:'advisory only'},idempotencyKey:key});
-    const concurrent=await Promise.all([append('attempt-a'),append('attempt-b')]);
-    expect(concurrent.map(x=>x.ordinal).sort()).toEqual([1,2]);
+    const concurrent=await Promise.allSettled([append('attempt-a'),append('attempt-b')]);
+    expect(concurrent.filter(x=>x.status==='fulfilled').map(x=>x.status==='fulfilled'?x.value.ordinal:0)).toEqual([1]);
+    expect(concurrent.filter(x=>x.status==='rejected')).toHaveLength(1);
     expect(await append('attempt-a')).toEqual({ordinal:1,duplicate:true});
-    await append('attempt-c'); await append('attempt-d');
-    await expect(append('attempt-e')).rejects.toBeInstanceOf(ValidationError);
+    for(const key of ['attempt-c','attempt-d','attempt-e']) {
+      await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'retry_ready'});
+      await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+      await append(key);
+    }
+    await expect(append('attempt-f')).rejects.toBeInstanceOf(ValidationError);
     const rows=await withFirm(tenant.firmId,c=>c.query<{ordinal:number}>(`SELECT ordinal FROM nexus_specialist_task_attempts WHERE task_id=$1 ORDER BY ordinal`,[id]));
     expect(rows.rows.map(r=>r.ordinal)).toEqual([1,2,3,4]);
     const task=await getNexusTask(tenant.firmId,tenant.clientId,id);
@@ -50,10 +56,12 @@ describe('Nexus specialist task records',()=>{
 
   it('keeps attempt and event history immutable and tenant isolated',async()=>{
     const id=await createNexusTask(base(tenant.clientId,'task-immutable'));
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
     await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'completed',resultSchemaVersion:1,result:{proposal:'advisory'},idempotencyKey:'attempt-immutable'});
     let task=await getNexusTask(tenant.firmId,tenant.clientId,id);
-    expect(task?.events.map((event:{event_type:string})=>event.event_type)).toEqual(['created','attempt_recorded','status_changed']);
-    expect(task?.events[2]?.detail).toMatchObject({from_status:'queued',to_status:'verifying'});
+    expect(task?.events.map((event:{event_type:string})=>event.event_type)).toEqual(['created','status_changed','attempt_recorded','status_changed']);
+    expect(task?.events[1]?.detail).toMatchObject({from_status:'queued',to_status:'running'});
+    expect(task?.events[3]?.detail).toMatchObject({from_status:'running',to_status:'verifying'});
     // Even a direct status projection write by the application role is audited
     // by the database trigger in the same transaction.
     await withFirm(tenant.firmId,c=>c.query(`UPDATE nexus_specialist_tasks SET status='blocked' WHERE id=$1`,[id]));
@@ -62,6 +70,7 @@ describe('Nexus specialist task records',()=>{
     await expect(withFirm(tenant.firmId,c=>c.query(`UPDATE nexus_specialist_task_attempts SET outcome='failed' WHERE task_id=$1`,[id]))).rejects.toThrow();
     await expect(withFirm(tenant.firmId,c=>c.query(`UPDATE nexus_specialist_task_events SET detail='{}'::jsonb WHERE task_id=$1`,[id]))).rejects.toThrow();
     await expect(withFirm(tenant.firmId,c=>c.query(`DELETE FROM nexus_specialist_task_events WHERE task_id=$1`,[id]))).rejects.toThrow();
+    await expect(withFirm(tenant.firmId,c=>c.query(`UPDATE nexus_specialist_tasks SET status='completed' WHERE id=$1`,[id]))).rejects.toThrow(/invalid Nexus task transition/);
     const hidden=await withFirm(other.firmId,c=>c.query(`SELECT id FROM nexus_specialist_task_attempts WHERE task_id=$1`,[id]));
     expect(hidden.rowCount).toBe(0);
     const noDirectInsert=await appPool.query(`SELECT has_table_privilege(current_user,'nexus_specialist_task_attempts','UPDATE') AS can_update`);

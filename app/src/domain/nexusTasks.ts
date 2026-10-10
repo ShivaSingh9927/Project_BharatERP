@@ -8,6 +8,17 @@ export type NexusTaskStatus = 'queued' | 'running' | 'verifying' | 'retry_ready'
   | 'blocked' | 'failed' | 'needs_human_review' | 'cancelled';
 export type NexusRecordRef = { kind: 'source_document' | 'obligation' | 'bank_statement' | 'purchase_bill'; id: string };
 const specialists = new Set<NexusSpecialist>(['document', 'banking', 'gst', 'tds', 'verifier']);
+const taskTransitions: Record<NexusTaskStatus, ReadonlySet<NexusTaskStatus>> = {
+  queued: new Set(['running', 'cancelled']),
+  running: new Set(['verifying', 'retry_ready', 'blocked', 'failed', 'needs_human_review', 'cancelled']),
+  verifying: new Set(['completed', 'retry_ready', 'blocked', 'failed', 'needs_human_review', 'cancelled']),
+  retry_ready: new Set(['running', 'needs_human_review', 'cancelled']),
+  blocked: new Set(['retry_ready', 'needs_human_review', 'cancelled']),
+  failed: new Set(['retry_ready', 'needs_human_review', 'cancelled']),
+  needs_human_review: new Set(['cancelled']),
+  completed: new Set(),
+  cancelled: new Set(),
+};
 // These names are inert declarations today; a future worker must map them to
 // read-only domain functions and must never interpret browser text as a tool.
 const readCapabilities = new Set([
@@ -124,6 +135,28 @@ export async function listNexusTasks(firmId:string,clientId:string,limit=50) {
   return withFirm(firmId,async c=>{ await assertClient(c,clientId); const r=await c.query<DbTask>(`${taskSelect} WHERE client_id=$1 ORDER BY created_at DESC,id LIMIT $2`,[clientId,bounded]); return r.rows.map(mapTask); });
 }
 
+/** Move a durable task through the bounded runner lifecycle. Database trigger
+ * 059 enforces the same transition graph for direct application-role updates. */
+export async function transitionNexusTaskStatus(args:{firmId:string;clientId:string;taskId:string;
+  toStatus:unknown;expectedStatus?:unknown}):Promise<{status:NexusTaskStatus;duplicate:boolean}> {
+  const toStatus=text(args.toStatus,40,'task status') as NexusTaskStatus;
+  if(!Object.hasOwn(taskTransitions,toStatus)) throw new ValidationError('task status is not allowed','NXT-1');
+  const expected=args.expectedStatus==null?null:text(args.expectedStatus,40,'expected task status') as NexusTaskStatus;
+  if(expected!==null&&!Object.hasOwn(taskTransitions,expected)) throw new ValidationError('expected task status is not allowed','NXT-1');
+  return withFirm(args.firmId,async c=>{
+    await assertClient(c,args.clientId);
+    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`nexus-task:${args.taskId}`]);
+    const current=await c.query<{status:NexusTaskStatus}>(`SELECT status FROM nexus_specialist_tasks WHERE id=$1 AND client_id=$2`,[args.taskId,args.clientId]);
+    if(!current.rowCount) throw new ValidationError('task is unavailable','NXT-2');
+    const from=current.rows[0]!.status;
+    if(from===toStatus) return {status:toStatus,duplicate:true};
+    if(expected!==null&&from!==expected) throw new ValidationError('task status changed; reload before continuing','NXT-5');
+    if(!taskTransitions[from].has(toStatus)) throw new ValidationError(`task cannot move from ${from} to ${toStatus}`,'NXT-5');
+    await c.query(`UPDATE nexus_specialist_tasks SET status=$1,updated_at=now() WHERE id=$2 AND client_id=$3`,[toStatus,args.taskId,args.clientId]);
+    return {status:toStatus,duplicate:false};
+  });
+}
+
 export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string;taskId:string;agentRole:unknown;modelVersion?:unknown;
  inputRefs?:unknown;outcome:unknown;resultSchemaVersion:number;result:unknown;verifierFindings?:unknown;errorCategory?:unknown;
  startedAt?:Date;endedAt?:Date;idempotencyKey:unknown}):Promise<{ordinal:number;duplicate:boolean}> {
@@ -146,6 +179,8 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
     if(inputRefs.some(ref=>!allowedRefs.some(allowed=>allowed.kind===ref.kind&&allowed.id===ref.id))) throw new ValidationError('attempt input is outside the task envelope','NXT-1');
     const duplicate=await c.query<{ordinal:number;task_id:string;outcome:string}>(`SELECT ordinal,task_id,outcome FROM nexus_specialist_task_attempts WHERE client_id=$1 AND idempotency_key=$2`,[args.clientId,key]);
     if(duplicate.rowCount){ if(duplicate.rows[0]!.task_id!==args.taskId||duplicate.rows[0]!.outcome!==args.outcome) throw new ValidationError('idempotency key was already used for another attempt','NXT-4'); return {ordinal:duplicate.rows[0]!.ordinal,duplicate:true}; }
+    const expectedRunStatus=role==='verifier'?'verifying':'running';
+    if(task.rows[0]!.status!==expectedRunStatus) throw new ValidationError(`task must be ${expectedRunStatus} before this attempt`,'NXT-5');
     const ordinal=task.rows[0]!.current_attempt+1;
     if(ordinal>task.rows[0]!.max_attempts) throw new ValidationError('task attempt budget is exhausted','NXT-3');
     const attempt=await c.query<{id:string}>(`INSERT INTO nexus_specialist_task_attempts(firm_id,client_id,task_id,ordinal,agent_role,model_version,input_refs,outcome,result_schema_version,result,verifier_findings,error_category,started_at,ended_at,idempotency_key)
@@ -155,7 +190,10 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
     const count=await c.query<{n:number}>(`SELECT COALESCE(max(event_ordinal),0)+1 AS n FROM nexus_specialist_task_events WHERE task_id=$1`,[args.taskId]);
     await c.query(`INSERT INTO nexus_specialist_task_events(firm_id,client_id,task_id,event_ordinal,event_type,attempt_id,detail,idempotency_key)
       VALUES($1,$2,$3,$4,'attempt_recorded',$5,$6,$7)`,[args.firmId,args.clientId,args.taskId,count.rows[0]!.n,attemptId,JSON.stringify({ordinal,outcome:args.outcome}),`attempt:${attemptId}`]);
-    const nextStatus: NexusTaskStatus=ordinal===4&&args.outcome!=='completed'?'needs_human_review':args.outcome==='completed'?'verifying':args.outcome==='partial'||args.outcome==='blocked'?'retry_ready':'failed';
+    const nextStatus: NexusTaskStatus=ordinal===4&&args.outcome!=='completed'?'needs_human_review'
+      :role==='verifier'?'verifying'
+      :args.outcome==='completed'||args.outcome==='partial'?'verifying'
+      :args.outcome==='blocked'?'blocked':'failed';
     const checkpoint=(args.result as Record<string,unknown>).checkpoint;
     await c.query(`UPDATE nexus_specialist_tasks SET current_attempt=$1,status=$2,checkpoint=COALESCE($3,checkpoint),result_schema_version=$4,result=$5,updated_at=now() WHERE id=$6 AND client_id=$7`,
       [ordinal,nextStatus,checkpoint&&typeof checkpoint==='object'?JSON.stringify(checkpoint):null,args.resultSchemaVersion,JSON.stringify(result),args.taskId,args.clientId]);

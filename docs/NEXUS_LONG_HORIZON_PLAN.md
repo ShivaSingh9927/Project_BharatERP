@@ -175,8 +175,14 @@ created afterward.
   trigger records every changed task status in the append-only event log in the
   same transaction. Results remain advisory. No model invocation, worker, or
   accounting write capability exists yet.
+- **Phase 4 transition guard (2026-10-10):** migration 059 enforces the task
+  state graph in the database, and the domain API exposes a compare-and-set
+  transition. Specialist attempts require `running`; verifier attempts require
+  `verifying`. Specialist results move to review, blocked, or failed states;
+  an explicit coordinator transition is required before retry. Invalid jumps
+  are rejected even through direct application-role updates.
 - Remaining: worker/coordinator execution, persisted task-state transition
-  policy, permitted-read tool enforcement, retry finding linkage, verifier and
+  permitted-read tool enforcement, retry finding linkage, verifier and
   human review flow, linked exhaustion follow-up, and restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.
