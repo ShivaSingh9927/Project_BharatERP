@@ -11,13 +11,13 @@ describe('client attention page', () => {
         sourceAnswer: 'Nexus noted a missing statement.', assigneeUserId: 'user', assigneeName: 'Asha CA',
         dueDate: '2026-10-08', priority: 'high', status: 'open', createdBy: 'user', completedBy: null,
         createdAt: '2026-10-08T10:00:00.000Z', completedAt: null, blockerReason: 'Waiting for bank statement',
-        snoozedUntil: '2026-10-12', history: [{ id: 'event-1', eventType: 'blocker_recorded',
+        snoozedUntil: '2026-10-12', sourceNexusTaskId: null, history: [{ id: 'event-1', eventType: 'blocker_recorded',
           reason: 'Waiting for bank statement', snoozedUntil: null, actorName: 'Asha CA', recordedAt: '2026-10-08T11:00:00.000Z' }] },
       { id: 'fu-done', title: 'Check supplier name', details: '', sourceQuestion: null, sourceAnswer: null,
         assigneeUserId: null, assigneeName: null, dueDate: null, priority: 'normal',
         status: 'completed', createdBy: 'user', completedBy: 'user',
         createdAt: '2026-10-01T10:00:00.000Z', completedAt: '2026-10-07T10:00:00.000Z',
-        blockerReason: null, snoozedUntil: null, history: [] },
+        blockerReason: null, snoozedUntil: null, sourceNexusTaskId: null, history: [] },
     ];
     const obligation = (id: string, state: ObligationTimelineItem['workflowState']): ObligationTimelineItem => ({
       id, clientId: 'client-1', registrationId: null, kind: 'GST review', periodKey: 'FY26-Q2',
@@ -82,7 +82,7 @@ describe('client attention page', () => {
     const item: FollowUpItem = { id: 'fu-1', title: 'Obtain statement', details: '', sourceQuestion: null, sourceAnswer: null,
       assigneeUserId: null, assigneeName: null, dueDate: null, priority: 'normal', status: 'open', createdBy: 'user',
       completedBy: null, createdAt: '2026-10-08T10:00:00.000Z', completedAt: null,
-      blockerReason: 'Bank has not sent it', snoozedUntil: '2026-10-12',
+      blockerReason: 'Bank has not sent it', snoozedUntil: '2026-10-12', sourceNexusTaskId: null,
       history: [{ id: 'ev', eventType: 'snoozed', reason: null, snoozedUntil: '2026-10-12', actorName: 'Owner', recordedAt: '2026-10-08T11:00:00.000Z' }] };
     const html = renderFollowUps([item]);
     expect(html).toContain('Resolve blocker: Bank has not sent it');

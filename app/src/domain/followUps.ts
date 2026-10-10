@@ -6,9 +6,9 @@ export interface FollowUpItem {
   assigneeUserId: string | null; assigneeName: string | null; dueDate: string | null;
   priority: 'low' | 'normal' | 'high'; status: 'open' | 'completed'; createdBy: string;
   completedBy: string | null; createdAt: string; completedAt: string | null;
-  blockerReason: string | null; snoozedUntil: string | null; history: FollowUpEvent[];
+  blockerReason: string | null; snoozedUntil: string | null; sourceNexusTaskId: string | null; history: FollowUpEvent[];
 }
-export interface FollowUpEvent { id: string; eventType: 'created' | 'blocker_recorded' | 'snoozed' | 'completed';
+export interface FollowUpEvent { id: string; eventType: 'created' | 'blocker_recorded' | 'snoozed' | 'completed' | 'system_created';
   reason: string | null; snoozedUntil: string | null; actorName: string; recordedAt: string }
 export interface FollowUpAssignee { id: string; displayName: string; role: string }
 
@@ -34,19 +34,19 @@ export async function listFollowUps(firmId: string, clientId: string, includeCom
       assignee_user_id: string | null; assignee_name: string | null; due_date: string | null;
       priority: 'low' | 'normal' | 'high'; status: 'open' | 'completed'; created_by: string;
       completed_by: string | null; created_at: Date; completed_at: Date | null;
-      blocker_reason: string | null; snoozed_until: string | null;
+      blocker_reason: string | null; snoozed_until: string | null; source_nexus_task_id: string | null;
     }>(`SELECT f.id, f.title, f.details, f.source_question, f.source_answer, f.assignee_user_id,
               u.display_name AS assignee_name, f.due_date::text AS due_date, f.priority, f.status,
               f.created_by, f.completed_by, f.created_at, f.completed_at,
-              f.blocker_reason, f.snoozed_until::text AS snoozed_until
+              f.blocker_reason, f.snoozed_until::text AS snoozed_until, f.source_nexus_task_id
          FROM follow_up_items f LEFT JOIN users u ON u.id = f.assignee_user_id
         WHERE f.client_id = $1 AND ($2::boolean OR f.status = 'open')
         ORDER BY (f.status = 'open') DESC, f.due_date NULLS LAST, f.created_at DESC LIMIT 200`, [clientId, includeCompleted]);
     const histories = await c.query<{ id: string; follow_up_id: string; event_type: FollowUpEvent['eventType'];
       reason: string | null; snoozed_until: string | null; actor_name: string; recorded_at: Date }>(
       `SELECT e.id, e.follow_up_id, e.event_type, e.reason, e.snoozed_until::text AS snoozed_until,
-              u.display_name AS actor_name, e.recorded_at
-         FROM follow_up_events e JOIN users u ON u.id=e.actor_user_id
+              COALESCE(u.display_name,'Nexus') AS actor_name, e.recorded_at
+         FROM follow_up_events e LEFT JOIN users u ON u.id=e.actor_user_id
         WHERE e.client_id=$1 AND e.follow_up_id = ANY($2::uuid[])
         ORDER BY e.recorded_at, e.id`, [clientId, result.rows.map((row) => row.id)]);
     return result.rows.map((row) => ({
@@ -55,7 +55,7 @@ export async function listFollowUps(firmId: string, clientId: string, includeCom
       dueDate: row.due_date, priority: row.priority, status: row.status, createdBy: row.created_by,
       completedBy: row.completed_by, createdAt: row.created_at.toISOString(),
       completedAt: row.completed_at?.toISOString() ?? null,
-      blockerReason: row.blocker_reason, snoozedUntil: row.snoozed_until,
+      blockerReason: row.blocker_reason, snoozedUntil: row.snoozed_until, sourceNexusTaskId: row.source_nexus_task_id,
       history: histories.rows.filter((event) => event.follow_up_id === row.id).map((event) => ({
         id: event.id, eventType: event.event_type, reason: event.reason, snoozedUntil: event.snoozed_until,
         actorName: event.actor_name, recordedAt: event.recorded_at.toISOString(),

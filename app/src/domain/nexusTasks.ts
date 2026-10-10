@@ -78,21 +78,24 @@ async function assertRefs(c: PoolClient, clientId: string, recordRefs: NexusReco
   }
 }
 const taskSelect = `SELECT id,client_id,purpose,specialist,status,envelope_schema_version,envelope,
- checkpoint,result_schema_version,result,current_attempt,max_attempts,idempotency_key,created_at,updated_at
+ checkpoint,result_schema_version,result,current_attempt,max_attempts,idempotency_key,requested_by,created_at,updated_at
  FROM nexus_specialist_tasks`;
 type DbTask = { id:string; client_id:string; purpose:string; specialist:NexusSpecialist; status:NexusTaskStatus;
  envelope_schema_version:number; envelope:Record<string,unknown>; checkpoint:Record<string,unknown>|null;
  result_schema_version:number|null; result:Record<string,unknown>|null; current_attempt:number; max_attempts:number;
- idempotency_key:string; created_at:Date; updated_at:Date };
+ idempotency_key:string; requested_by:string|null; created_at:Date; updated_at:Date };
 function mapTask(row: DbTask) { return { id:row.id, clientId:row.client_id, purpose:row.purpose, specialist:row.specialist,
  status:row.status, envelopeSchemaVersion:row.envelope_schema_version, envelope:row.envelope, checkpoint:row.checkpoint,
  resultSchemaVersion:row.result_schema_version, result:row.result, currentAttempt:row.current_attempt, maxAttempts:row.max_attempts,
- idempotencyKey:row.idempotency_key, createdAt:row.created_at.toISOString(), updatedAt:row.updated_at.toISOString() }; }
+ idempotencyKey:row.idempotency_key, requestedByUserId:row.requested_by,
+ createdAt:row.created_at.toISOString(), updatedAt:row.updated_at.toISOString() }; }
 
 export async function createNexusTask(args: { firmId:string; clientId:string; purpose:unknown; specialist:unknown;
+ requestedByUserId:unknown;
  permittedReads:unknown; recordRefs:unknown; ruleVersionRefs?:unknown; checkpoint?:unknown; deadlineAt?:string|null;
  idempotencyKey:unknown }): Promise<string> {
   const purpose=text(args.purpose,1000,'purpose'), idempotencyKey=text(args.idempotencyKey,200,'idempotency key');
+  const requestedByUserId=text(args.requestedByUserId,80,'requesting user');
   if (typeof args.specialist !== 'string' || !specialists.has(args.specialist as NexusSpecialist)) throw new ValidationError('specialist is not allowed','NXT-1');
   if (!Array.isArray(args.permittedReads) || args.permittedReads.length > readCapabilities.size
     || args.permittedReads.some((x)=>typeof x!=='string'||!readCapabilities.has(x.trim())
@@ -108,11 +111,13 @@ export async function createNexusTask(args: { firmId:string; clientId:string; pu
   if (deadline !== null && (typeof deadline!=='string'||Number.isNaN(Date.parse(deadline)))) throw new ValidationError('enter a valid deadline','NXT-1');
   return withFirm(args.firmId, async c => {
     await assertClient(c,args.clientId); await assertRefs(c,args.clientId,recordRefs);
+    const requester=await c.query(`SELECT 1 FROM users WHERE id=$1 AND firm_id=$2 AND (client_id IS NULL OR client_id=$3)`,[requestedByUserId,args.firmId,args.clientId]);
+    if(!requester.rowCount) throw new ValidationError('requesting user is unavailable for this client','NXT-2');
     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`nexus-task-key:${args.clientId}:${idempotencyKey}`]);
-    const prior=await c.query<{id:string;purpose:string;specialist:string;envelope:Record<string,unknown>}>(`SELECT id,purpose,specialist,envelope FROM nexus_specialist_tasks WHERE client_id=$1 AND idempotency_key=$2`,[args.clientId,idempotencyKey]);
+    const prior=await c.query<{id:string;purpose:string;specialist:string;requested_by:string|null;envelope:Record<string,unknown>}>(`SELECT id,purpose,specialist,requested_by,envelope FROM nexus_specialist_tasks WHERE client_id=$1 AND idempotency_key=$2`,[args.clientId,idempotencyKey]);
     if (prior.rowCount) {
       const old=prior.rows[0]!;
-      if(old.purpose!==purpose||old.specialist!==args.specialist
+      if(old.purpose!==purpose||old.specialist!==args.specialist||old.requested_by!==requestedByUserId
         ||stable(old.envelope.permitted_reads)!==stable(permittedReads)
         ||stable(old.envelope.record_refs)!==stable(recordRefs)
         ||stable(old.envelope.rule_version_refs)!==stable(ruleRefs)
@@ -123,8 +128,8 @@ export async function createNexusTask(args: { firmId:string; clientId:string; pu
     const id=randomUUID();
     const envelope={schema_version:1,task_id:id,firm_id:args.firmId,client_id:args.clientId,purpose,specialist:args.specialist,
       permitted_reads:permittedReads,record_refs:recordRefs,rule_version_refs:ruleRefs,checkpoint,deadline_at:deadline,attempt_ordinal:1,retry_findings:[]};
-    await c.query(`INSERT INTO nexus_specialist_tasks(id,firm_id,client_id,purpose,specialist,envelope,checkpoint,idempotency_key)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[id,args.firmId,args.clientId,purpose,args.specialist,JSON.stringify(envelope),checkpoint?JSON.stringify(checkpoint):null,idempotencyKey]);
+    await c.query(`INSERT INTO nexus_specialist_tasks(id,firm_id,client_id,purpose,specialist,envelope,checkpoint,idempotency_key,requested_by)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[id,args.firmId,args.clientId,purpose,args.specialist,JSON.stringify(envelope),checkpoint?JSON.stringify(checkpoint):null,idempotencyKey,requestedByUserId]);
     await c.query(`INSERT INTO nexus_specialist_task_events(firm_id,client_id,task_id,event_ordinal,event_type,idempotency_key)
       VALUES($1,$2,$3,1,'created',$4)`,[args.firmId,args.clientId,id,`created:${id}`]);
     return id;
@@ -146,6 +151,27 @@ export async function getNexusTask(firmId:string,clientId:string,taskId:string) 
 export async function listNexusTasks(firmId:string,clientId:string,limit=50) {
   const bounded=Math.max(1,Math.min(100,Math.trunc(limit)||50));
   return withFirm(firmId,async c=>{ await assertClient(c,clientId); const r=await c.query<DbTask>(`${taskSelect} WHERE client_id=$1 ORDER BY created_at DESC,id LIMIT $2`,[clientId,bounded]); return r.rows.map(mapTask); });
+}
+
+async function createEscalationFollowUp(c:PoolClient,firmId:string,clientId:string,taskId:string):Promise<void> {
+  const task=await c.query<{purpose:string;requested_by:string|null}>(`SELECT purpose,requested_by FROM nexus_specialist_tasks WHERE id=$1 AND firm_id=$2 AND client_id=$3 AND status='needs_human_review'`,[taskId,firmId,clientId]);
+  const source=task.rows[0];
+  if(!source?.requested_by) return; // Legacy prototype task; it has no initiating user to assign the review to.
+  const title='Nexus task needs your review';
+  const details=`A Nexus review reached a human decision gate. Task: ${taskId}. Purpose: ${source.purpose}`.slice(0,2000);
+  const inserted=await c.query<{id:string}>(`INSERT INTO follow_up_items
+    (firm_id,client_id,created_by,title,details,priority,source_nexus_task_id)
+    VALUES($1,$2,$3,$4,$5,'high',$6) ON CONFLICT (source_nexus_task_id) DO NOTHING RETURNING id`,
+    [firmId,clientId,source.requested_by,title,details,taskId]);
+  if(!inserted.rowCount) return;
+  const followUpId=inserted.rows[0]!.id;
+  await c.query(`INSERT INTO follow_up_events(firm_id,client_id,follow_up_id,actor_type,actor_user_id,event_type)
+    VALUES($1,$2,$3,'system',NULL,'system_created')`,[firmId,clientId,followUpId]);
+  await c.query(`INSERT INTO nexus_alert_events
+    (firm_id,client_id,source_kind,source_id,alert_type,priority,title,message,dedupe_key)
+    VALUES($1,$2,'follow_up',$3,'follow_up_created','high',$4,$5,$6)
+    ON CONFLICT (firm_id,client_id,dedupe_key) DO NOTHING`,
+    [firmId,clientId,followUpId,title,'A Nexus task reached a human review gate. Open the review desk to inspect it.',`nexus_task:${taskId}:needs_human_review`]);
 }
 
 /** Read one referenced record through the task's server-authored capability
@@ -207,6 +233,7 @@ export async function transitionNexusTaskStatus(args:{firmId:string;clientId:str
     if(expected!==null&&from!==expected) throw new ValidationError('task status changed; reload before continuing','NXT-5');
     if(!taskTransitions[from].has(toStatus)) throw new ValidationError(`task cannot move from ${from} to ${toStatus}`,'NXT-5');
     await c.query(`UPDATE nexus_specialist_tasks SET status=$1,updated_at=now() WHERE id=$2 AND client_id=$3`,[toStatus,args.taskId,args.clientId]);
+    if(toStatus==='needs_human_review') await createEscalationFollowUp(c,args.firmId,args.clientId,args.taskId);
     return {status:toStatus,duplicate:false};
   });
 }
@@ -283,6 +310,7 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
     const checkpoint=(args.result as Record<string,unknown>).checkpoint;
     await c.query(`UPDATE nexus_specialist_tasks SET current_attempt=$1,status=$2,checkpoint=COALESCE($3,checkpoint),result_schema_version=$4,result=$5,updated_at=now() WHERE id=$6 AND client_id=$7`,
       [ordinal,nextStatus,checkpoint&&typeof checkpoint==='object'?JSON.stringify(checkpoint):null,args.resultSchemaVersion,JSON.stringify(result),args.taskId,args.clientId]);
+    if(nextStatus==='needs_human_review') await createEscalationFollowUp(c,args.firmId,args.clientId,args.taskId);
     return {ordinal,duplicate:false};
   });
 }

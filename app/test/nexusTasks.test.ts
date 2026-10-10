@@ -3,10 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { seedTenant,type SeededTenant } from '../src/seed/index.ts';
 import { appPool,ownerPool,withFirm,closePools } from '../src/db/pool.ts';
 import { appendNexusTaskAttempt,createNexusTask,getNexusTask,listNexusTasks,readNexusTaskRecord,transitionNexusTaskStatus } from '../src/domain/nexusTasks.ts';
+import { listFollowUps } from '../src/domain/followUps.ts';
 import { ValidationError } from '../src/domain/types.ts';
 
 let tenant:SeededTenant; let other:SeededTenant; let sourceId:string;
-const base=(clientId:string,key:string)=>({firmId:tenant.firmId,clientId,purpose:'Review synthetic source references',specialist:'document',
+const base=(clientId:string,key:string)=>({firmId:tenant.firmId,clientId,requestedByUserId:tenant.userId,purpose:'Review synthetic source references',specialist:'document',
   permittedReads:['source_document.read'],recordRefs:[],idempotencyKey:key});
 beforeAll(async()=>{
   const tag=randomUUID().slice(0,8);
@@ -115,5 +116,23 @@ describe('Nexus specialist task records',()=>{
     const task=await getNexusTask(tenant.firmId,tenant.clientId,id);
     expect(task?.status).toBe('completed');
     await expect(transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'completed'})).resolves.toMatchObject({status:'completed',duplicate:true});
+  });
+
+  it('creates one system-attributed review follow-up on a critical verifier finding',async()=>{
+    const id=await createNexusTask(base(tenant.clientId,'task-escalation-followup'));
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'uncertain'},idempotencyKey:'escalate-specialist'});
+    const args={firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'needs_human_review'},verificationDecision:'needs_human_review',verifierFindings:[{summary:'Conflicting source evidence',severity:'critical'}],idempotencyKey:'escalate-verifier'};
+    await appendNexusTaskAttempt(args);
+    await appendNexusTaskAttempt(args);
+    const task=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    const followUps=await listFollowUps(tenant.firmId,tenant.clientId);
+    const linked=followUps.filter(item=>item.sourceNexusTaskId===id);
+    expect(task?.status).toBe('needs_human_review');
+    expect(linked).toHaveLength(1);
+    expect(linked[0]).toMatchObject({priority:'high',createdBy:tenant.userId});
+    expect(linked[0]?.history[0]).toMatchObject({eventType:'system_created',actorName:'Nexus'});
+    const alerts=await withFirm(tenant.firmId,c=>c.query(`SELECT id FROM nexus_alert_events WHERE client_id=$1 AND dedupe_key=$2`,[tenant.clientId,`nexus_task:${id}:needs_human_review`]));
+    expect(alerts.rowCount).toBe(1);
   });
 });

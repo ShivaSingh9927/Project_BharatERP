@@ -194,8 +194,12 @@ created afterward.
   `accepted`, `retry`, or `needs_human_review` separately from their result.
   Acceptance requires zero findings, retry requires non-critical findings,
   and the database refuses `completed` without stored verifier acceptance.
+- **Phase 4 escalation follow-up (2026-10-10):** migration 062 links each new
+  task to its initiating user and makes the escalation follow-up unique by
+  task. Critical verifier outcomes and exhausted runs create a high-priority
+  system-attributed review item plus an in-app alert atomically. Old prototype
+  tasks without a requester are left unchanged.
 - Remaining: worker/coordinator model invocation, human review UI,
-  linked exhaustion follow-up, and
   restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.

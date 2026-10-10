@@ -625,6 +625,7 @@ export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssign
   const row = (item: FollowUpItem, canComplete: boolean): string => `<article id="followup-${esc(item.id)}" class="panel follow-up-item">
     <div class="follow-up-title"><h2>${esc(item.title)}</h2><span class="pill">${esc(item.status)}</span></div>
     ${item.details ? `<p>${esc(item.details)}</p>` : ''}
+    ${item.sourceNexusTaskId ? `<p class="sub">Escalated from Nexus task <code>${esc(item.sourceNexusTaskId)}</code></p>` : ''}
     <p class="sub">Priority: <b>${esc(item.priority)}</b> · Assignee: ${esc(item.assigneeName ?? 'Unassigned')} · Due: ${esc(item.dueDate ?? 'No due date')}</p>
     <p><b>Next action:</b> ${item.status === 'completed' ? 'Completed by a user' : item.blockerReason ? `Resolve blocker: ${esc(item.blockerReason)}` : item.snoozedUntil ? `Review after ${esc(item.snoozedUntil)}` : 'Review this item'}</p>
     ${item.sourceQuestion ? `<details><summary>Chat context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>

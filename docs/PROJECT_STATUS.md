@@ -207,8 +207,16 @@ domain code, migrations, and tests for exact behavior.
   decision; no historical acceptance is inferred. Migration 061 is applied to
   the local DB. Typecheck and focused tests passed (1 file, 6 tests); the full
   suite passed (63 files, 960 tests). The verifier decision API is not
-  connected to a model or worker, and there is no human review UI or follow-up
-  creation on exhausted attempts.
+  connected to a model or worker, and there is no human review UI.
+- **Phase 4 escalation follow-up (2026-10-10):** migration 062 stores each
+  task's initiating user and adds a unique client-scoped task link on
+  follow-ups. A critical verifier decision or exhausted attempt creates one
+  high-priority system-attributed review item and in-app alert in the same
+  transaction as the task state change. Retries cannot duplicate it. Legacy
+  prototype tasks without an initiating user are not backfilled. Migration
+  062 is applied locally; typecheck passed and focused tests passed (3 files,
+  15 tests). The full suite passed (63 files, 961 tests). Email delivery
+  remains subject to its existing opt-in gates.
 
 ## Recently changed document workflow
 
