@@ -149,6 +149,31 @@ domain code, migrations, and tests for exact behavior.
   deduplication, tenant scoping, and denial of direct outbox writes by the
   application role.
 
+### Nexus specialist task storage foundation (Phase 4 checkpoint, 2026-10-10)
+
+- Migration 057 adds firm/client-scoped task records with server-generated IDs,
+  a version-1 structured envelope, mutable status/checkpoint/advisory-result
+  projection, and a fixed four-attempt budget. Attempts and task events are
+  append-only, tenant protected, and linked with composite task/firm/client
+  foreign keys. Unique task and attempt idempotency keys plus serialized task
+  appends prevent duplicate records and ordinal races.
+- The domain API supports task create/read/list and recording a structured
+  attempt result. It validates specialist roles and supported source document,
+  obligation, bank statement, and purchase bill references within the selected
+  client. `permitted_reads` accepts only the fixed `source_document.read`,
+  `bank_statement.read`, `obligation.read`, and `purchase_bill.read` capability
+  names. Migration 058 adds append-only `status_changed` events in a database
+  trigger, so direct application-role status updates are recorded in the same
+  transaction. Results do not authorize accounting changes. There is no model
+  call, worker, tool execution enforcement, verifier, or exhaustion follow-up.
+- Migrations 057 and 058 are applied to the configured local database; apply
+  both in each other target database with `npm run migrate`. Node 22.23.3
+  `npm run typecheck` passed, and `npm test -- --run
+  test/nexusTasks.test.ts` passed (1 file, 3 tests), covering tenant isolation,
+  idempotency, safe capability names, same-client reference checks, immutable
+  attempt/event history, database status auditing, concurrent ordinals, and
+  the four-attempt limit.
+
 ## Recently changed document workflow
 
 - Document class suggestions are on by default; firms may explicitly turn

@@ -166,7 +166,19 @@ created afterward.
 
 ### 4. Add durable Nexus tasks and bounded specialist runs
 
-- Persist task envelopes, checkpoints, attempts, budgets, and final results.
+- **Phase 4 storage foundation (2026-10-10):** migrations 057–058 add
+  firm/client-scoped task identities, version-1 envelopes, checkpoint/result
+  projections, a four-attempt budget, and append-only attempt/event history.
+  The domain API creates server-generated task IDs and server-constructed
+  scope, validates specialist roles, four fixed read-only capability names,
+  and same-client source/obligation/bank-statement/bill references. A database
+  trigger records every changed task status in the append-only event log in the
+  same transaction. Results remain advisory. No model invocation, worker, or
+  accounting write capability exists yet.
+- Remaining: worker/coordinator execution, persisted task-state transition
+  policy, permitted-read tool enforcement, retry finding linkage, verifier and
+  human review flow, linked exhaustion follow-up, and restart/resume execution.
+  Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.
 - Coordinator routes work; specialists have allowlisted tools and cannot call
   write paths. Independent tasks may run in parallel within per-client limits.
