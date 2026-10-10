@@ -211,11 +211,16 @@ created afterward.
   source quotes, stores attempts, and follows the retry/escalation path. A
   compare-and-set claim prevents a second invocation from joining a running
   task. Focused tests cover the consent gate, accepted run, and duplicate-run
-  rejection. No HTTP route or user-facing task creation/review flow invokes
-  this runner yet; tasks left `running` by a process interruption still need
-  an explicit safe resume policy.
-- Remaining: coordinator API and user-facing task creation/review UI,
-  restart/resume execution.
+  rejection. A process interruption still needs an explicit safe resume policy.
+- **Phase 4 user workflow (2026-10-10):** `/nexus` now provides an authorized
+  firm consent control, lets a user select client-scoped compliance timeline
+  records and request a GST/TDS/banking summary, runs the bounded task, and
+  displays specialist/verifier attempts and findings. Only obligation metadata
+  enters this first task workflow; originals and statement passwords are not
+  sent. The verifier pass can use the same configured model and is not an
+  independent source of truth.
+- Remaining: safe restart/resume execution and richer coordinator workflows
+  for documents, bank statements, and bills.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.
   Keep task input small and retrieve current facts by ID at run time.
 - Coordinator routes work; specialists have allowlisted tools and cannot call

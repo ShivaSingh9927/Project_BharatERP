@@ -87,7 +87,7 @@ import { parseTallyXml } from '../parse/tallyXml.ts';
 import type { TallyPreview } from '../parse/tallyXml.ts';
 import { importTallyPreview, tallyMappingDesk } from '../domain/tallyImport.ts';
 import { clientSetupProgress, saveClientSetup } from '../domain/clientSetup.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { receiveDocument, listDocuments, getDocumentBytes,
          markDocumentInReview, requestDocumentInformation, dismissDocument,
          listOpenDocumentRequests, listDocumentRequestHistory,
@@ -104,6 +104,9 @@ import { markReviewedEmailStatement } from '../domain/emailStatementReview.ts';
 import { importArchivedEmails, r2EmailConfig } from '../integrations/cloudflareR2Email.ts';
 import { documentClassifierEnabled, setDocumentClassifierEnabled,
          suggestDocumentClass } from '../domain/documentTypeClassifier.ts';
+import { createNexusTask, getNexusTask, listNexusTasks, nexusTaskAiEnabled,
+         setNexusTaskAiEnabled, type NexusRecordRef } from '../domain/nexusTasks.ts';
+import { runNexusTask } from '../domain/nexusTaskRunner.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
 const assistantLlm = llmClientFromEnv();
@@ -512,10 +515,20 @@ async function handle(
     const activity = await recentActivity(session.firmId, session.clientId, 8);
     const documents = await listDocuments(session.firmId, session.clientId);
     const documentRequests = await listOpenDocumentRequests(session.firmId, session.clientId);
+    const [taskConsent, obligations, taskRows] = await Promise.all([
+      nexusTaskAiEnabled(session.firmId), listObligationTimeline(session.firmId, session.clientId),
+      listNexusTasks(session.firmId, session.clientId, 10),
+    ]);
+    const nexusTasks = await Promise.all(taskRows.map((task) =>
+      getNexusTask(session.firmId, session.clientId, task.id)));
     return html(res, 200, renderShell({
       session, accounts, active: 'nexus',
       body: renderNexus(session.clientName, runs, followUps, activity, documents,
-        documentRequests, session.role === 'owner'),
+        documentRequests, session.role === 'owner', {
+          enabled: taskConsent, available: assistantLlm !== null,
+          canManage: ['owner','ca_partner','ca_staff'].includes(session.role),
+          obligations, tasks: nexusTasks.filter((task): task is NonNullable<typeof task> => task !== null),
+        }),
     }));
   }
 
@@ -790,6 +803,51 @@ async function handle(
     } catch (e) {
       return json(res, 200, { ok: false, error: (e as Error).message });
     }
+  }
+
+  if (req.method === 'POST' && path === '/api/nexus/task-consent') {
+    if (!['owner','ca_partner','ca_staff'].includes(session.role)) {
+      return json(res, 403, { ok: false, error: 'authorized firm reviewer access required' });
+    }
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.enabled !== 'boolean') throw new Error('choose whether to enable Nexus task runs');
+      if (body.enabled && !assistantLlm) throw new Error('Nexus AI is not configured on this server');
+      await setNexusTaskAiEnabled(session.firmId, session.userId, body.enabled,
+        assistantLlm?.provider ?? 'deepseek', assistantLlm?.model ?? 'deepseek-chat');
+      return json(res, 200, { ok: true, enabled: body.enabled });
+    } catch (error) { return json(res, 400, { ok: false, error: (error as Error).message }); }
+  }
+
+  if (req.method === 'POST' && path === '/api/nexus/tasks') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (!Array.isArray(body.recordRefs) || body.recordRefs.length < 1 || body.recordRefs.length > 50) {
+        throw new Error('select between 1 and 50 timeline records');
+      }
+      const specialist = body.specialist;
+      if (!['gst','tds','banking'].includes(specialist)) throw new Error('choose a supported Nexus specialist');
+      const recordRefs = body.recordRefs as NexusRecordRef[];
+      if (recordRefs.some((ref) => !ref || ref.kind !== 'obligation')) {
+        throw new Error('this review currently accepts compliance timeline records only');
+      }
+      const taskId = await createNexusTask({ firmId: session.firmId, clientId: session.clientId,
+        requestedByUserId: session.userId, purpose: body.purpose, specialist,
+        permittedReads: ['obligation.read'], recordRefs,
+        idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : randomUUID(),
+      });
+      return json(res, 200, { ok: true, taskId });
+    } catch (error) { return json(res, 400, { ok: false, error: (error as Error).message }); }
+  }
+
+  const runNexusTaskMatch = /^\/api\/nexus\/tasks\/([0-9a-f-]{36})\/run$/i.exec(path);
+  if (req.method === 'POST' && runNexusTaskMatch) {
+    try {
+      if (!(await nexusTaskAiEnabled(session.firmId))) throw new Error('Enable Nexus task runs after reviewing the data-sharing notice.');
+      const result = await runNexusTask({ firmId: session.firmId, clientId: session.clientId,
+        taskId: runNexusTaskMatch[1]!, llm: assistantLlm });
+      return json(res, 200, { ok: true, result });
+    } catch (error) { return json(res, 400, { ok: false, error: (error as Error).message }); }
   }
 
   if (req.method === 'GET' && path === '/assistant-runs') {

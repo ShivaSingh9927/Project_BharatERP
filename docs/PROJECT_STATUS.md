@@ -232,6 +232,15 @@ domain code, migrations, and tests for exact behavior.
   already running task. Migration 064 is applied locally; typecheck and focused
   Nexus tests passed (2 files, 10 tests). The runner is not yet connected to a
   route or UI, and interrupted `running` tasks need a safe resume policy.
+- **Phase 4 Nexus workflow (2026-10-10):** the `/nexus` page now gives firm
+  owners and CA staff an attributed consent control, lets users select scoped
+  compliance timeline records, creates and runs GST/TDS/banking review tasks,
+  and displays each saved specialist/verifier attempt. This first UI sends
+  only selected obligation metadata plus the question; original files and
+  statement passwords are excluded. The verifier may use the same configured
+  model and is not independent proof. Focused Nexus and view tests pass; restart
+  recovery and document/bank/bill task workflows remain unimplemented. Latest
+  verification: typecheck passed and the full suite passed (64 files, 965 tests).
 
 ## Recently changed document workflow
 

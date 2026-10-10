@@ -22,7 +22,7 @@ describe('Nexus task runner',()=>{
     let calls=0;
     const llm:LlmClient={provider:'test',model:'fixture-v1',async complete(system,user){
       calls++;
-      if(system.includes('independent Nexus verifier')) return JSON.stringify({decision:'accepted',summary:'Claims match the scoped metadata.',findings:[]});
+      if(system.includes('Nexus verifier pass')) return JSON.stringify({decision:'accepted',summary:'Claims match the scoped metadata.',findings:[]});
       return JSON.stringify({schema_version:1,status:'completed',summary:'The document was received by upload.',
         claims:[{claim:'The channel is upload.',evidence:[{kind:'source_document',id:sourceId,quote:'"channel":"upload"'}]}],
         assumptions:[],questions:[],next_human_action:'Review the original document.',addresses_findings:[],checkpoint:null});

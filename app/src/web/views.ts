@@ -24,6 +24,13 @@ import type { NexusAlert } from '../domain/alerts.ts';
 import type { ActivityItem } from '../domain/activity.ts';
 import type { EmailInbox, IntakeMessage } from '../domain/emailIntake.ts';
 
+type NexusTaskUi = {
+  id: string; purpose: string; specialist: string; status: string;
+  currentAttempt: number; maxAttempts: number;
+  attempts: Array<{ ordinal: number; agent_role: string; outcome: string; result: unknown;
+    verifier_findings: unknown; addressed_findings: unknown }>;
+};
+
 const esc = (v: unknown): string =>
   String(v ?? '').replace(/[&<>"']/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
@@ -234,6 +241,10 @@ export function renderNexus(
   activity: ActivityItem[] = [],
   documents: InboxDocument[] = [],
   documentRequests: DocumentInformationRequest[] = [], canAnswerRequests = false,
+  taskWorkspace: { enabled: boolean; available: boolean; canManage: boolean;
+    obligations: ObligationTimelineItem[]; tasks: NexusTaskUi[] } = {
+      enabled: false, available: false, canManage: false, obligations: [], tasks: [],
+    },
 ): string {
   const turns = [...runs].reverse().map((run) => {
     const linked = followUps.find((item) => item.sourceQuestion === run.question);
@@ -275,6 +286,24 @@ export function renderNexus(
   const progressRows = (items: FollowUpItem[]): string => items.map((item) =>
     `<li><span class="progress-status">${item.status === 'open' ? 'In progress' : 'Completed'}</span>
       <span>${esc(item.title)}</span></li>`).join('');
+  const taskRows = taskWorkspace.tasks.map((task) => `<article class="nexus-task" id="nexus-task-${esc(task.id)}">
+    <div class="row-actions"><b>${esc(task.specialist.toUpperCase())} · ${esc(task.status.replaceAll('_',' '))}</b>
+      <span class="why">${task.currentAttempt}/${task.maxAttempts} specialist runs</span></div>
+    <p>${esc(task.purpose)}</p>
+    ${task.attempts.map((attempt) => `<details><summary>${esc(attempt.agent_role)} · ${esc(attempt.outcome)} · attempt ${attempt.ordinal}</summary>
+      <pre>${esc(JSON.stringify(attempt.result, null, 2).slice(0,5000))}</pre>
+      ${Array.isArray(attempt.verifier_findings) && attempt.verifier_findings.length
+        ? `<p><b>Verifier findings</b></p><ul>${attempt.verifier_findings.map((finding) => `<li>${esc(typeof finding === 'object' && finding !== null ? (finding as Record<string,unknown>).summary : finding)}</li>`).join('')}</ul>` : ''}
+      ${Array.isArray(attempt.addressed_findings) && attempt.addressed_findings.length
+        ? `<p class="why">This retry references ${attempt.addressed_findings.length} prior finding(s).</p>` : ''}
+    </details>`).join('')}
+    ${['queued','retry_ready'].includes(task.status) ? `<button type="button" class="run-nexus-task" data-id="${esc(task.id)}">Run with Nexus</button>` : ''}
+    ${task.status === 'needs_human_review' ? '<a href="/follow-ups">Open the assigned human review →</a>' : ''}
+  </article>`).join('');
+  const obligationRows = taskWorkspace.obligations.slice(0,100).map((item) => `<label class="nexus-obligation">
+    <input type="checkbox" name="obligationIds" value="${esc(item.id)}">
+    <span>${esc(item.kind)} · ${esc(item.periodKey)} · ${esc(item.workflowState.replaceAll('_',' '))}</span>
+  </label>`).join('');
   return `<div class="nexus">
   <section class="nexus-chat" aria-label="Bharat Nexus conversation">
     <div class="nexus-head"><h1>Bharat Nexus</h1>
@@ -336,9 +365,63 @@ export function renderNexus(
       ${activity.slice(0, 8).map(activityRow).join('') || '<p class="empty">No activity yet.</p>'}
       <a href="/activity">View all activity →</a>
     </div>
+    <section class="panel nexus-task-workspace" aria-label="Long-running Nexus reviews">
+      <h2>Long-running reviews</h2>
+      <p class="why">Nexus can summarize selected compliance timeline records. A review cannot file, pay, reconcile, or change a book entry.</p>
+      <details class="nexus-ai-consent">
+        <summary>Data sharing and Nexus task consent · ${taskWorkspace.enabled ? 'On' : 'Off'}</summary>
+        <p>When enabled, the selected timeline metadata and your review question are sent to the configured AI service (currently ${taskWorkspace.available ? 'available' : 'not configured'}). Original files and statement passwords are not included in this review. Avoid typing sensitive identifiers into the question. Nexus and its verifier produce suggestions; a human remains responsible for decisions.</p>
+        ${taskWorkspace.canManage ? `<button type="button" id="toggle-nexus-task-consent" ${!taskWorkspace.available && !taskWorkspace.enabled ? 'disabled' : ''}>${taskWorkspace.enabled ? 'Turn off task runs' : 'Enable task runs'}</button>` : '<p class="why">A firm owner or authorized CA can change this setting.</p>'}
+      </details>
+      ${taskWorkspace.enabled ? `<form id="nexus-task-form">
+        <label>What should Nexus review?<textarea name="purpose" maxlength="1000" required>Summarize these compliance timeline records. State what is recorded, what remains unverified, and what evidence is missing. Do not infer a filing or due date.</textarea></label>
+        <label>Specialist<select name="specialist"><option value="gst">GST</option><option value="tds">TDS</option><option value="banking">Banking</option></select></label>
+        <fieldset><legend>Choose timeline records</legend>${obligationRows || '<p class="empty">No compliance timeline records are available for this client yet.</p>'}</fieldset>
+        <button type="submit" ${!taskWorkspace.obligations.length ? 'disabled' : ''}>Create review task</button>
+        <span id="nexus-task-result" role="status" class="why"></span>
+      </form>` : '<p class="why">A firm owner or authorized CA must enable task runs before client data is sent to AI.</p>'}
+      <h3>Recent task history</h3>
+      ${taskRows || '<p class="empty">No Nexus task runs yet.</p>'}
+    </section>
   </aside>
 </div>
 <script>(() => {
+  const taskConsent = document.getElementById('toggle-nexus-task-consent');
+  if (taskConsent) taskConsent.onclick = async () => {
+    taskConsent.disabled = true;
+    try {
+      const response = await fetch('/api/nexus/task-consent', { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: ${taskWorkspace.enabled ? 'false' : 'true'} }) });
+      const result = await response.json(); if (!result.ok) throw new Error(result.error || 'could not update Nexus consent');
+      location.reload();
+    } catch (error) { taskConsent.disabled = false; alert(String(error.message || error)); }
+  };
+  const taskForm = document.getElementById('nexus-task-form');
+  if (taskForm) taskForm.onsubmit = async (event) => {
+    event.preventDefault();
+    const button = taskForm.querySelector('button[type="submit"]');
+    const result = document.getElementById('nexus-task-result');
+    const recordRefs = [...taskForm.querySelectorAll('input[name="obligationIds"]:checked')].map((input) => ({ kind: 'obligation', id: input.value }));
+    if (!recordRefs.length) { result.textContent = 'Select at least one timeline record.'; return; }
+    button.disabled = true; result.textContent = 'Creating a scoped task…';
+    try {
+      const response = await fetch('/api/nexus/tasks', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ purpose: taskForm.elements.purpose.value, specialist: taskForm.elements.specialist.value,
+          recordRefs, idempotencyKey: crypto.randomUUID() }) });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not create review task');
+      const run = await fetch('/api/nexus/tasks/' + encodeURIComponent(data.taskId) + '/run', { method: 'POST' });
+      const outcome = await run.json(); if (!outcome.ok) throw new Error(outcome.error || 'task was created but could not run');
+      result.textContent = 'Review finished. Reloading the task history…'; location.reload();
+    } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+  };
+  document.querySelectorAll('.run-nexus-task').forEach((button) => button.onclick = async () => {
+    button.disabled = true; button.textContent = 'Running…';
+    try {
+      const response = await fetch('/api/nexus/tasks/' + encodeURIComponent(button.dataset.id) + '/run', { method: 'POST' });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not run task');
+      location.reload();
+    } catch (error) { button.disabled = false; button.textContent = String(error.message || error); }
+  });
   const form = document.getElementById('nexus-form');
   const input = document.getElementById('nexus-input');
   const send = document.getElementById('nexus-send');
@@ -860,6 +943,16 @@ header .client { color: var(--muted); font-size: 12px; }
 .nexus-side h2 { margin-top: 0; }
 .nexus-prompt { width: 100%; text-align: left; margin: 0 0 8px; padding: 9px 11px; }
 .nexus-side .panel { margin-bottom: 12px; }
+.nexus-task-workspace > form { display: grid; gap: 9px; }
+.nexus-task-workspace label { display: grid; gap: 5px; }
+.nexus-task-workspace textarea { min-height: 84px; resize: vertical; font: inherit; }
+.nexus-task-workspace fieldset { display: grid; gap: 6px; max-height: 220px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.nexus-task-workspace .nexus-obligation { display: flex; grid-template-columns: auto 1fr; gap: 7px; align-items: start; font-size: 12px; }
+.nexus-task { border-top: 1px solid var(--line); padding: 10px 0; overflow-wrap: anywhere; }
+.nexus-task pre { max-height: 220px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
+.nexus-task details { margin: 8px 0; }
+.nexus-ai-consent { margin: 10px 0; }
 .nexus-side a { display: block; margin: 7px 0; }
 .nexus-progress-count { color: var(--muted); }
 .nexus-progress-count b { color: var(--ink); font-size: 20px; }

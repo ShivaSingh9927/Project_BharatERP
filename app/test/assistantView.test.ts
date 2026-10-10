@@ -92,6 +92,25 @@ describe('Ask Bharat shell', () => {
     expect(html).toContain("fetch('/api/document-requests/'");
     expect(renderNexus('Acme', [], [], [], [], [], false)).not.toContain('data-request-id=');
   });
+  it('shows scoped long-running review consent, timeline selection, and escaped attempt history', () => {
+    const html = renderNexus('Acme', [], [], [], [], [], false, {
+      enabled: true, available: true, canManage: true,
+      obligations: [{ id: 'obl-1', clientId: 'client-1', registrationId: null, kind: 'GSTR-3B',
+        periodKey: '2026-09', identityKey: 'gstr3b-2026-09', ownerUserId: null,
+        createdAt: '2026-10-01T00:00:00.000Z', workflowState: 'needs_human_review', history: [] }],
+      tasks: [{ id: 'task-1', purpose: '<Review this>', specialist: 'gst', status: 'completed',
+        currentAttempt: 1, maxAttempts: 4, attempts: [
+          { ordinal: 1, agent_role: 'gst', outcome: 'completed', result: { summary: '<untrusted model text>' }, verifier_findings: [], addressed_findings: [] },
+        ] }],
+    });
+    expect(html).toContain('Data sharing and Nexus task consent · On');
+    expect(html).toContain('value="obl-1"');
+    expect(html).toContain('Create review task');
+    expect(html).toContain('&lt;Review this&gt;');
+    expect(html).toContain('&lt;untrusted model text&gt;');
+    expect(html).toContain('cannot file, pay, reconcile, or change a book entry');
+    expect(html).toContain("fetch('/api/nexus/tasks'");
+  });
   it('is available on every CA screen with page context and read-only wording', () => {
     const html = renderShell({
       session: { clientName: 'Shree Ram Trading Company', displayName: 'CA' },
