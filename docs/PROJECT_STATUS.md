@@ -217,6 +217,13 @@ domain code, migrations, and tests for exact behavior.
   062 is applied locally; typecheck passed and focused tests passed (3 files,
   15 tests). The full suite passed (63 files, 961 tests). Email delivery
   remains subject to its existing opt-in gates.
+- **Phase 4 retry-budget correction (2026-10-10):** migration 063 keeps the
+  four-run budget on specialist calls while verifier attempts use separate
+  bounded records. Database triggers serialize attempt ordinals, enforce each
+  role's cap, and keep `current_attempt` as the specialist retry count. An
+  integration scenario exercised three verifier-directed retries and escalated
+  the fourth unsuccessful specialist run. Migration 063 is applied locally;
+  typecheck and focused task tests passed (1 file, 8 tests).
 
 ## Recently changed document workflow
 

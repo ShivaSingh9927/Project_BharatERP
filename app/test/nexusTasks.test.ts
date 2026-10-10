@@ -135,4 +135,20 @@ describe('Nexus specialist task records',()=>{
     const alerts=await withFirm(tenant.firmId,c=>c.query(`SELECT id FROM nexus_alert_events WHERE client_id=$1 AND dedupe_key=$2`,[tenant.clientId,`nexus_task:${id}:needs_human_review`]));
     expect(alerts.rowCount).toBe(1);
   });
+
+  it('allows an initial specialist run plus three retries despite separate verifier runs',async()=>{
+    const id=await createNexusTask(base(tenant.clientId,'task-three-retries'));
+    for(let run=1;run<=3;run++) {
+      await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+      await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:`run ${run}`},idempotencyKey:`three-retries-specialist-${run}`});
+      await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'verifier',outcome:'completed',resultSchemaVersion:1,result:{decision:'retry'},verificationDecision:'retry',verifierFindings:[{summary:`Address issue from run ${run}`,severity:'review'}],idempotencyKey:`three-retries-verifier-${run}`});
+    }
+    await transitionNexusTaskStatus({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,toStatus:'running'});
+    await appendNexusTaskAttempt({firmId:tenant.firmId,clientId:tenant.clientId,taskId:id,agentRole:'document',outcome:'partial',resultSchemaVersion:1,result:{proposal:'final retry exhausted'},idempotencyKey:'three-retries-specialist-4'});
+    const task=await getNexusTask(tenant.firmId,tenant.clientId,id);
+    expect(task?.currentAttempt).toBe(4);
+    expect(task?.attempts).toHaveLength(7);
+    expect(task?.status).toBe('needs_human_review');
+    expect((await listFollowUps(tenant.firmId,tenant.clientId)).filter(item=>item.sourceNexusTaskId===id)).toHaveLength(1);
+  });
 });

@@ -199,6 +199,11 @@ created afterward.
   task. Critical verifier outcomes and exhausted runs create a high-priority
   system-attributed review item plus an in-app alert atomically. Old prototype
   tasks without a requester are left unchanged.
+- **Phase 4 retry-budget correction (2026-10-10):** migration 063 counts up to
+  four specialist runs separately from verifier runs. The database serializes
+  ordinals and enforces both caps; three verifier-directed retries fit within
+  the intended initial-plus-three specialist budget. An unsuccessful fourth
+  specialist run escalates to human review.
 - Remaining: worker/coordinator model invocation, human review UI,
   restart/resume execution.
   Persist task envelopes, checkpoints, attempts, budgets, and final results.

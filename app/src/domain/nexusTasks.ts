@@ -286,8 +286,14 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
       const known=Array.isArray(findings)?new Set(findings.map((x)=>x&&typeof x==='object'?(x as Record<string,unknown>).finding_id:null)):new Set();
       if(addressed.some(id=>!known.has(id))) throw new ValidationError('retry references a finding outside the latest verifier review','NXT-5');
     }
-    const ordinal=task.rows[0]!.current_attempt+1;
-    if(ordinal>task.rows[0]!.max_attempts) throw new ValidationError('task attempt budget is exhausted','NXT-3');
+    const attemptSequence=await c.query<{n:number}>(`SELECT COALESCE(max(ordinal),0)+1 AS n FROM nexus_specialist_task_attempts WHERE task_id=$1`,[args.taskId]);
+    const ordinal=attemptSequence.rows[0]!.n;
+    const specialistAttempt=task.rows[0]!.current_attempt+(role==='verifier'?0:1);
+    if(role!=='verifier'&&specialistAttempt>task.rows[0]!.max_attempts) throw new ValidationError('specialist retry budget is exhausted','NXT-3');
+    if(role==='verifier') {
+      const verifierCount=await c.query<{n:number}>(`SELECT count(*)::integer AS n FROM nexus_specialist_task_attempts WHERE task_id=$1 AND agent_role='verifier'`,[args.taskId]);
+      if(verifierCount.rows[0]!.n>=task.rows[0]!.max_attempts) throw new ValidationError('verifier attempt budget is exhausted','NXT-3');
+    }
     if(role==='verifier') {
       const critical=findings.some(f=>f.severity==='critical');
       if(decision==='accepted'&&findings.length) throw new ValidationError('a verifier cannot accept with unresolved findings','NXT-5');
@@ -303,13 +309,13 @@ export async function appendNexusTaskAttempt(args:{firmId:string;clientId:string
       VALUES($1,$2,$3,$4,'attempt_recorded',$5,$6,$7)`,[args.firmId,args.clientId,args.taskId,count.rows[0]!.n,attemptId,JSON.stringify({ordinal,outcome:args.outcome}),`attempt:${attemptId}`]);
     const nextStatus: NexusTaskStatus=role==='verifier'
       ?decision==='accepted'&&args.outcome==='completed'?'completed'
-        :decision==='retry'&&ordinal<task.rows[0]!.max_attempts?'retry_ready':'needs_human_review'
-      :ordinal===4&&args.outcome!=='completed'?'needs_human_review'
+        :decision==='retry'&&task.rows[0]!.current_attempt<task.rows[0]!.max_attempts?'retry_ready':'needs_human_review'
+      :specialistAttempt===task.rows[0]!.max_attempts&&args.outcome!=='completed'?'needs_human_review'
       :args.outcome==='completed'||args.outcome==='partial'?'verifying'
       :args.outcome==='blocked'?'blocked':'failed';
     const checkpoint=(args.result as Record<string,unknown>).checkpoint;
     await c.query(`UPDATE nexus_specialist_tasks SET current_attempt=$1,status=$2,checkpoint=COALESCE($3,checkpoint),result_schema_version=$4,result=$5,updated_at=now() WHERE id=$6 AND client_id=$7`,
-      [ordinal,nextStatus,checkpoint&&typeof checkpoint==='object'?JSON.stringify(checkpoint):null,args.resultSchemaVersion,JSON.stringify(result),args.taskId,args.clientId]);
+      [specialistAttempt,nextStatus,checkpoint&&typeof checkpoint==='object'?JSON.stringify(checkpoint):null,args.resultSchemaVersion,JSON.stringify(result),args.taskId,args.clientId]);
     if(nextStatus==='needs_human_review') await createEscalationFollowUp(c,args.firmId,args.clientId,args.taskId);
     return {ordinal,duplicate:false};
   });
