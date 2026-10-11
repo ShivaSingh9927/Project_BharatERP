@@ -95,6 +95,103 @@ const canonicalQuestion: Record<Exclude<AssistantIntent, 'unsupported'>, string>
   page_help: 'How does this page work?',
 };
 
+function isMoneyPositionQuestion(question: string): boolean {
+  const q = question.trim().toLowerCase();
+  return /\bhow much (?:money|cash|funds?)?\s*(?:do|does)\s+(?:we|the business|the company)\s+have\b/.test(q)
+    || /\b(?:bank|cash|funds?|liquid)\s+(?:book\s+)?balance\b/.test(q)
+    || /\b(?:what(?:'s| is)\s+)?(?:our|the company'?s|business)\s+(?:cash|bank)\s+position\b/.test(q)
+    || /\b(?:how much|total|current|available)\b.*\b(?:money|cash|balance|funds?)\b/.test(q)
+    || /\b(?:balance|cash|funds?)\b.*\b(?:how much|total|available|in the bank)\b/.test(q);
+}
+
+async function answerBankBookPosition(firmId: string, clientId: string, question: string): Promise<AssistantReply> {
+  const requestedAsOf = bankBalanceAsOf(question);
+  const position = await withFirm(firmId, async (c) => {
+    const accounts = await c.query<{
+      id: string; bank_name: string; last4: string; book_balance: string; as_of: string;
+    }>(
+      `SELECT ba.id, ba.bank_name, ba.account_number_last4 AS last4,
+              COALESCE(SUM(le.debit - le.credit), 0)::text AS book_balance,
+              $2::date::text AS as_of
+         FROM bank_accounts ba
+         LEFT JOIN ledger_entries le
+           ON le.account_id = ba.account_id AND le.posting_date <= $2::date
+        WHERE ba.client_id = $1
+        GROUP BY ba.id, ba.bank_name, ba.account_number_last4
+        ORDER BY ba.bank_name, ba.account_number_last4`, [clientId, requestedAsOf]);
+    const open = await c.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM bank_transactions bt
+        WHERE bt.client_id = $1 AND bt.txn_date <= $2::date AND NOT bt.is_ignored
+          AND NOT EXISTS (
+            SELECT 1 FROM reconciliation_matches rm
+             WHERE rm.bank_transaction_id = bt.id AND rm.unmatched_at IS NULL)`, [clientId, requestedAsOf]);
+    return { accounts: accounts.rows, open: Number(open.rows[0]!.n) };
+  });
+  if (position.accounts.length === 0) {
+    return {
+      answer: 'I can’t report a bank-ledger balance yet because this client has no connected bank account. Add the account and import its opening data or statement first.',
+      evidence: ['Bank account register'],
+      action: { href: '/accounts', label: 'Open bank accounts' },
+      supported: false,
+    };
+  }
+
+  const totalPaise = position.accounts.reduce((total, account) => total + paise(account.book_balance), 0n);
+  const first = position.accounts[0]!;
+  const asOf = first.as_of;
+  const accountList = position.accounts.map((account) =>
+    `${account.bank_name} ··${account.last4}: ₹${formatAssistantMoney(paise(account.book_balance))}`,
+  ).join('; ');
+  const reconciliationNote = position.open > 0 && requestedAsOf === position.accounts[0]!.as_of
+    ? ` ${position.open} statement transaction${position.open === 1 ? '' : 's'} still need reconciliation, so this may differ from the bank’s current available balance.`
+    : ' This is the book balance, not a live balance fetched from the bank.';
+  return {
+    answer: `The books record ₹${formatAssistantMoney(totalPaise)} across ${position.accounts.length} connected bank account${position.accounts.length === 1 ? '' : 's'} as of ${asOf}. ${accountList}.${reconciliationNote} This figure excludes any cash-on-hand account not connected as a bank account.`,
+    evidence: ['Posted ledger entries for connected bank accounts', 'Unmatched statement transactions'],
+    action: position.open > 0
+      ? { href: '/reconcile', label: 'Review unreconciled transactions' }
+      : { href: '/accounts', label: 'View bank accounts' },
+    supported: true,
+  };
+}
+
+function formatAssistantMoney(value: bigint): string {
+  const raw = money(value);
+  const negative = raw.startsWith('-');
+  const [whole = '0', fraction = '00'] = (negative ? raw.slice(1) : raw).split('.');
+  const grouped = whole.length > 3
+    ? `${whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${whole.slice(-3)}`
+    : whole;
+  return `${negative ? '−' : ''}${grouped}.${fraction.padEnd(2, '0').slice(0, 2)}`;
+}
+
+function bankBalanceAsOf(question: string): string {
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+  if (/\b(last|previous) month\b/i.test(question)) {
+    const [year, month] = today.split('-').map(Number) as [number, number];
+    return new Date(Date.UTC(year, month - 1, 0)).toISOString().slice(0, 10);
+  }
+  const explicitDate = /\bas of (\d{4}-\d{2}-\d{2})\b/i.exec(question)?.[1];
+  return explicitDate ?? today;
+}
+
+function resolveConversationFollowUp(question: string, previousUserQuestion?: string): string {
+  const current = question.trim();
+  if (!previousUserQuestion?.trim()) return current;
+  const period = /^(?:and\s+)?(?:what|how) about (last|previous|this|current) (month|financial year|fiscal year)\??$/i.exec(current);
+  if (period && canResolvePeriodFollowUp(previousUserQuestion, period[2]!)) {
+    return `${previousUserQuestion.trim()} (${period[1]} ${period[2]})`;
+  }
+  return current;
+}
+
+function canResolvePeriodFollowUp(previousUserQuestion: string, periodUnit: string): boolean {
+  if (/\b(profit|loss|earnings?|margin|revenue)\b/i.test(previousUserQuestion)) return true;
+  return isMoneyPositionQuestion(previousUserQuestion) && /month/i.test(periodUnit);
+}
+
 /** DeepSeek selects one read-only tool; BharatERP supplies every figure. */
 export async function answerAssistantWithAi(
   firmId: string,
@@ -102,20 +199,47 @@ export async function answerAssistantWithAi(
   question: string,
   page: string,
   client: LlmClient | null,
+  previousUserQuestion?: string,
 ): Promise<AssistantReply> {
+  const periodFollowUp = /^(?:and\s+)?(?:what|how) about (?:last|previous|this|current) (month|financial year|fiscal year)\??$/i.exec(question.trim());
+  if (periodFollowUp && previousUserQuestion?.trim()
+    && !canResolvePeriodFollowUp(previousUserQuestion, periodFollowUp[1]!)) {
+    return withAudit({
+      answer: 'I understood that you mean the earlier topic, but I can only report historical periods for profit and connected bank book balances right now. I won’t present a current figure as last month’s result.',
+      evidence: ['Earlier user question in this conversation', 'Historical-period query coverage'],
+      supported: false,
+    }, { routingMode: 'deterministic', intent: 'unsupported' });
+  }
+  if (previousUserQuestion?.trim()
+    && /^(?:show me more|more details|tell me more|explain more|why|why is that|where did that come from|how did you calculate it)\??$/i.test(question.trim())) {
+    return withAudit({
+      answer: 'I understand this refers to your earlier question, but source-level drill-down and “why” explanations are not connected to this chat yet. Ask a specific question such as “Which bank transactions are still unmatched?”',
+      evidence: ['Earlier user question in this conversation', 'Source-level chat drill-down not yet available'],
+      supported: false,
+    }, { routingMode: 'deterministic', intent: 'unsupported' });
+  }
+  const routedQuestion = resolveConversationFollowUp(question, previousUserQuestion);
   // A filing deadline cannot be inferred from the accounting dashboard.
   // Keep a clear refusal ahead of model routing, which may otherwise mistake
   // "next" for the generic attention/status intent.
-  if (/\bitr\b|income[ -]tax return/i.test(question)) {
+  if (/\bitr\b|income[ -]tax return/i.test(routedQuestion)) {
     return withAudit(unsupportedItrDeadline(), { routingMode: 'deterministic' });
   }
+  // Balance figures must come from the ledger tool, not from model routing.
+  // This also catches plain-language wording such as “how much do we have?”
+  // which a router may otherwise collapse into a reconciliation status query.
+  if (isMoneyPositionQuestion(routedQuestion)) {
+    return withAudit(await answerAssistant(firmId, clientId, routedQuestion, page), {
+      routingMode: 'deterministic', intent: 'bank_balance',
+    });
+  }
   if (!client) return withAudit(
-    await answerAssistant(firmId, clientId, question, page),
+    await answerAssistant(firmId, clientId, routedQuestion, page),
     { routingMode: 'deterministic' },
   );
 
   try {
-    const clean = question.replaceAll('<<<QUESTION', '').replaceAll('QUESTION>>>', '');
+    const clean = routedQuestion.replaceAll('<<<QUESTION', '').replaceAll('QUESTION>>>', '');
     const raw = extractJson(await client.complete(
       ROUTER_PROMPT,
       `Current page: ${page}\n<<<QUESTION\n${clean}\nQUESTION>>>`,
@@ -125,27 +249,27 @@ export async function answerAssistantWithAi(
       ? routed.intent as AssistantIntent
       : 'unsupported';
     if (intent === 'receivables') {
-      return withAudit(await answerReceivables(firmId, clientId, question), {
+      return withAudit(await answerReceivables(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent === 'payables') {
-      return withAudit(await answerPayables(firmId, clientId, question), {
+      return withAudit(await answerPayables(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent === 'prepare_payment') {
-      return withAudit(await preparePaymentAssistant(firmId, clientId, question), {
+      return withAudit(await preparePaymentAssistant(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent === 'prepare_reconciliation') {
-      return withAudit(await prepareReconciliationAssistant(firmId, clientId, question), {
+      return withAudit(await prepareReconciliationAssistant(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent === 'prepare_invoice') {
-      return withAudit(await prepareInvoiceAssistant(firmId, clientId, question), {
+      return withAudit(await prepareInvoiceAssistant(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
@@ -155,30 +279,30 @@ export async function answerAssistantWithAi(
       });
     }
     if (intent === 'documents') {
-      return withAudit(await answerDocuments(firmId, clientId, question), {
+      return withAudit(await answerDocuments(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent === 'profit') {
-      return withAudit(await answerProfit(firmId, clientId, question), {
+      return withAudit(await answerProfit(firmId, clientId, routedQuestion), {
         routingMode: 'deepseek', intent, provider: client.provider, model: client.model,
       });
     }
     if (intent in canonicalQuestion) {
       return withAudit(await answerAssistant(
         firmId, clientId,
-        canonicalQuestion[intent as Exclude<AssistantIntent, 'unsupported'>], page,
+        routedQuestion, page,
       ), { routingMode: 'deepseek', intent, provider: client.provider, model: client.model });
     }
   } catch {
     // An external model outage must never take the books assistant down.
     return withAudit(
-      await answerAssistant(firmId, clientId, question, page),
+      await answerAssistant(firmId, clientId, routedQuestion, page),
       { routingMode: 'deepseek_fallback', provider: client.provider, model: client.model },
     );
   }
   return withAudit(
-    await answerAssistant(firmId, clientId, question, page),
+    await answerAssistant(firmId, clientId, routedQuestion, page),
     { routingMode: 'deepseek', intent: 'unsupported', provider: client.provider, model: client.model },
   );
 }
@@ -425,6 +549,8 @@ export async function answerAssistant(
 
   if (/\bitr\b|income[ -]tax return/.test(q)) return unsupportedItrDeadline();
 
+  if (isMoneyPositionQuestion(q)) return answerBankBookPosition(firmId, clientId, question);
+
   if (/\b(profit|loss|earnings?|margin|making)\b/.test(q)) {
     return answerProfit(firmId, clientId, question);
   }
@@ -492,29 +618,6 @@ export async function answerAssistant(
     };
   }
 
-  // A balance is not the same as the number of connected accounts or open
-  // reconciliation lines. Explain this capability gap explicitly.
-  if (/\b(how much|amount|total|current|available)\b.*\b(money|cash|balance|funds?)\b|\b(balance|cash|funds?)\b.*\b(how much|total|available|in the bank)\b/.test(q)) {
-    const bank = await withFirm(firmId, async (c) => {
-      const accounts = await c.query<{ n: string }>(
-        'SELECT count(*)::text AS n FROM bank_accounts WHERE client_id = $1', [clientId]);
-      const open = await c.query<{ n: string }>(
-        `SELECT count(*)::text AS n FROM bank_transactions bt
-         WHERE bt.client_id = $1 AND NOT bt.is_ignored
-           AND NOT EXISTS (
-             SELECT 1 FROM reconciliation_matches rm
-             WHERE rm.bank_transaction_id = bt.id AND rm.unmatched_at IS NULL)`, [clientId]);
-      return { accounts: Number(accounts.rows[0]!.n), open: Number(open.rows[0]!.n) };
-    });
-    return {
-      answer: bank.accounts === 0
-        ? 'I can’t give a cash or bank total because no bank account is connected to this client yet. Add the account and import a statement first.'
-        : `I can’t give a reliable total cash/bank balance yet: Ask Bharat currently reports connected accounts and reconciliation status, but does not calculate the posted ledger balance. There \${bank.open === 1 ? 'is' : 'are'} \${bank.open} unreconciled statement transaction\${bank.open === 1 ? '' : 's'}, so the ledger may also differ from the bank. Reconcile those entries, then use the bank account register for a verified book balance.`,
-      evidence: ['Bank account register', 'Unmatched statement transactions', 'Current assistant balance reporting limitation'],
-      action: { href: '/reconcile', label: 'Review bank reconciliation' }, supported: false,
-    };
-  }
-
   if (/\b(attention|status|summary|today|what should|next)\b/.test(q)) {
     const dashboard = await loadDashboard(firmId, clientId);
     const parts = [
@@ -534,12 +637,12 @@ export async function answerAssistant(
     return pageHelp[page]!;
   }
 
-  const isShortFollowUp = /^(now tell me|tell me|and\??|what about that\??|why\??|then what\??|go on|continue)$/i.test(question.trim());
+  const isShortFollowUp = /^(now tell me|tell me|and\??|what about that\??|what about (?:last|previous|this|current) (?:month|financial year|fiscal year)\??|how about (?:last|previous|this|current) (?:month|financial year|fiscal year)\??|show me more|more details|tell me more|explain more|why\??|then what\??|go on|continue)$/i.test(question.trim());
   return {
     answer: isShortFollowUp
-      ? 'I can’t tell what “that” refers to because Ask Bharat currently treats each message as a separate question and does not carry the prior chat turn into this request. Please restate the subject (for example, “What is our bank balance?”).'
+      ? 'I need the earlier topic to answer that follow-up. Please ask it in the same Nexus conversation, or restate the subject (for example, “What was our profit last month?”).'
       : 'I can’t answer this reliably because there is no supported book query for that subject yet. I can currently answer questions about profit, payables, receivables, documents, GST credit, bank reconciliation, and items needing attention.',
-    evidence: isShortFollowUp ? ['Conversation context is not currently sent with each question'] : ['No matching supported book query'], supported: false,
+    evidence: isShortFollowUp ? ['No preceding user question was available in this request'] : ['No matching supported book query'], supported: false,
   };
 }
 
@@ -718,7 +821,7 @@ async function prepareReconciliationAssistant(
       evidence: ['Bank account register'], action: { href: '/reconcile', label: 'Open reconciliation' }, supported: true,
     };
   }
-  const queue = await reconciliationQueue(firmId, account.id);
+  const queue = await reconciliationQueue(firmId, account.id, clientId);
   const { unmatched, autoMatchable, ambiguous } = queue.totals;
   return {
     answer: unmatched === 0

@@ -1,5 +1,47 @@
 # Project status and handoff
 
+### Nexus money question and saved chat presentation (2026-10-10)
+
+- “How much do we have?” now bypasses AI intent routing and reads exact posted
+  ledger entries for connected bank accounts. Nexus labels the result as a
+  book balance, gives the as-of date and per-account breakdown, and notes when
+  statement lines remain unreconciled. Cash on hand and live bank balances are
+  explicitly outside this figure. If no bank account is connected, it explains
+  that gap and links to account setup.
+- Saved chat turns no longer render redundant standalone “You” and “Nexus”
+  bubbles before the actual message.
+- Node 22.23.3 typecheck passed. Focused assistant and view tests passed
+  (34 tests across 2 files).
+
+### Nexus conversation follow-up context (2026-10-10)
+
+- `/api/assistant` now supplies only the immediately preceding user question
+  from the same client-scoped Nexus case when routing a new turn. It does not
+  send earlier Nexus answers or document contents as extra context.
+- Period follow-ups such as “what about last month?” are resolved against that
+  prior topic, then the existing deterministic book query handles the period.
+  Bank book balances support an as-of date for last month. If a contextual
+  follow-up is submitted without a prior topic, Nexus asks the user to restate
+  it. No answer figure comes from the model.
+- Node 22.23.3 typecheck and focused tests passed (44 tests across 4 files).
+  Period follow-ups are currently limited to profit and monthly bank book
+  balances. Entity follow-ups still need evidence-aware handling.
+
+### Local Z.ai GLM task delegate (2026-10-10)
+
+- Added `npm run agent:glm` as a bounded local text/vision delegate using the
+  Z.ai OpenAI-compatible chat API. It sends only the task plus explicitly
+  selected repo-relative files/images; it has no tools or write access and
+  returns reviewable text or a proposed diff. The credential is read from the
+  local key file or environment and never printed.
+- Z.ai's published pricing currently lists GLM-4.7-Flash and GLM-4.6V-Flash as
+  free. A synthetic GLM-4.7-Flash request returned HTTP 429, business code
+  1305 (temporary service overload). This is distinct from OCR's `glm-ocr`
+  `/layout_parsing` route; OCR success can coexist with chat service overload.
+  No project/client files were sent.
+- Focused unit tests and TypeScript typecheck passed. This is a separate CLI
+  delegate, not a model selectable through Codex's native `spawn_agent` tool.
+
 **Snapshot date:** 2026-10-09
 **Confidence:** working-tree snapshot; verify against code and the active local
 database before relying on operational details.
@@ -280,6 +322,72 @@ domain code, migrations, and tests for exact behavior.
   this file or logs.
 - Review statutory and tax behavior with a qualified CA; draft specs are not
   legal validation.
+
+## Nexus chat workspace progress (2026-10-10)
+
+- Added the Phase 0 interaction plan and a versioned response-block contract
+  in `docs/NEXUS_CHAT_WORKSPACE_PLAN.md` and `docs/NEXUS_CHAT_CONTRACT.md`.
+- Added client-scoped, append-only Nexus case state, messages, and source links
+  in migrations 065–068. All four migrations are applied to the local database;
+  do not assume they are applied elsewhere. The `/nexus` page now saves Q&A as
+  durable client-scoped cases and renders recent conversations with escaped
+  message text. The assistant drawer and non-Nexus assistant route are
+  unchanged.
+- Added a server-validated read-only response-block schema/renderer and a
+  bank-activity result builder for exact-period totals, sourced rows, and an
+  accessible daily debit/credit chart. At this checkpoint they were not yet
+  wired into the live chat; see the subsequent integration section below. No
+  bank classification or reconciliation action is exposed in chat.
+- Closed same-firm/client gaps in reconciliation queue and BRS account reads;
+  scoped `/api/ignore` through the banking domain helper. Review/confirmation
+  role gates for consequential bank actions remain unresolved, so the plan's
+  bank-review action card is not implemented.
+- Verification run: Node 22 typecheck passed; focused view/block tests passed
+  (19 tests); focused case and bank-activity integration tests passed (8
+  tests); bank review path tests passed (75 tests). The initial sandboxed DB
+  test call was blocked, then the tests passed against the local PostgreSQL
+  database with the explicit local-DB permission.
+- GLM critique of the internal design plan remains pending explicit user
+  authorization to send that specific document to the external Z.ai service.
+  No design document was sent. Native implementation delegation used Luna.
+
+### Nexus chat bank activity slice (2026-10-10)
+
+- Connected the read-only bank activity builder to the live `/nexus` case chat.
+  A user can select a client bank account and date range; the server verifies
+  firm/client ownership on every request and returns sourced totals, up to 25
+  statement lines, and an accessible daily chart when at least two transaction
+  dates are available. Partial table coverage and omitted-chart reasons remain
+  visible in the response.
+- Nexus renders saved response blocks inside the conversation. Migration 069
+  adds the append-only message's validated JSONB response snapshot; migrations
+  065–068 remain unchanged. Block payloads are validated before storage and
+  again on read. This route is read-only: it does not classify, reconcile,
+  ignore, or post transactions.
+- Migrations 069 and 070 are applied to the configured local database. Exact
+  retries are bound to a SHA-256 fingerprint of the account and date range and
+  return the already saved result without regenerating its timestamp; reuse of
+  a request key with different inputs is rejected. The account is still
+  revalidated against the signed-in firm/client before a saved result is
+  returned. The date picker defaults to the last 30 calendar dates in India
+  Standard Time. Invalid date ranges are rejected before any case is created.
+- Node 22 typecheck passed; focused tests passed: 5 files, 30 tests
+  (`assistantView`, `nexusCases`, `nexusBankActivity`, `nexusBankActivityRange`,
+  and `nexusBlocks`). No full-suite run was performed.
+- This is an account/date-range guided interaction inside Nexus, not yet a
+  natural-language bank analyst or a transaction confirmation workflow. It
+  does not call an AI model.
+
+### Nexus bank-line evidence links (2026-10-11)
+
+- Bank transaction references in Nexus provenance and sourced table rows now
+  open a read-only evidence page with the original narration, exact debit and
+  credit strings, reference, account ending, and linked statement period.
+- The detail lookup checks firm and client ownership on every request and
+  joins only same-scope account/statement records. Other source kinds remain
+  non-clickable labels until they have dedicated scoped detail pages.
+- Node 22 typecheck passed. Focused block/view tests passed (22 tests), and
+  the database-backed bank activity/source-scope tests passed (5 tests).
 
 ## Handoff convention
 

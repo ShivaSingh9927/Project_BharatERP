@@ -650,7 +650,7 @@ describe('§10 — cheques and the float', () => {
     chequeId = id;
 
     // Books have paid it on the 5th; the bank has not seen it.
-    const brs = await bankReconciliationStatement(t.firmId, bankAccountId, '2026-09-15');
+    const brs = await bankReconciliationStatement(t.firmId, t.clientId, bankAccountId, '2026-09-15');
     const item = brs.lines.find((l) => l.label.startsWith('Cheques issued'));
     expect(item?.amount).toBe('62000.00');
     expect(item?.effect).toBe('add');
@@ -667,7 +667,7 @@ describe('§10 — cheques and the float', () => {
     expect(r.floatDays).toBe(15);
 
     // Once cleared it is no longer a reconciling item.
-    const brs = await bankReconciliationStatement(t.firmId, bankAccountId, '2026-09-25');
+    const brs = await bankReconciliationStatement(t.firmId, t.clientId, bankAccountId, '2026-09-25');
     expect(brs.lines.find((l) => l.label.startsWith('Cheques issued'))).toBeUndefined();
   });
 
@@ -831,7 +831,7 @@ describe('BR-22 / BR-23 — the BRS must tie (T-18, T-19)', () => {
        VALUES ($1,$2,$3,'2026-04-01','2026-04-30','0','-120',0,'parsed','test',$4)`,
       [t.firmId, t.clientId, isolatedBank, t.userId]));
 
-    const brs = await bankReconciliationStatement(t.firmId, isolatedBank, '2026-04-30');
+    const brs = await bankReconciliationStatement(t.firmId, t.clientId, isolatedBank, '2026-04-30');
     expect(brs.ties).toBe(false);
     expect(brs.difference).toBe('-120.00');
     expect(brs.exception).toMatch(/BR-22/);

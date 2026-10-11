@@ -529,15 +529,15 @@ function classifyFromMode(
 export async function reconciliationQueue(
   firmId: string,
   bankAccountId: string,
+  clientId: string,
   opts: { limit?: number; includeMatched?: boolean } = {},
 ): Promise<{ items: QueueItem[]; totals: { unmatched: number; matched: number;
              autoMatchable: number; ambiguous: number; unsure: number } }> {
   return withFirm(firmId, async (c) => {
     const acct = await c.query<{ client_id: string }>(
-      'SELECT client_id FROM bank_accounts WHERE id = $1', [bankAccountId]);
+      'SELECT client_id FROM bank_accounts WHERE id = $1 AND client_id = $2',
+      [bankAccountId, clientId]);
     if (acct.rowCount === 0) throw new ValidationError('bank account not found', 'BR-2');
-    const clientId = acct.rows[0]!.client_id;
-
     // Sequential, not Promise.all. A single pg client cannot run concurrent
     // queries — doing so warns today and throws in pg 9. The parallelism that
     // matters here is scoring in memory rather than one query per line.

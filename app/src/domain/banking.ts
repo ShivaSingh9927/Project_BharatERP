@@ -325,6 +325,18 @@ const REVIEW_CLASSIFICATIONS = new Set<BankReviewClassification>([
   ...PENDING_RECEIPTS,
 ]);
 
+/** Ignore a statement line only within the explicitly selected client. */
+export async function ignoreBankTransaction(
+  firmId: string, clientId: string, bankTransactionId: string,
+): Promise<void> {
+  await withFirm(firmId, async (c) => {
+    const result = await c.query(
+      'UPDATE bank_transactions SET is_ignored = true WHERE id = $1 AND client_id = $2',
+      [bankTransactionId, clientId]);
+    if (result.rowCount === 0) throw new ValidationError('bank transaction not found', 'BV-6');
+  });
+}
+
 export interface BankReviewAccount {
   id: string;
   name: string;

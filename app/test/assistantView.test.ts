@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAssistantRuns, renderClientSetup, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderPayables, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
+import { renderAssistantRuns, renderClientSetup, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
 
 describe('document class review UI', () => {
   const document = {
@@ -25,6 +25,19 @@ describe('document class review UI', () => {
 });
 
 describe('Ask Bharat shell', () => {
+  it('renders bank evidence as an escaped read-only source page', () => {
+    const html = renderNexusBankTransactionSource({
+      id: 'source-1', txn_date: '2026-10-01', value_date: null,
+      narration: '<script>untrusted narration</script>', debit: '99.00', credit: '0.00',
+      running_balance: '1000.00', reference_number: null, payment_mode: 'upi',
+      counterparty_name: 'Vendor', bank_name: 'HDFC', account_number_last4: '4961',
+      statement_from: '2026-10-01', statement_to: '2026-10-31',
+    });
+    expect(html).toContain('Bank line evidence');
+    expect(html).toContain('&lt;script&gt;untrusted narration&lt;/script&gt;');
+    expect(html).not.toContain('<script>untrusted narration</script>');
+    expect(html).toContain('does not change reconciliation or accounting records');
+  });
   it('shows the CA a local Unassigned email queue and client references', () => {
     const html = renderEmailInbox({
       clients: [{ id: 'client-1', name: 'ABC Traders', token: 'a'.repeat(20) }],
@@ -59,6 +72,47 @@ describe('Ask Bharat shell', () => {
     expect(html).toContain('Three files were received.');
     expect(html).toContain("fetch('/api/assistant'");
     expect(html).toContain("page: 'nexus'");
+  });
+
+  it('renders recent Nexus cases and safely escaped saved messages', () => {
+    const html = renderNexus('Acme', [], [], [], [], [], false, undefined, {
+      cases: [{ id: 'case-1', title: '<Review & follow up>', state: 'completed', created_at: '2026-10-10' }],
+      selectedCase: { id: 'case-1', title: '<Review & follow up>', state: 'completed' },
+      messages: [
+        { id: 'msg-1', actor_type: 'user', body: '<script>alert(1)</script>', recorded_at: '2026-10-10' },
+        { id: 'msg-2', actor_type: 'nexus', body: 'Saved answer & evidence.', recorded_at: '2026-10-10' },
+      ],
+    });
+    expect(html).toContain('Recent conversations');
+    expect(html).toContain('&lt;Review &amp; follow up&gt;');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('Saved answer &amp; evidence.');
+    expect(html).not.toContain('<div class="nexus-question">You</div>');
+    expect(html).not.toContain('<div class="nexus-question">Nexus</div>');
+    expect(html).toContain('/nexus?case=case-1');
+  });
+
+  it('shows a read-only bank activity control and saved response blocks inside the chat', () => {
+    const blocks = { schema_version: 1, generated_at: '2026-10-10T00:00:00.000Z', blocks: [
+      { id: 'summary', type: 'paragraph', text: 'Checked two lines.', provenance: {
+        as_of: '2026-10-10T00:00:00.000Z', sources: [{ kind: 'bank_statement', id: 'source-1', label: 'Statement' }],
+        coverage: { scope: 'Account · period', completeness: 'complete', limitations: [] },
+      } },
+    ] };
+    const html = renderNexus('Acme', [], [], [], [], [], false, undefined, {
+      cases: [], selectedCase: { id: 'case-1', title: 'Bank activity', state: 'open' },
+      bankAccounts: [{ id: 'account-1', bank_name: 'HDFC', account_number_last4: '4961' }],
+      messages: [{ id: 'msg-1', actor_type: 'nexus', body: 'Checked two lines.', response_blocks: blocks as never, recorded_at: '2026-10-10' }],
+    });
+    expect(html).toContain('Review bank activity');
+    expect(html).toContain('Show activity in this conversation');
+    expect(html).toContain('Read-only summary');
+    expect(html).toContain('last 30 India (IST) calendar dates');
+    expect(html).toMatch(/name="fromDate" required value="\d{4}-\d{2}-\d{2}"/);
+    expect(html).toContain('Checked two lines.');
+    expect(html).toContain('Account · period');
+    expect(html).toContain("fetch('/api/nexus/bank-activity'");
   });
 
   it('shows founders what information is needed and what is waiting on the CA', () => {

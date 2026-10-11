@@ -20,6 +20,7 @@ import { importStatementFile } from '../src/domain/statement.ts';
 import { reconciliationQueue, MIN_PROPOSAL_SCORE } from '../src/domain/matching.ts';
 import {
   accountNumberHash, settleInvoiceFromBankLine, postBankCharge, postInterestCredit,
+  reviewBankTransaction, ignoreBankTransaction,
 } from '../src/domain/banking.ts';
 import { bankReconciliationStatement } from '../src/domain/brs.ts';
 import { trialBalance } from '../src/reports/index.ts';
@@ -28,6 +29,7 @@ import { ownerPool, withFirm, closePools } from '../src/db/pool.ts';
 
 let t: SeededTenant;
 let bankAccountId: string;
+let sameFirmOtherClient: string;
 const inv: Record<string, string> = {};
 
 const A = (n: string): string => {
@@ -74,6 +76,10 @@ beforeAll(async () => {
 
   await registerGstin(t.firmId, t.clientId, gstin('27', 'AAPFS1234K'));
   await seedItcEligibility(t.clientId);
+  sameFirmOtherClient = (await ownerPool.query<{ id: string }>(
+    `INSERT INTO clients (firm_id, name, pan, business_type)
+     VALUES ($1, 'Synthetic second client', 'AAACB7777B', 'general') RETURNING id`,
+    [t.firmId])).rows[0]!.id;
 
   bankAccountId = await withFirm(t.firmId, async (c) => {
     const r = await c.query<{ id: string }>(
@@ -160,7 +166,7 @@ describe('the whole month, in order', () => {
   });
 
   it('ranks the queue by confidence, with the UTR match on top', async () => {
-    const { items, totals } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items, totals } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
 
     expect(items).toHaveLength(6);
     expect(items[0]!.proposal.best!.score).toBe(97);
@@ -174,7 +180,7 @@ describe('the whole month, in order', () => {
   });
 
   it('surfaces the identical pair as ambiguous and refuses to choose', async () => {
-    const { items } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
     const upi = items.find((i) => i.narration.startsWith('UPI/'))!;
     expect(upi.proposal.ambiguous).toBe(true);
     expect(upi.proposal.autoMatchable).toBe(false);
@@ -183,7 +189,7 @@ describe('the whole month, in order', () => {
   });
 
   it('offers no candidate for lines an invoice cannot explain, and says what they are', async () => {
-    const { items } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
 
     const charge = items.find((i) => i.narration.startsWith('SMS CHARGES'))!;
     expect(charge.proposal.best).toBeNull();
@@ -198,7 +204,7 @@ describe('the whole month, in order', () => {
     // The regression that set MIN_PROPOSAL_SCORE too high: the amount cannot
     // match on a partial payment, so party plus date is all the evidence there
     // is — and it is enough to be worth showing.
-    const { items } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
     const rtgs = items.find((i) => i.narration.startsWith('RTGS-'))!;
     expect(rtgs.proposal.best).not.toBeNull();
     expect(rtgs.proposal.best!.score).toBeGreaterThanOrEqual(MIN_PROPOSAL_SCORE);
@@ -207,7 +213,7 @@ describe('the whole month, in order', () => {
   });
 
   it('settles the UTR match, the TDS receipt, and the part payment', async () => {
-    const { items } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
     const line = (prefix: string) => items.find((i) => i.narration.startsWith(prefix))!;
 
     const exact = await settleInvoiceFromBankLine(t.firmId, {
@@ -234,7 +240,7 @@ describe('the whole month, in order', () => {
   });
 
   it('posts the charge and the interest, gross', async () => {
-    const { items } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
     const line = (prefix: string) => items.find((i) => i.narration.startsWith(prefix))!;
 
     const charge = await postBankCharge(t.firmId, {
@@ -253,7 +259,7 @@ describe('the whole month, in order', () => {
   });
 
   it('leaves only the genuinely ambiguous line unresolved', async () => {
-    const { items, totals } = await reconciliationQueue(t.firmId, bankAccountId);
+    const { items, totals } = await reconciliationQueue(t.firmId, bankAccountId, t.clientId);
     expect(items).toHaveLength(1);
     expect(items[0]!.narration).toMatch(/^UPI\//);
     expect(totals.ambiguous).toBe(1);
@@ -274,7 +280,7 @@ describe('the whole month, in order', () => {
   });
 
   it('the BRS ties, with the unmatched UPI receipt as the only reconciling item', async () => {
-    const brs = await bankReconciliationStatement(t.firmId, bankAccountId, '2026-04-30');
+    const brs = await bankReconciliationStatement(t.firmId, t.clientId, bankAccountId, '2026-04-30');
 
     const unrecorded = brs.lines.find((l) => l.label.startsWith('Amounts credited'));
     expect(unrecorded?.amount).toBe('11800.00');
@@ -283,5 +289,23 @@ describe('the whole month, in order', () => {
     expect(brs.actualBankBalance).toBe('231882.00');
     expect(brs.ties).toBe(true);
     expect(brs.exception).toBeNull();
+  });
+
+  it('rejects same-firm other-client bank reads and transaction review', async () => {
+    await expect(reconciliationQueue(t.firmId, bankAccountId, sameFirmOtherClient))
+      .rejects.toThrow('bank account not found');
+    await expect(bankReconciliationStatement(
+      t.firmId, sameFirmOtherClient, bankAccountId, '2026-04-30'))
+      .rejects.toThrow('bank account not found');
+
+    const transactionId = await withFirm(t.firmId, async (c) => (await c.query<{ id: string }>(
+      'SELECT id FROM bank_transactions WHERE bank_account_id = $1 LIMIT 1',
+      [bankAccountId])).rows[0]!.id);
+    await expect(reviewBankTransaction(t.firmId, {
+      clientId: sameFirmOtherClient, bankTransactionId: transactionId,
+      classification: 'unsure', reviewedBy: t.userId,
+    })).rejects.toThrow('bank transaction not found');
+    await expect(ignoreBankTransaction(t.firmId, sameFirmOtherClient, transactionId))
+      .rejects.toThrow('bank transaction not found');
   });
 });

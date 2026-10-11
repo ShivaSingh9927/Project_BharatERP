@@ -4,6 +4,7 @@ import { seedTenant, type SeededTenant } from '../src/seed/index.ts';
 import { closePools } from '../src/db/pool.ts';
 import { answerAssistant, answerAssistantWithAi, recordAssistantRun } from '../src/domain/assistant.ts';
 import { withFirm } from '../src/db/pool.ts';
+import { createBankAccount } from '../src/domain/banking.ts';
 import type { LlmClient } from '../src/parse/llmTable.ts';
 
 let tenant: SeededTenant;
@@ -67,16 +68,97 @@ describe('Ask Bharat read-only tools', () => {
     const reply = await answerAssistant(
       tenant.firmId, tenant.clientId, 'now tell me', 'nexus');
     expect(reply.supported).toBe(false);
-    expect(reply.answer).toMatch(/does not carry the prior chat turn/i);
-    expect(reply.evidence).toContain('Conversation context is not currently sent with each question');
+    expect(reply.answer).toMatch(/need the earlier topic/i);
+    expect(reply.evidence).toContain('No preceding user question was available in this request');
   });
 
-  it('explains when a bank balance cannot be reported', async () => {
+  it('routes “how much do we have” to a clear bank balance answer when no account exists', async () => {
     const reply = await answerAssistant(
-      tenant.firmId, tenant.clientId, 'How much money do we have?', 'nexus');
+      tenant.firmId, tenant.clientId, 'How much do we have?', 'nexus');
     expect(reply.supported).toBe(false);
-    expect(reply.answer).toMatch(/no bank account is connected/i);
-    expect(reply.action?.href).toBe('/reconcile');
+    expect(reply.answer).toMatch(/no connected bank account/i);
+    expect(reply.action?.href).toBe('/accounts');
+  });
+
+  it('reports an exact connected bank ledger balance and its scope', async () => {
+    const balanceTenant = await seedTenant({
+      firmName: `Balance ${randomUUID().slice(0, 8)}`,
+      clientName: 'Balance client',
+      userEmail: `balance-${randomUUID()}@test.local`,
+      startYear: 2026,
+    });
+    const account = await createBankAccount(balanceTenant.firmId, {
+      clientId: balanceTenant.clientId,
+      bankName: 'HDFC Bank',
+      accountNumber: `5020012543${randomUUID().replaceAll('-', '').slice(0, 8)}`,
+      kind: 'current',
+      openingBalance: '51000.25',
+      openingDate: '2026-04-01',
+      createdBy: balanceTenant.userId,
+    });
+    const reply = await answerAssistant(
+      balanceTenant.firmId, balanceTenant.clientId, 'How much do we have?', 'nexus');
+    expect(reply.supported).toBe(true);
+    expect(reply.answer).toContain('₹51,000.25');
+    expect(reply.answer).toContain('HDFC Bank ··');
+    expect(reply.answer).toContain('book balance');
+    expect(reply.evidence).toContain('Posted ledger entries for connected bank accounts');
+    expect(reply.action?.href).toBe('/accounts');
+    expect(account.last4).toHaveLength(4);
+  });
+
+  it('does not delegate money balance questions to the AI router', async () => {
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async () => { throw new Error('router should not be called'); },
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId, 'How much do we have?', 'nexus', router);
+    expect(reply.audit?.routingMode).toBe('deterministic');
+    expect(reply.audit?.intent).toBe('bank_balance');
+    expect(reply.answer).toMatch(/no connected bank account/i);
+  });
+
+  it('uses the prior user question to resolve a period follow-up before querying books', async () => {
+    let routedQuestion = '';
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async (_system, user) => { routedQuestion = user; return '{"intent":"profit"}'; },
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId, 'what about last month?', 'nexus', router,
+      'How much profit are we making?',
+    );
+    expect(routedQuestion).toContain('How much profit are we making? (last month)');
+    expect(reply.answer).toMatch(/net profit.*for \d{4}-\d{2}/);
+    expect(reply.audit?.intent).toBe('profit');
+  });
+
+  it('does not answer a period-sensitive follow-up with a current-only total', async () => {
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async () => { throw new Error('unsupported period should not be routed'); },
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId, 'what about last month?', 'nexus', router,
+      'How much do we owe suppliers?',
+    );
+    expect(reply.supported).toBe(false);
+    expect(reply.answer).toMatch(/historical periods.*profit and connected bank book balances/i);
+  });
+
+  it('explains that source-level “show me more” follow-ups are not wired yet', async () => {
+    const router: LlmClient = {
+      provider: 'deepseek', model: 'test',
+      complete: async () => { throw new Error('detail follow-up should not be routed'); },
+    };
+    const reply = await answerAssistantWithAi(
+      tenant.firmId, tenant.clientId, 'show me more', 'nexus', router,
+      'How much do we have?',
+    );
+    expect(reply.supported).toBe(false);
+    expect(reply.answer).toMatch(/source-level drill-down.*not connected/i);
+    expect(reply.answer).toContain('Which bank transactions are still unmatched?');
   });
 
   it('gives contextual page help', async () => {

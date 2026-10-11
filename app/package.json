@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "web": "tsx src/web/server.ts",
     "email:import": "tsx src/integrations/runEmailImport.ts",
-    "seed:demo": "tsx src/seed/demo.ts"
+    "seed:demo": "tsx src/seed/demo.ts",
+    "agent:glm": "node --import tsx scripts/glm-delegate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",

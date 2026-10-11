@@ -40,6 +40,7 @@ import {
 import { parseStatementBytes, parseStatementFile } from '../parse/statementFile.ts';
 import { createBankAccount, settleInvoiceFromBankLine, postBankCharge,
          postInterestCredit, bankReviewOptions, reviewBankTransaction,
+         ignoreBankTransaction,
          postOpeningFromFirstStatement }
   from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
@@ -93,7 +94,7 @@ import { receiveDocument, listDocuments, getDocumentBytes,
          listOpenDocumentRequests, listDocumentRequestHistory,
          answerDocumentRequest, confirmDocumentClass } from '../domain/documentInbox.ts';
 import { renderDocumentInbox, renderNexus, renderFollowUps, renderActivity,
-         renderEmailInbox, renderAttention } from './views.ts';
+         renderEmailInbox, renderAttention, renderNexusBankTransactionSource } from './views.ts';
 import { createFollowUp, completeFollowUp, listFollowUps, listFollowUpAssignees,
   recordFollowUpBlocker, snoozeFollowUp } from '../domain/followUps.ts';
 import { listObligationTimeline } from '../domain/obligationTimeline.ts';
@@ -107,6 +108,10 @@ import { documentClassifierEnabled, setDocumentClassifierEnabled,
 import { createNexusTask, getNexusTask, listNexusTasks, nexusTaskAiEnabled,
          setNexusTaskAiEnabled, type NexusRecordRef } from '../domain/nexusTasks.ts';
 import { runNexusTask } from '../domain/nexusTaskRunner.ts';
+import { createNexusCase, getNexusCase, listNexusCases, listNexusCaseMessages,
+         appendNexusCaseMessage, appendNexusCaseState, getNexusCaseMessageByKey } from '../domain/nexusCases.ts';
+import { buildBankActivityResult, getNexusBankTransactionSource, listNexusBankActivityAccounts,
+         validateBankActivityRange } from '../domain/nexusBankActivity.ts';
 
 const PORT = Number(process.env.PORT ?? 4321);
 const assistantLlm = llmClientFromEnv();
@@ -509,6 +514,19 @@ async function handle(
     }
   }
 
+  if (req.method === 'GET' && path === '/nexus/source/bank-transaction') {
+    const id = url.searchParams.get('id') ?? '';
+    const source = await getNexusBankTransactionSource(session.firmId, session.clientId, id);
+    if (!source) {
+      return html(res, 404, renderShell({ session, accounts, active: 'nexus',
+        body: '<h1>Source not found</h1><p class="empty">That bank line is not available for this client. <a href="/nexus">Return to Nexus</a>.</p>',
+      }));
+    }
+    return html(res, 200, renderShell({ session, accounts, active: 'nexus',
+      body: renderNexusBankTransactionSource(source),
+    }));
+  }
+
   if (req.method === 'GET' && path === '/nexus') {
     const runs = await assistantRuns(session.firmId, session.clientId, 40);
     const followUps = await listFollowUps(session.firmId, session.clientId, true);
@@ -521,6 +539,15 @@ async function handle(
     ]);
     const nexusTasks = await Promise.all(taskRows.map((task) =>
       getNexusTask(session.firmId, session.clientId, task.id)));
+    const nexusCases = await listNexusCases(session.firmId, session.clientId, 20);
+    const nexusBankAccounts = await listNexusBankActivityAccounts(session.firmId, session.clientId);
+    const rawCaseId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('case');
+    const requestedCaseId = rawCaseId && /^[0-9a-f-]{36}$/i.test(rawCaseId) ? rawCaseId : null;
+    const selectedCase = requestedCaseId
+      ? await getNexusCase(session.firmId, session.clientId, requestedCaseId)
+      : nexusCases[0] ? await getNexusCase(session.firmId, session.clientId, String(nexusCases[0].id)) : null;
+    const caseMessages = selectedCase
+      ? await listNexusCaseMessages(session.firmId, session.clientId, String(selectedCase.id)) : [];
     return html(res, 200, renderShell({
       session, accounts, active: 'nexus',
       body: renderNexus(session.clientName, runs, followUps, activity, documents,
@@ -528,7 +555,7 @@ async function handle(
           enabled: taskConsent, available: assistantLlm !== null,
           canManage: ['owner','ca_partner','ca_staff'].includes(session.role),
           obligations, tasks: nexusTasks.filter((task): task is NonNullable<typeof task> => task !== null),
-        }),
+        }, { cases: nexusCases, selectedCase, messages: caseMessages, bankAccounts: nexusBankAccounts }),
     }));
   }
 
@@ -786,10 +813,120 @@ async function handle(
     }
   }
 
+  if (req.method === 'POST' && path === '/api/nexus/bank-activity') {
+    try {
+      const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      const requestId = String(body.requestId ?? '');
+      if (!/^[0-9a-f-]{36}$/i.test(requestId)) return json(res, 400, { ok: false, error: 'request id is not valid' });
+      if (typeof body.accountId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.accountId)) return json(res, 400, { ok: false, error: 'choose a valid bank account' });
+      if (typeof body.fromDate !== 'string' || typeof body.toDate !== 'string') return json(res, 400, { ok: false, error: 'choose a date range' });
+      validateBankActivityRange(body.fromDate, body.toDate);
+      // Validate ownership on every request, including exact retries that can
+      // be answered from the durable saved result without rebuilding it.
+      const ownedAccounts = await listNexusBankActivityAccounts(session.firmId, session.clientId);
+      const account = ownedAccounts.find((row) => row.id === body.accountId);
+      if (!account) return json(res, 404, { ok: false, error: 'bank account is unavailable for this client' });
+      let caseId: string | undefined;
+      if (typeof body.caseId === 'string' && body.caseId) {
+        if (!/^[0-9a-f-]{36}$/i.test(body.caseId)) return json(res, 400, { ok: false, error: 'case id is not valid' });
+        const existing = await getNexusCase(session.firmId, session.clientId, body.caseId);
+        if (!existing) return json(res, 404, { ok: false, error: 'conversation is unavailable for this client' });
+        if (!['completed', 'cancelled'].includes(String(existing.state))) caseId = body.caseId;
+      }
+      if (!caseId) caseId = await createNexusCase({ firmId: session.firmId, clientId: session.clientId,
+        title: `Bank activity · ${body.fromDate} to ${body.toDate}`, requestedByUserId: session.userId,
+        idempotencyKey: `bank-activity:${requestId}` });
+      const fingerprint = createHash('sha256').update(JSON.stringify([
+        body.accountId, body.fromDate, body.toDate,
+      ])).digest('hex');
+      const responseKey = `${requestId}:nexus`;
+      const savedResponse = await getNexusCaseMessageByKey(session.firmId, session.clientId, responseKey);
+      if (savedResponse) {
+        if (savedResponse.case_id !== caseId || savedResponse.actor_type !== 'nexus'
+          || savedResponse.request_fingerprint !== fingerprint || !savedResponse.response_blocks) {
+          return json(res, 409, { ok: false, error: 'request id was already used for a different bank activity request' });
+        }
+        return json(res, 200, { ok: true, caseId });
+      }
+      // Ownership and dates are checked again by this builder before querying.
+      const blocks = await buildBankActivityResult({ firmId: session.firmId, clientId: session.clientId,
+        bankAccountId: body.accountId, fromDate: body.fromDate, toDate: body.toDate });
+      const question = `Show ${account.bank_name} account ending ${account.account_number_last4} activity from ${body.fromDate} to ${body.toDate}.`;
+      await appendNexusCaseMessage({ firmId: session.firmId, clientId: session.clientId, caseId,
+        actorType: 'user', actorUserId: session.userId, body: question, idempotencyKey: `${requestId}:user` });
+      const summaryBlock = blocks.blocks.find((block) => block.id === 'bank-activity-summary');
+      await appendNexusCaseMessage({ firmId: session.firmId, clientId: session.clientId, caseId,
+        actorType: 'nexus', body: summaryBlock?.type === 'paragraph' ? summaryBlock.text : 'Bank activity loaded.',
+        responseBlocks: blocks, requestFingerprint: fingerprint, idempotencyKey: responseKey });
+      return json(res, 200, { ok: true, caseId });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: (error as Error).message });
+    }
+  }
+
   if (req.method === 'POST' && path === '/api/assistant') {
     const body = JSON.parse(await readBody(req));
     const question = String(body.question ?? '').slice(0, 500);
     const page = String(body.page ?? '').slice(0, 40);
+    if (page === 'nexus') {
+      let caseId: string | undefined;
+      if (typeof body.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.requestId)) {
+        return json(res, 400, { ok: false, error: 'request id is not valid' });
+      }
+      const requestKey = body.requestId;
+      try {
+        if (typeof body.caseId === 'string' && body.caseId) {
+          if (!/^[0-9a-f-]{36}$/i.test(body.caseId)) {
+            return json(res, 400, { ok: false, error: 'case id is not valid' });
+          }
+          const existing = await getNexusCase(session.firmId, session.clientId, body.caseId);
+          if (!existing) return json(res, 404, { ok: false, error: 'case is unavailable for this client' });
+          // Completed cases are terminal workflow records; a follow-up starts a new case.
+          if (existing.state !== 'completed' && existing.state !== 'cancelled') caseId = body.caseId;
+        }
+        if (!caseId) caseId = await createNexusCase({ firmId: session.firmId,
+          clientId: session.clientId, title: question.slice(0, 240), requestedByUserId: session.userId,
+          idempotencyKey: `assistant:${requestKey}` });
+        const existing = await getNexusCase(session.firmId, session.clientId, caseId);
+        const priorMessages = await listNexusCaseMessages(session.firmId, session.clientId, caseId);
+        const previousUserQuestion = priorMessages
+          .filter((message) => message.actor_type === 'user')
+          .at(-1)?.body.slice(0, 500);
+        if (existing?.state === 'open' || existing?.state === 'needs_user'
+          || existing?.state === 'blocked' || existing?.state === 'with_ca') {
+          await appendNexusCaseState({ firmId: session.firmId, clientId: session.clientId, caseId,
+            toState: 'working', actorUserId: session.userId, idempotencyKey: `assistant:${requestKey}:working` });
+        }
+        await appendNexusCaseMessage({ firmId: session.firmId, clientId: session.clientId, caseId,
+          actorType: 'user', actorUserId: session.userId, body: question,
+          idempotencyKey: `${requestKey}:user` });
+        const startedAt = Date.now();
+        const reply = await answerAssistantWithAi(
+          session.firmId, session.clientId, question, page, assistantLlm, previousUserQuestion,
+        );
+        await recordAssistantRun(session.firmId, { clientId: session.clientId, userId: session.userId,
+          question, page, reply, durationMs: Date.now() - startedAt });
+        await appendNexusCaseMessage({ firmId: session.firmId, clientId: session.clientId, caseId,
+          actorType: 'nexus', body: reply.answer, idempotencyKey: `${requestKey}:nexus` });
+        const latest = await getNexusCase(session.firmId, session.clientId, caseId);
+        if (latest?.state === 'working') await appendNexusCaseState({ firmId: session.firmId,
+          clientId: session.clientId, caseId, toState: 'open', actorUserId: session.userId,
+          idempotencyKey: `assistant:${requestKey}:open` });
+        const { audit: _audit, ...safeReply } = reply;
+        return json(res, 200, { ok: true, ...safeReply, caseId });
+      } catch (e) {
+        if (caseId) {
+          try {
+            const current = await getNexusCase(session.firmId, session.clientId, caseId);
+            if (current && ['working','open'].includes(String(current.state))) {
+              await appendNexusCaseState({ firmId: session.firmId, clientId: session.clientId, caseId,
+                toState: 'blocked', actorUserId: session.userId, idempotencyKey: `assistant:${requestKey}:blocked` });
+            }
+          } catch { /* preserve the original assistant error */ }
+        }
+        return json(res, 200, { ok: false, error: (e as Error).message, ...(caseId ? { caseId } : {}) });
+      }
+    }
     try {
       const startedAt = Date.now();
       const reply = await answerAssistantWithAi(
@@ -1540,8 +1677,8 @@ async function handle(
       }));
     }
     const [queue, brs, reviewOptions] = await Promise.all([
-      reconciliationQueue(session.firmId, accountId),
-      bankReconciliationStatement(session.firmId, accountId,
+      reconciliationQueue(session.firmId, accountId, session.clientId),
+      bankReconciliationStatement(session.firmId, session.clientId, accountId,
         new Date().toISOString().slice(0, 10)),
       bankReviewOptions(session.firmId, session.clientId, accountId),
     ]);
@@ -1603,7 +1740,7 @@ async function handle(
     const accountId = url.searchParams.get('account') ?? accounts[0]?.id;
     if (!accountId) return html(res, 404, 'no account');
     const asOf = url.searchParams.get('asOf') ?? new Date().toISOString().slice(0, 10);
-    const brs = await bankReconciliationStatement(session.firmId, accountId, asOf);
+    const brs = await bankReconciliationStatement(session.firmId, session.clientId, accountId, asOf);
     return html(res, 200, renderShell({
       session, accounts, active: 'brs', accountId,
       body: renderBrs(brs, accountId),
@@ -1843,9 +1980,8 @@ async function handle(
   if (req.method === 'POST' && path === '/api/ignore') {
     const body = JSON.parse(await readBody(req));
     try {
-      await withFirm(session.firmId, (c) => c.query(
-        'UPDATE bank_transactions SET is_ignored = true WHERE id = $1',
-        [body.bankTransactionId]));
+      await ignoreBankTransaction(session.firmId, session.clientId,
+        String(body.bankTransactionId ?? ''));
       return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });

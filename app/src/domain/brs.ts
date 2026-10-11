@@ -53,13 +53,13 @@ export interface Brs {
  *                                  → the bank balance is HIGHER → add
  */
 export async function bankReconciliationStatement(
-  firmId: string, bankAccountId: string, asOf: string,
+  firmId: string, clientId: string, bankAccountId: string, asOf: string,
 ): Promise<Brs> {
   return withFirm(firmId, async (c) => {
     const ba = await c.query<{ account_id: string; client_id: string;
                                opening_balance: string; bank_name: string }>(
       `SELECT account_id, client_id, opening_balance::text, bank_name
-       FROM bank_accounts WHERE id = $1`, [bankAccountId]);
+       FROM bank_accounts WHERE id = $1 AND client_id = $2`, [bankAccountId, clientId]);
     if (ba.rowCount === 0) throw new ValidationError('bank account not found', 'BR-2');
     const acct = ba.rows[0]!;
 
@@ -220,7 +220,7 @@ export async function assertReconciledForClose(
   const blockers: string[] = [];
 
   for (const a of accounts) {
-    const brs = await bankReconciliationStatement(firmId, a.id, asOf);
+    const brs = await bankReconciliationStatement(firmId, clientId, a.id, asOf);
     if (!brs.ties) {
       blockers.push(`${a.bank_name} ••${a.last4}: ${brs.exception}`);
     }

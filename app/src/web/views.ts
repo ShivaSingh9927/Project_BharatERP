@@ -23,12 +23,21 @@ import type { ObligationTimelineItem } from '../domain/obligationTimeline.ts';
 import type { NexusAlert } from '../domain/alerts.ts';
 import type { ActivityItem } from '../domain/activity.ts';
 import type { EmailInbox, IntakeMessage } from '../domain/emailIntake.ts';
+import { renderNexusBlocks } from './nexusBlocks.ts';
+import type { NexusBankTransactionSource } from '../domain/nexusBankActivity.ts';
+import type { NexusBlockEnvelope } from './nexusBlocks.ts';
 
 type NexusTaskUi = {
   id: string; purpose: string; specialist: string; status: string;
   currentAttempt: number; maxAttempts: number;
   attempts: Array<{ ordinal: number; agent_role: string; outcome: string; result: unknown;
     verifier_findings: unknown; addressed_findings: unknown }>;
+};
+type NexusChatWorkspace = {
+  cases: Array<{ id: string; title: string; state: string; created_at: Date | string }>;
+  selectedCase: { id: string; title: string; state: string } | null;
+  messages: Array<{ id: string; actor_type: 'user' | 'nexus' | 'system'; body: string; response_blocks?: NexusBlockEnvelope | null; recorded_at: Date | string }>;
+  bankAccounts?: Array<{ id: string; bank_name: string; account_number_last4: string }>;
 };
 
 const esc = (v: unknown): string =>
@@ -245,6 +254,7 @@ export function renderNexus(
     obligations: ObligationTimelineItem[]; tasks: NexusTaskUi[] } = {
       enabled: false, available: false, canManage: false, obligations: [], tasks: [],
     },
+  chatWorkspace?: NexusChatWorkspace,
 ): string {
   const turns = [...runs].reverse().map((run) => {
     const linked = followUps.find((item) => item.sourceQuestion === run.question);
@@ -258,6 +268,15 @@ export function renderNexus(
     ${followUpControl}
   </div>`;
   }).join('');
+  const caseTurns = chatWorkspace?.messages.map((message) => `<div class="nexus-turn">
+    ${message.body ? `<div class="${message.actor_type === 'user' ? 'nexus-question' : message.actor_type === 'nexus' ? 'nexus-answer' : 'nexus-system'}">${esc(message.body)}</div>` : ''}
+    ${message.response_blocks ? renderNexusBlocks(message.response_blocks) : ''}
+  </div>`).join('');
+  const visibleTurns = chatWorkspace?.selectedCase ? (caseTurns || '') : turns;
+  const recentCases = chatWorkspace ? `<section class="panel nexus-case-list" aria-label="Recent Nexus cases">
+    <h2>Recent conversations</h2>
+    ${chatWorkspace.cases.length ? `<ul>${chatWorkspace.cases.map((item) => `<li><a href="/nexus?case=${encodeURIComponent(item.id)}"${chatWorkspace.selectedCase?.id === item.id ? ' aria-current="page"' : ''}>${esc(item.title)}</a><span class="why">${esc(item.state.replaceAll('_',' '))}</span></li>`).join('')}</ul>` : '<p class="empty">No saved conversations yet.</p>'}
+  </section>` : '';
   const openFollowUps = followUps.filter((item) => item.status === 'open');
   const completedFollowUps = followUps.filter((item) => item.status === 'completed').slice(0, 3);
   const needsFounder = documents.filter((doc) => doc.status === 'needs_information'
@@ -304,12 +323,21 @@ export function renderNexus(
     <input type="checkbox" name="obligationIds" value="${esc(item.id)}">
     <span>${esc(item.kind)} · ${esc(item.periodKey)} · ${esc(item.workflowState.replaceAll('_',' '))}</span>
   </label>`).join('');
+  const todayParts = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date()).reduce<Record<string, string>>((out, part) => {
+      if (part.type !== 'literal') out[part.type] = part.value;
+      return out;
+    }, {});
+  const todayIndia = `${todayParts.year}-${todayParts.month}-${todayParts.day}`;
+  const thirtyDaysAgo = new Date(`${todayIndia}T00:00:00.000Z`);
+  thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29);
+  const fromIndia = thirtyDaysAgo.toISOString().slice(0, 10);
   return `<div class="nexus">
   <section class="nexus-chat" aria-label="Bharat Nexus conversation">
     <div class="nexus-head"><h1>Bharat Nexus</h1>
       <p>${esc(clientName)} · Ask about the books, received documents, and work needing attention.</p></div>
     <div class="nexus-thread" id="nexus-thread" aria-live="polite">
-      ${turns || '<div class="nexus-answer">Hello. Ask me what has been received, what needs attention, or what the books show.</div>'}
+      ${visibleTurns || '<div class="nexus-answer">Hello. Ask me what has been received, what needs attention, or what the books show.</div>'}
     </div>
     <div class="nexus-compose">
       <form id="nexus-form">
@@ -317,6 +345,18 @@ export function renderNexus(
           placeholder="Ask about this client’s books…"></textarea>
         <button class="primary" id="nexus-send" type="submit">Send</button>
       </form>
+      <details class="nexus-bank-activity">
+        <summary>Review bank activity</summary>
+        ${chatWorkspace?.bankAccounts?.length ? `<form id="nexus-bank-activity-form">
+          <label>Bank account<select name="accountId" required>${chatWorkspace.bankAccounts.map((account) => `<option value="${esc(account.id)}">${esc(account.bank_name)} · ending ${esc(account.account_number_last4)}</option>`).join('')}</select></label>
+          <label>From<input type="date" name="fromDate" required value="${fromIndia}"></label>
+          <label>To<input type="date" name="toDate" required value="${todayIndia}"></label>
+          <button class="primary" type="submit">Show activity in this conversation</button>
+          <span id="nexus-bank-activity-result" role="status" class="why"></span>
+        </form>` : '<p class="why">No bank account is connected for this client yet.</p>'}
+        <p class="why">Defaults to the last 30 India (IST) calendar dates. Read-only summary; it does not classify, reconcile, or post transactions.</p>
+      </details>
+      ${chatWorkspace?.selectedCase ? `<p class="why">Conversation: ${esc(chatWorkspace.selectedCase.title)}</p>` : ''}
       <form id="nexus-upload-form"><label>Send a statement, invoice, or receipt
         <input id="nexus-upload-files" type="file" multiple required></label>
         <button id="nexus-upload" type="submit">Upload files</button>
@@ -326,6 +366,7 @@ export function renderNexus(
     </div>
   </section>
   <aside class="nexus-side" aria-label="Suggested questions and shortcuts">
+    ${recentCases}
     <div class="panel nexus-next"><h2>Next step</h2>
       ${nextAction && canAnswerRequests ? `<p>Answer the CA’s question about <b>${esc(nextAction.originalName)}</b> below.</p>`
         : missingOriginal ? `<p>Upload <b>${esc(missingOriginal.originalName)}</b> again so it can be reviewed.</p>`
@@ -426,6 +467,21 @@ export function renderNexus(
   const input = document.getElementById('nexus-input');
   const send = document.getElementById('nexus-send');
   const thread = document.getElementById('nexus-thread');
+  const bankActivityForm = document.getElementById('nexus-bank-activity-form');
+  if (bankActivityForm) bankActivityForm.onsubmit = async (event) => {
+    event.preventDefault();
+    const button = bankActivityForm.querySelector('button[type="submit"]');
+    const result = document.getElementById('nexus-bank-activity-result');
+    button.disabled = true; result.textContent = 'Loading this account’s activity…';
+    try {
+      const response = await fetch('/api/nexus/bank-activity', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: bankActivityForm.elements.accountId.value,
+          fromDate: bankActivityForm.elements.fromDate.value, toDate: bankActivityForm.elements.toDate.value,
+          requestId: crypto.randomUUID(), caseId: ${chatWorkspace?.selectedCase ? JSON.stringify(chatWorkspace.selectedCase.id) : 'null'} }) });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not load bank activity');
+      location.href = '/nexus?case=' + encodeURIComponent(data.caseId);
+    } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
+  };
   const uploadFile = async (file) => {
     if (file.size > 5 * 1024 * 1024) throw new Error(file.name + ' exceeds the 5 MB limit');
     const data = await new Promise((resolve, reject) => {
@@ -538,11 +594,18 @@ export function renderNexus(
     try {
       const response = await fetch('/api/assistant', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ question: q, page: 'nexus' }),
+        body: JSON.stringify({ question: q, page: 'nexus', requestId: crypto.randomUUID(),
+          caseId: ${chatWorkspace?.selectedCase ? JSON.stringify(chatWorkspace.selectedCase.id) : 'null'} }),
       });
       const data = await response.json();
       if (!data.ok) throw new Error(data.error || 'could not answer');
       answer.textContent = data.answer;
+      if (data.caseId) {
+        const historyLink = document.createElement('a'); historyLink.href = '/nexus?case=' + encodeURIComponent(data.caseId);
+        historyLink.textContent = 'Open saved conversation'; historyLink.className = 'nexus-action';
+        turn.appendChild(historyLink);
+        location.href = historyLink.href;
+      }
       if (Array.isArray(data.evidence) && data.evidence.length) {
         const evidence = document.createElement('div'); evidence.className = 'nexus-evidence';
         evidence.textContent = 'Based on: ' + data.evidence.join(' · ');
@@ -569,6 +632,27 @@ export function renderNexus(
   });
   thread.scrollTop = thread.scrollHeight;
 })();</script>`;
+}
+
+export function renderNexusBankTransactionSource(source: NexusBankTransactionSource): string {
+  return `<p><a href="/nexus">← Back to Nexus</a></p>
+    <h1>Bank line evidence</h1>
+    <p class="sub">Read-only source record · ${esc(source.bank_name)} account ending ${esc(source.account_number_last4)}</p>
+    <section class="panel">
+      <dl class="detail-grid">
+        <div><dt>Date</dt><dd>${esc(source.txn_date)}</dd></div>
+        <div><dt>Value date</dt><dd>${esc(source.value_date ?? '—')}</dd></div>
+        <div><dt>Debit (INR)</dt><dd>${esc(source.debit)}</dd></div>
+        <div><dt>Credit (INR)</dt><dd>${esc(source.credit)}</dd></div>
+        <div><dt>Running balance (INR)</dt><dd>${esc(source.running_balance ?? '—')}</dd></div>
+        <div><dt>Payment mode</dt><dd>${esc(source.payment_mode ?? '—')}</dd></div>
+        <div><dt>Counterparty</dt><dd>${esc(source.counterparty_name ?? '—')}</dd></div>
+        <div><dt>Reference</dt><dd>${esc(source.reference_number ?? '—')}</dd></div>
+        <div><dt>Statement period</dt><dd>${source.statement_from ? `${esc(source.statement_from)} to ${esc(source.statement_to ?? '—')}` : 'No linked statement'}</dd></div>
+      </dl>
+      <h2>Original narration</h2><p class="mono">${esc(source.narration)}</p>
+      <p class="why">This page shows the imported bank evidence. It does not change reconciliation or accounting records.</p>
+    </section>`;
 }
 
 function activityRow(item: ActivityItem): string {
@@ -915,6 +999,7 @@ header .client { color: var(--muted); font-size: 12px; }
   border-radius: 10px 10px 2px 10px; background: #17275b; color: #fff; }
 .nexus-answer { max-width: 92%; margin-top: 10px; padding: 2px 0 2px 13px;
   border-left: 2px solid #b5c4e4; line-height: 1.6; white-space: pre-wrap; }
+.nexus-system { max-width: 92%; margin-top: 10px; color: var(--muted); font-size: 12px; }
 .nexus-evidence { margin: 6px 0 0 13px; color: var(--muted); font-size: 11px; }
 .nexus-action { display: inline-block; margin: 8px 0 0 13px; color: var(--accent); }
 .nexus-compose { padding: 16px 20px; border-top: 1px solid var(--line); }
