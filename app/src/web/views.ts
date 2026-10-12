@@ -741,8 +741,7 @@ function activityRow(item: ActivityItem): string {
 }
 
 export function renderActivity(items: ActivityItem[]): string {
-  return `<h1>Activity</h1>
-    <p class="sub">A timeline of what came in, what Nexus answered, and what is still waiting for someone to act.</p>
+  return `${pageIntro('TODAY', 'Activity', 'A timeline of what came in, what Nexus answered, and what is still waiting for someone to act.')}
     <section class="activity-feed">
       ${items.map(activityRow).join('') || '<p class="empty">Activity will appear here when a document arrives, Nexus answers, or a follow-up changes.</p>'}
     </section>`;
@@ -777,8 +776,7 @@ export function renderEmailInbox(inbox: EmailInbox): string {
       ${message.routingMethod ? `· ${esc(message.routingMethod.replaceAll('_', ' '))}` : ''}</p>
       ${message.documentIds.map((id) => `<a href="/documents#doc-${esc(id)}">Open received document →</a>`).join('')}`}
   </article>`;
-  return `<h1>Shared email inbox</h1>
-    <p class="sub">Local intake test for the CA team. No live mailbox is connected yet. A message without a clear client match stays unassigned.</p>
+  return `${pageIntro('INBOX', 'Shared email inbox', 'Local intake test for the CA team. No live mailbox is connected yet. A message without a clear client match stays unassigned.')}
     <section class="panel"><h2>Client references</h2>
       <p class="why">Use these in a sample recipient such as inbox+REFERENCE@example.test. The final domain will be configured when email delivery is connected.</p>
       <div class="email-routes">${inbox.clients.map((client) => `<div><b>${esc(client.name)}</b>
@@ -871,8 +869,7 @@ export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssign
       <form class="snooze-follow-up" data-id="${esc(item.id)}"><label>Snooze until<input type="date" name="until" required></label><button type="submit">Snooze</button></form>
       <button type="button" class="complete-follow-up" data-id="${esc(item.id)}">Mark complete</button><span class="follow-up-action-result" role="status"></span>` : ''}
   </article>`;
-  return `<h1>Review desk</h1>
-    <p class="sub">Track questions and follow-ups for this client. Completing an item only updates its status; it does not post to the books.</p>
+  return `${pageIntro('TODAY', 'Review desk', 'Track questions and follow-ups for this client. Completing an item only updates its status; it does not post to the books.')}
     <section class="panel"><h2>Add a follow-up</h2>
       <form id="follow-up-form"><label>What needs review?<input name="title" maxlength="160" required placeholder="e.g. Confirm the missing bank statement"></label>
       <label>Context<textarea name="details" maxlength="2000" placeholder="What should the CA check?"></textarea></label>
@@ -1760,11 +1757,10 @@ export function renderAccounts(
   canManage = true,
 ): string {
   if (accounts.length === 0) {
-    if (!canManage) return '<h1>Bank accounts</h1><p class="empty">No bank accounts are configured for this client.</p>';
+    if (!canManage) return `${pageIntro('BANKING', 'Bank accounts', 'Bank accounts connected to this client ledger.')}<p class="empty">No bank accounts are configured for this client.</p>`;
     return renderBankAccountSetup(today, '/accounts');
   }
-  return `<h1>Bank accounts</h1>
-  <p class="sub">Account numbers are stored as last-four plus a hash only (BR-2).</p>
+  return `${pageIntro('BANKING', 'Bank accounts', 'Account numbers are stored as last-four plus a hash only (BR-2).')}
   <div class="panel"><table>
     <tr><th>Bank</th><th>Account</th><th>Type</th><th></th></tr>
     ${accounts.map((a) => `<tr>
@@ -1837,8 +1833,7 @@ function bankAccountForm(today: string, returnTo: string): string {
 }
 
 export function renderBankAccountSetup(today: string, returnTo = '/reconcile'): string {
-  return `<h1>Add your bank account</h1>
-    <p class="sub">This connects the ledger to statement imports. It cannot move money.</p>
+  return `${pageIntro('BANKING', 'Add your bank account', 'This connects the ledger to statement imports. It cannot move money.')}
     ${bankAccountForm(today, returnTo)}`;
 }
 
@@ -4137,9 +4132,7 @@ export function renderPayables(a: {
     </tr>`;
   }).join('');
 
-  return `<h1>Payables</h1>
-<p class="sub">What the client owes, oldest first. A payment posts to the ledger
-and clears the bill.</p>
+  return `${pageIntro('PURCHASES', 'Payables', 'What the client owes, oldest first. A payment posts to the ledger and clears the bill only after a human records it.')}
 
 ${strip}
 ${a.draftVoucherId ? '<div class="msg warn">This is an AI-prepared draft. It has not posted anything. Check the amount, payment account and date before approving.</div>' : ''}
@@ -4210,8 +4203,7 @@ export function renderSupplierList(a: { suppliers: SupplierListRowV[] }): string
         : '<span class="muted">unchecked</span>'}</td>
       <td class="num">${s.outstanding === '0.00' ? '<span class="muted">—</span>' : inr(s.outstanding)}</td>
     </tr>`).join('');
-  return `<h1>Suppliers</h1>
-<p class="sub">Everyone the client buys from. Open one for its full history.</p>
+  return `${pageIntro('PURCHASES', 'Suppliers', 'Everyone the client buys from. Open one for its full history.')}
 ${a.suppliers.length === 0
   ? '<p class="empty">No suppliers yet.</p>'
   : `<div class="panel" style="padding:0"><table>
@@ -4277,10 +4269,7 @@ export function renderSupplier(s: SupplierDetailV): string {
     </table></div>`;
 
   return `<p class="sub"><a href="/suppliers">← Suppliers</a></p>
-<h1>${esc(s.name)}</h1>
-<p class="sub">${esc(s.legalName && s.legalName !== s.name ? s.legalName + ' · ' : '')}
-  <span class="mono">${esc(s.gstin ?? 'no GSTIN')}</span>
-  ${s.stateCode ? ` · state ${esc(s.stateCode)}` : ''} · ${esc(s.gstCategory)}</p>
+${pageIntro('PURCHASES', s.name, `${s.legalName && s.legalName !== s.name ? s.legalName + ' · ' : ''}${s.gstin ?? 'no GSTIN'}${s.stateCode ? ' · state ' + s.stateCode : ''} · ${s.gstCategory}`)}
 <p>${regLine}</p>
 
 <div class="tiles">
@@ -4705,10 +4694,7 @@ export function renderReceivables(a: {
       </td>
     </tr>`).join('');
 
-  return `<h1>Receivables</h1>
-<p class="sub">What customers owe, oldest first. Read from the ledger rather
-than from a status column, so a receipt, a credit note and a write-off all
-reduce it without anything being maintained by hand.</p>
+  return `${pageIntro('SALES', 'Receivables', 'What customers owe, oldest first. Read from the ledger so receipts, credit notes, and write-offs reduce balances from recorded transactions.')}
 
 <div class="panel strip">
   ${['not_due', 'd0_30', 'd31_60', 'd61_90', 'd90_plus'].map((k) =>
@@ -4985,11 +4971,7 @@ export function renderReturns(a: ReturnsV): string {
         : `<span class="good mono">${esc(r.supplierCreditNote)}</span>`}</td>
     </tr>`).join('');
 
-  return `<h1>Purchase returns</h1>
-<p class="sub">Goods that went back, and the bills they reduce. A debit note is
-OUR document: it records that we are paying less and it reverses the input
-credit we took. It does not reduce the supplier's liability — under s.34 only
-their credit note does that, so each one below is tracked until it arrives.</p>
+  return `${pageIntro('PURCHASES', 'Purchase returns', 'Track goods returned and the bills they reduce. A debit note records the buyer-side reduction; the supplier liability changes when the supplier issues its credit note.')}
 
 ${waiting.length === 0 ? '' : `<div class="panel strip">
   <div class="stat"><b class="warn">${waiting.length}</b>
@@ -5219,8 +5201,7 @@ export function renderClientSetup(a: {
   const step = (complete: boolean, title: string, note: string, href?: string) =>
     `<div class="setup-step ${complete ? 'good' : 'warn'}"><b>${complete ? 'Done' : 'Next'} · ${esc(title)}</b>
       <span>${esc(note)}</span>${href ? ` <a href="${esc(href)}">Open →</a>` : ''}</div>`;
-  return `<h1>Set up ${esc(a.name)}</h1>
-<p class="sub">Complete the basics before posting live books. You can return here any time.</p>
+  return `${pageIntro('TODAY', `Set up ${a.name}`, 'Complete the basics before posting live books. You can return here any time.')}
 <div class="panel strip">
   <div class="stat"><b>${done}/3</b><span>core setup complete</span></div>
   <div class="stat"><b>${a.teamMembers}</b><span>firm team members</span></div>

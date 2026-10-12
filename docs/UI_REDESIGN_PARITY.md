@@ -22,6 +22,9 @@ must never be used as application data.
 - The CA firm cockpit and Tally import also use the shared heading pattern;
   their period filter, client switch links, XML preview, ledger mapping, and
   human-confirmed import remain unchanged.
+- Activity, firm email inbox, review desk, bank accounts, payables, suppliers,
+  receivables, purchase returns, and client setup now follow the same heading
+  system so pages without a dedicated mockup still feel part of one workspace.
 - Focused views and workflow tests pass for documents, bills, sales, and the
   shared shell. Authenticated visual review across owner and CA roles, and
   remaining Bank, GST/TDS, and Tally mockup-specific refinements, are still

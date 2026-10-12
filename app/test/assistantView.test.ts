@@ -85,6 +85,7 @@ describe('BharatERP redesign shell', () => {
     expect(empty).not.toContain('Add your bank account');
     const existing = renderAccounts([{ id: 'a1', bank_name: 'HDFC', last4: '4961', kind: 'current' }], '2026-10-11', false);
     expect(existing).toContain('HDFC');
+    expect(existing).toContain('<p class="eyebrow">BANKING</p>');
     expect(existing).not.toContain('Add another bank account');
   });
 
@@ -110,6 +111,7 @@ describe('BharatERP redesign shell', () => {
         clientId: null, clientName: null, routingMethod: null, processingError: null,
         attachmentCount: 1, attachmentNames: ['invoice.pdf'], documentIds: [] }],
     });
+    expect(html).toContain('<p class="eyebrow">INBOX</p>');
     expect(html).toContain('Unassigned · 1');
     expect(html).toContain('inbox+aaaaaaaaaaaaaaaaaaaa');
     expect(html).toContain('data-id="email-1"');
@@ -391,6 +393,7 @@ describe('BharatERP redesign shell', () => {
       accounts: [{ id: 'bank-1', name: 'Bank Accounts' }], today: '2026-09-16',
       draftVoucherId: 'bill-1',
     });
+    expect(html).toContain('<p class="eyebrow">PURCHASES</p>');
     expect(html).toContain('AI-prepared draft');
     expect(html).toContain('Approve and record payment');
     expect(html).toContain('It has not posted anything.');
@@ -420,6 +423,7 @@ describe('BharatERP redesign shell', () => {
         tdsWithheld: '0.00', daysOverdue: 15, bucket: 'd0_30' }],
       accounts: [], reminders: true,
     });
+    expect(html).toContain('<p class="eyebrow">SALES</p>');
     expect(html).toContain('Payment reminder drafts');
     expect(html).toContain('Review in WhatsApp');
     expect(html).toContain('does not send messages automatically');

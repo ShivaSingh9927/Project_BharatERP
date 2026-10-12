@@ -49,6 +49,10 @@
 - The firm cockpit and Tally XML import now use the same section heading
   pattern. Existing client switching, period selection, XML preview, ledger
   mapping, and confirmation flows remain unchanged.
+- The shared section headings now also cover Activity, firm email inbox,
+  follow-ups, bank accounts, payables, suppliers, receivables, purchase
+  returns, and client setup. Only presentation changed; the existing actions
+  and role gates continue through their original server/domain handlers.
 
 ### Nexus money question and saved chat presentation (2026-10-10)
 
