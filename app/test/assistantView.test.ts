@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAssistantRuns, renderClientSetup, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
+import { renderAccounts, renderAssistantRuns, renderClientSetup, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
 
 describe('document class review UI', () => {
   const document = {
@@ -25,6 +25,15 @@ describe('document class review UI', () => {
 });
 
 describe('Ask Bharat shell', () => {
+  it('hides bank setup controls from read-only roles', () => {
+    const empty = renderAccounts([], '2026-10-11', false);
+    expect(empty).toContain('No bank accounts are configured');
+    expect(empty).not.toContain('Add your bank account');
+    const existing = renderAccounts([{ id: 'a1', bank_name: 'HDFC', last4: '4961', kind: 'current' }], '2026-10-11', false);
+    expect(existing).toContain('HDFC');
+    expect(existing).not.toContain('Add another bank account');
+  });
+
   it('renders bank evidence as an escaped read-only source page', () => {
     const html = renderNexusBankTransactionSource({
       id: 'source-1', txn_date: '2026-10-01', value_date: null,
@@ -222,6 +231,41 @@ describe('Ask Bharat shell', () => {
     expect(html).toContain('Save answer');
     expect(html).toContain('does not post or reconcile anything');
     expect(html).not.toContain('r.onclick =');
+
+    const staffHtml = renderQueue({
+      items: [{
+        bankTransactionId: 'txn-1', txnDate: '2026-10-06', narration: 'UPI receipt',
+        direction: 'inbound', debit: '0.00', credit: '1000.00', unmatchedAmount: '1000.00',
+        paymentMode: 'UPI', reference: 'ref-1', status: 'unmatched', counterpartyName: null,
+        proposal: { best: null, reason: 'No likely match', runnersUp: [], ambiguous: false, autoMatchable: false },
+        suggestedClassification: null, suggestedExpenseAccount: null, reviewClassification: null,
+        reviewSourceName: null, fundingSuggestion: null, reviewNote: null,
+      }] as never,
+      totals: { unmatched: 1, matched: 0, autoMatchable: 0, ambiguous: 0, unsure: 0 },
+    }, { ties: true, difference: '0.00' } as never, 'bank-1',
+    { expenseAccounts: [], transferAccounts: [], personalAccountName: 'Personal Account' },
+    { enabled: true, available: true, canReview: true, canPost: false, canManageSettings: false });
+    expect(staffHtml).toContain('can save an unsure or pending review');
+    expect(staffHtml).not.toContain('data-kind="business_expense"');
+    expect(staffHtml).not.toContain('data-kind="transfer"');
+    expect(staffHtml).not.toContain('class="review-expense"');
+    expect(staffHtml).not.toContain('id="toggle-bank-classifier"');
+
+    const auditorHtml = renderQueue({
+      items: [{
+        bankTransactionId: 'txn-1', txnDate: '2026-10-06', narration: 'UPI receipt',
+        direction: 'inbound', debit: '0.00', credit: '1000.00', unmatchedAmount: '1000.00',
+        paymentMode: 'UPI', reference: 'ref-1', status: 'unmatched', counterpartyName: null,
+        proposal: { best: null, reason: 'No likely match', runnersUp: [], ambiguous: false, autoMatchable: false },
+        suggestedClassification: null, suggestedExpenseAccount: null, reviewClassification: null,
+        reviewSourceName: null, fundingSuggestion: null, reviewNote: null,
+      }] as never,
+      totals: { unmatched: 1, matched: 0, autoMatchable: 0, ambiguous: 0, unsure: 0 },
+    }, { ties: true, difference: '0.00' } as never, 'bank-1',
+    { expenseAccounts: [], transferAccounts: [], personalAccountName: 'Personal Account' },
+    { enabled: false, available: true, canReview: false, canPost: false, canManageSettings: false });
+    expect(auditorHtml).not.toContain('class="bank-review"');
+    expect(auditorHtml).toContain('Read-only bank review');
   });
 
   it('opens an AI-prepared payment as a review-only draft', () => {

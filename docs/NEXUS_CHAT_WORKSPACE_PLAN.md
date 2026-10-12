@@ -116,6 +116,14 @@ accepts an account ID from the URL, and its existing mutation routes need a
 documented role matrix before chat cards can use them. Keep confirmation
 disabled until these checks and proposal freshness checks are in place.
 
+The initial route policy is: `owner` and `ca_partner` may confirm/reconcile or
+post bank accounting effects; `ca_staff` may import source statements and save
+non-posting review states but cannot post; `auditor` may read scoped bank
+records only; other roles are denied bank capabilities. Account setup and
+firm-wide Nexus bank-classifier consent are limited to `owner` and
+`ca_partner`. This policy is enforced at server routes and reflected in the
+review UI; domain queries must still enforce firm/client ownership.
+
 **Build:** From `Review my bank activity`, collect the selected account and
 period, show matches and unresolved lines, and let Nexus ask one short
 question per ambiguous transaction. Use current bank classification and

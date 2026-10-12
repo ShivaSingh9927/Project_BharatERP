@@ -389,6 +389,23 @@ domain code, migrations, and tests for exact behavior.
 - Node 22 typecheck passed. Focused block/view tests passed (22 tests), and
   the database-backed bank activity/source-scope tests passed (5 tests).
 
+### Bank review authorization audit (2026-10-11)
+
+- Audited `/reconcile`, `/brs`, `/import`, bank preview/import, bank-account
+  setup, matching/classification, opening balance, ignore, and Nexus bank-read
+  routes. Domain reads/writes use firm RLS plus explicit client/account checks;
+  however, several mutation routes previously accepted any signed-in role.
+- Added server-enforced capabilities: owner and CA partner may confirm or post
+  bank accounting effects; CA staff may import evidence and save non-posting
+  review states; auditor is read-only; account setup and firm-wide classifier
+  consent are owner/CA-partner only. The reconcile UI hides unavailable actions
+  for staff/auditors, while APIs enforce the same policy independently.
+- This is Phase 3's security prerequisite, not the end-to-end bank review case.
+  Proposal freshness checks and a chat-native transaction question/decision
+  flow remain to be implemented before confirmation is exposed in chat.
+- Node 22 typecheck passed; focused role-policy and reviewer-UI tests passed
+  (22 tests across 2 files). No database migration was needed.
+
 ## Handoff convention
 
 At the end of significant work, update this file with the date, what changed,

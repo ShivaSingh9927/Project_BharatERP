@@ -1546,8 +1546,10 @@ export function renderAssistantRuns(runs: Array<{
 export function renderAccounts(
   accounts: Array<{ id: string; bank_name: string; last4: string; kind: string }>,
   today = new Date().toISOString().slice(0, 10),
+  canManage = true,
 ): string {
   if (accounts.length === 0) {
+    if (!canManage) return '<h1>Bank accounts</h1><p class="empty">No bank accounts are configured for this client.</p>';
     return renderBankAccountSetup(today, '/accounts');
   }
   return `<h1>Bank accounts</h1>
@@ -1563,9 +1565,9 @@ export function renderAccounts(
         <a href="/brs?account=${esc(a.id)}"><button>BRS</button></a>
       </td></tr>`).join('')}
   </table></div>
-  <details style="margin-top:16px"><summary>Add another bank account</summary>
+  ${canManage ? `<details style="margin-top:16px"><summary>Add another bank account</summary>
     ${bankAccountForm(today, '/accounts')}
-  </details>`;
+  </details>` : ''}`;
 }
 
 function bankAccountForm(today: string, returnTo: string): string {
@@ -2357,23 +2359,28 @@ export function renderQueue(
     transferAccounts: Array<{ id: string; name: string }>;
     personalAccountName: string;
   },
-  classifier: { enabled: boolean; available: boolean; called?: boolean } = {
+  classifier: { enabled: boolean; available: boolean; called?: boolean;
+    canReview?: boolean; canPost?: boolean; canManageSettings?: boolean } = {
     enabled: false, available: false,
   },
 ): string {
   const { items, totals } = queue;
+  const canReview = classifier.canReview ?? true;
+  const canPost = classifier.canPost ?? true;
+  const canManageSettings = classifier.canManageSettings ?? true;
 
   const optionList = (accounts: Array<{ id: string; name: string }>, selected: string | null) =>
     `<option value="">Choose account</option>${accounts.map((a) =>
       `<option value="${esc(a.id)}" ${a.name === selected ? 'selected' : ''}>${esc(a.name)}</option>`
     ).join('')}`;
   const reviewControl = (it: QueueItem, i: number): string => {
+    if (!canReview) return '';
     const defaultKind = it.reviewClassification ?? it.fundingSuggestion?.classification
       ?? (it.suggestedExpenseAccount ? 'business_expense' : 'unsure');
     const outbound = it.direction === 'outbound';
     const kindOptions = [
       { value: 'unsure', label: 'Unsure — do not post' },
-      ...(outbound ? [
+      ...(outbound && canPost ? [
         { value: 'business_expense', label: 'Business expense — receipt missing' },
         { value: 'personal', label: 'Personal payment' },
       ] : [
@@ -2385,7 +2392,7 @@ export function renderQueue(
         { value: 'bank_interest_pending', label: 'Bank interest — verify statement' },
         { value: 'customer_receipt_pending', label: 'Customer payment — match invoice' },
       ]),
-      { value: 'transfer', label: 'Transfer between company accounts' },
+      ...(canPost ? [{ value: 'transfer', label: 'Transfer between company accounts' }] : []),
     ];
     const selectedKind = kindOptions.find((option) => option.value === defaultKind) ?? kindOptions[0]!;
     const suggestion = !outbound && !it.proposal.best
@@ -2418,14 +2425,15 @@ export function renderQueue(
           <input class="review-source-name" maxlength="160" placeholder="Confirm sender name"
             value="${esc(it.reviewSourceName ?? it.fundingSuggestion?.sourceName ?? it.counterpartyName ?? '')}">
         </label>
-        <label class="review-expense">Expense account
+        ${canPost ? `<label class="review-expense">Expense account
           <select class="review-expense-account">${optionList(review.expenseAccounts, it.suggestedExpenseAccount)}</select>
         </label>
         <label class="review-transfer">Other account
           <select class="review-transfer-account">${optionList(review.transferAccounts, null)}</select>
-        </label>
+        </label>` : ''}
         <label>Note <input class="review-note" maxlength="500" placeholder="What evidence supports this choice?" value="${esc(it.reviewNote ?? '')}"></label>
         <p class="why review-explain"></p>
+        ${!canPost ? '<p class="why">Ledger posting and reconciliation require an owner or CA partner. You can save an unsure or pending review for them.</p>' : ''}
         <button class="primary review-submit">Save answer</button>
       </div>
     </details>`;
@@ -2458,7 +2466,7 @@ at the bottom. Nothing posts without you.</p>
 
 <div class="msg"><b>Review a transaction:</b> choose a type, fill in the sender or evidence if you know it, then select <b>Save answer</b>. If you are unsure, leave “Unsure” selected. Saving a review does not post or reconcile anything.</div>
 
-<div class="panel row-actions" style="justify-content:space-between;align-items:center">
+  <div class="panel row-actions" style="justify-content:space-between;align-items:center">
   <div><b>Nexus transaction suggestions</b>
     <div class="why">Optional AI suggestions for unmatched incoming transactions. They are saved for review and never post automatically.</div>
     <details class="suggestion-details"><summary>ⓘ What information is shared?</summary>
@@ -2467,7 +2475,7 @@ at the bottom. Nothing posts without you.</p>
     ${classifier.enabled ? '<span class="tag good">Enabled</span>' : '<span class="tag">Off</span>'}
     ${!classifier.available ? '<span class="why"> · Nexus AI is not configured on this server.</span>' : ''}
   </div>
-  <button type="button" id="toggle-bank-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off' : 'Enable for this firm'}</button>
+  ${canManageSettings ? `<button type="button" id="toggle-bank-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off' : 'Enable for this firm'}</button>` : '<span class="why">Only an owner or CA partner can change this firm setting.</span>'}
 </div>
 
 <div class="panel strip">
@@ -2477,14 +2485,14 @@ at the bottom. Nothing posts without you.</p>
   <div class="stat"><b class="${totals.unsure ? 'bad' : ''}">${totals.unsure}</b><span>marked unsure</span></div>
   <div class="stat"><b class="${brs.ties ? 'good' : 'bad'}">${inr(brs.difference)}</b><span>BRS difference</span></div>
   <div style="margin-left:auto" class="row-actions">
-    <button class="primary" id="bulk" ${totals.autoMatchable === 0 ? 'disabled' : ''}>
+    <button class="primary" id="bulk" ${totals.autoMatchable === 0 || !canPost ? 'disabled' : ''}>
       Accept ${totals.autoMatchable} high-confidence <kbd>A</kbd>
     </button>
   </div>
 </div>
 
 ${brs.ties ? '' : `<div class="msg bad"><b>The BRS does not tie.</b><br>${esc(brs.exception)}</div>`}
-${brs.openingSuggestion ? `<div class="msg">
+${brs.openingSuggestion && canPost ? `<div class="msg">
   <b>First statement starting balance: ${inr(brs.openingSuggestion.amount)}</b><br>
   This amount is printed on the statement for ${esc(brs.openingSuggestion.date)}. Confirm it once to start this bank account in the books.
   <p><button class="primary" id="use-statement-opening">Use this starting balance</button></p>
@@ -2499,6 +2507,8 @@ ${items.length === 0
           <th class="num">In</th><th>Match or classify</th></tr>
       ${rows}
     </table></div>`}
+
+${!canReview ? '<p class="why">Read-only bank review. An owner, CA partner, or CA staff member can record a review.</p>' : ''}
 
 <p class="keys">
   <kbd>j</kbd><kbd>k</kbd> move ·

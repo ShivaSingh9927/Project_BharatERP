@@ -44,6 +44,7 @@ import { createBankAccount, settleInvoiceFromBankLine, postBankCharge,
          postOpeningFromFirstStatement }
   from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
+import { bankClassificationCapability, hasBankCapability } from '../domain/bankPermissions.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
 import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
          renderBankAccountSetup,
@@ -515,6 +516,9 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/nexus/source/bank-transaction') {
+    if (!hasBankCapability(session.role, 'read')) return html(res, 403, renderShell({
+      session, accounts, active: 'nexus', body: '<h1>Bank evidence unavailable</h1>',
+    }));
     const id = url.searchParams.get('id') ?? '';
     const source = await getNexusBankTransactionSource(session.firmId, session.clientId, id);
     if (!source) {
@@ -773,13 +777,20 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/accounts') {
+    if (!hasBankCapability(session.role, 'read')) return html(res, 403, renderShell({
+      session, accounts, active: 'accounts', body: '<h1>Bank accounts unavailable</h1>',
+    }));
     return html(res, 200, renderShell({
       session, accounts, active: 'accounts',
-      body: renderAccounts(accounts),
+      body: renderAccounts(accounts, new Date().toISOString().slice(0, 10),
+        hasBankCapability(session.role, 'manage_settings')),
     }));
   }
 
   if (req.method === 'POST' && path === '/api/bank-accounts') {
+    if (!hasBankCapability(session.role, 'manage_settings')) {
+      return json(res, 403, { ok: false, error: 'owner or CA partner access required to set up a bank account' });
+    }
     const body = JSON.parse(await readBody(req));
     try {
       const account = await createBankAccount(session.firmId, {
@@ -814,6 +825,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/nexus/bank-activity') {
+    if (!hasBankCapability(session.role, 'read')) {
+      return json(res, 403, { ok: false, error: 'bank read access is unavailable for this role' });
+    }
     try {
       const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
       const requestId = String(body.requestId ?? '');
@@ -1669,6 +1683,9 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/reconcile') {
+    if (!hasBankCapability(session.role, 'read')) return html(res, 403, renderShell({
+      session, accounts, active: 'reconcile', body: '<h1>Bank reconciliation unavailable</h1>',
+    }));
     const accountId = url.searchParams.get('account') ?? accounts[0]?.id;
     if (!accountId) {
       return html(res, 200, renderShell({
@@ -1688,11 +1705,17 @@ async function handle(
       session, accounts, active: 'reconcile', accountId,
       body: renderQueue(queue, brs, accountId, reviewOptions, {
         ...classifier, available: assistantLlm !== null,
+        canReview: hasBankCapability(session.role, 'review'),
+        canPost: hasBankCapability(session.role, 'confirm'),
+        canManageSettings: hasBankCapability(session.role, 'manage_settings'),
       }),
     }));
   }
 
   if (req.method === 'POST' && path === '/api/bank-classifier-consent') {
+    if (!hasBankCapability(session.role, 'manage_settings')) {
+      return json(res, 403, { ok: false, error: 'owner or CA partner access required to change Nexus bank suggestions' });
+    }
     const body = JSON.parse(await readBody(req));
     if (typeof body.enabled !== 'boolean') {
       return json(res, 400, { ok: false, error: 'choose whether to enable Nexus suggestions' });
@@ -1710,6 +1733,9 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/import') {
+    if (!hasBankCapability(session.role, 'import')) return html(res, 403, renderShell({
+      session, accounts, active: 'import', body: '<h1>Statement import unavailable</h1>',
+    }));
     const syncAccounts = await Promise.all(accounts.map(async (account) => ({
       ...account,
       coverage: await bankSyncCoverage(session.firmId, session.clientId, account.id),
@@ -1737,6 +1763,9 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/brs') {
+    if (!hasBankCapability(session.role, 'read')) return html(res, 403, renderShell({
+      session, accounts, active: 'brs', body: '<h1>Bank reconciliation unavailable</h1>',
+    }));
     const accountId = url.searchParams.get('account') ?? accounts[0]?.id;
     if (!accountId) return html(res, 404, 'no account');
     const asOf = url.searchParams.get('asOf') ?? new Date().toISOString().slice(0, 10);
@@ -1765,6 +1794,9 @@ async function handle(
   // ---- actions ------------------------------------------------------------
 
   if (req.method === 'POST' && path === '/api/statement-password/forget') {
+    if (!hasBankCapability(session.role, 'import')) {
+      return json(res, 403, { ok: false, error: 'authorized bank-workflow access required' });
+    }
     try {
       const body = JSON.parse(await readBody(req));
       await forgetStatementPassword(session.firmId, session.clientId,
@@ -1776,6 +1808,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/preview') {
+    if (!hasBankCapability(session.role, 'import')) {
+      return json(res, 403, { ok: false, error: 'authorized bank-workflow access required' });
+    }
     const body = JSON.parse(await readBody(req));
     const { fileText, fileBase64, bank, bankAccountId } = body;
     try {
@@ -1849,6 +1884,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/import') {
+    if (!hasBankCapability(session.role, 'import')) {
+      return json(res, 403, { ok: false, error: 'authorized bank-workflow access required' });
+    }
     const body = JSON.parse(await readBody(req));
     const storedDocument = typeof body.documentId === 'string'
       ? await getDocumentBytes(session.firmId, session.clientId, body.documentId)
@@ -1899,6 +1937,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/accept') {
+    if (!hasBankCapability(session.role, 'confirm')) {
+      return json(res, 403, { ok: false, error: 'owner or CA partner confirmation is required to reconcile or post this transaction' });
+    }
     const body = JSON.parse(await readBody(req));
     try {
       const r = await settleInvoiceFromBankLine(session.firmId, {
@@ -1919,6 +1960,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/bank-opening-from-statement') {
+    if (!hasBankCapability(session.role, 'confirm')) {
+      return json(res, 403, { ok: false, error: 'owner or CA partner confirmation is required to post an opening balance' });
+    }
     const body = JSON.parse(await readBody(req));
     try {
       const result = await postOpeningFromFirstStatement(session.firmId, {
@@ -1932,6 +1976,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/classify') {
+    if (!hasBankCapability(session.role, 'confirm')) {
+      return json(res, 403, { ok: false, error: 'owner or CA partner confirmation is required to post a bank classification' });
+    }
     const body = JSON.parse(await readBody(req));
     try {
       if (body.kind === 'bank_charge') {
@@ -1961,6 +2008,12 @@ async function handle(
 
   if (req.method === 'POST' && path === '/api/review-bank-transaction') {
     const body = JSON.parse(await readBody(req));
+    const capability = bankClassificationCapability(body.classification);
+    if (!hasBankCapability(session.role, capability)) {
+      return json(res, 403, { ok: false, error: capability === 'confirm'
+        ? 'owner or CA partner confirmation is required to post this classification'
+        : 'authorized bank-review access required' });
+    }
     try {
       const r = await reviewBankTransaction(session.firmId, {
         clientId: session.clientId,
@@ -1978,6 +2031,9 @@ async function handle(
   }
 
   if (req.method === 'POST' && path === '/api/ignore') {
+    if (!hasBankCapability(session.role, 'review')) {
+      return json(res, 403, { ok: false, error: 'authorized bank-review access required' });
+    }
     const body = JSON.parse(await readBody(req));
     try {
       await ignoreBankTransaction(session.firmId, session.clientId,
