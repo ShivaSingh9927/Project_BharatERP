@@ -6,6 +6,21 @@ data, actions, role gates, and important states remain reachable in the new
 shell. The mockup bundle is a visual reference; its example client and figures
 must never be used as application data.
 
+## Implementation progress — 2026-10-12
+
+- The shared navigation, Today/Nexus entry, firm cockpit, reports, close-month,
+  and customer-list integration are in the pushed first slice described in
+  PROJECT_STATUS.md.
+- The current follow-on slice updates /documents with selectable client
+  documents and status/type filters, and /bills with review-state filters
+  and an explicit next-step cue. /sales and /customers now use the same
+  page heading and orientation pattern. These additions keep using the current
+  server-rendered, client-scoped data and existing write endpoints.
+- Focused views and workflow tests pass for documents, bills, sales, and the
+  shared shell. Authenticated visual review across owner and CA roles, and
+  remaining Bank, GST/TDS, and Tally mockup-specific refinements, are still
+  open. All routes remain reachable through the shared navigation.
+
 ## Shared shell
 
 - [ ] Owner navigation: Today, Ask Nexus, Inbox, Bills, Sales, Bank, GST & TDS,

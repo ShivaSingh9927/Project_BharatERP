@@ -57,7 +57,7 @@ const inr = (v: string): string => {
 export function renderDocumentInbox(
   documents: InboxDocument[], canReview = false, requestHistory: DocumentRequestAnswer[] = [],
   classifier: { enabled: boolean; available: boolean } = { enabled: false, available: false },
-  canConfirmClass = true,
+  canConfirmClass = true, selectedDocumentId?: string, statusFilter = 'all', classFilter = 'all',
 ): string {
   const statusLabel = (status: string): string => ({
     received: 'Received · waiting for CA',
@@ -65,6 +65,7 @@ export function renderDocumentInbox(
     needs_information: 'Information requested',
     processed: 'Completed',
     dismissed: 'Dismissed as irrelevant · original retained',
+    unavailable: 'Original unavailable',
   }[status] ?? status);
   const classLabels: Record<string, string> = {
     bank_statement: 'Bank statement', purchase_bill: 'Purchase bill',
@@ -73,7 +74,19 @@ export function renderDocumentInbox(
     contract_legal: 'Contract / legal', other: 'Other', uncertain: 'Uncertain',
   };
   const documentClasses = Object.keys(classLabels);
-  const rows = documents.map((d) => `<tr id="doc-${esc(d.id)}">
+  const filteredDocuments = documents.filter((document) => {
+    const statusMatches = statusFilter === 'all' ||
+      (statusFilter === 'needs-review' && ['received', 'needs_information'].includes(document.status)) ||
+      (statusFilter === 'with-ca' && document.status === 'in_review') ||
+      (statusFilter === 'moved' && document.status === 'processed') ||
+      (statusFilter === 'set-aside' && document.status === 'dismissed');
+    const classMatches = classFilter === 'all' ||
+      (document.classConfirmation?.documentClass ?? document.classSuggestion?.documentClass ?? 'uncertain') === classFilter;
+    return statusMatches && classMatches;
+  });
+  const selectedDocument = filteredDocuments.find((document) => document.id === selectedDocumentId)
+    ?? filteredDocuments[0] ?? null;
+  const rows = (selectedDocument ? [selectedDocument] : []).map((d) => `<tr id="doc-${esc(d.id)}">
     <td>${d.available ? `<a href="/api/documents/${esc(d.id)}/download">${esc(d.originalName)}</a>
       <div class="doc-class-suggestion"><b>${d.classSuggestion ? 'Nexus suggestion' : 'Document class review'}</b>
         ${d.classSuggestion ? `<span>${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}${d.classSuggestion.subtype ? ` · ${esc(d.classSuggestion.subtype)}` : ''} · ${d.classSuggestion.confidence}% confidence</span>
@@ -116,25 +129,75 @@ export function renderDocumentInbox(
       <button type="button" class="dismiss-document" data-id="${esc(d.id)}">Dismiss as irrelevant</button>` : ''}
     </div>` : ''}</td>
   </tr>`).join('');
-  return `<h1>Documents</h1>
-<p class="sub">Files received for this client. Each original is stored once and can be traced by its document ID.</p>
-<section class="panel"><h2>Nexus document-class suggestions</h2>
-  <p class="why">On by default. Nexus sends text from the first two PDF pages or supported text files to the configured AI service after sensitive identifiers and amounts are redacted. Filenames and document text can still contain identifying details. Suggestions are for review only; nothing imports or posts until a person confirms the document class. You can turn suggestions off for this firm.</p>
-  <span class="tag ${classifier.enabled ? 'good' : ''}">${classifier.enabled ? 'On' : 'Off for this firm'}</span>
-      ${!classifier.available ? '<span class="why">Nexus AI is not configured on this server.</span>' : ''}
-  <button type="button" id="toggle-document-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off for this firm' : 'Turn on for this firm'}</button>
-</section>
-<section class="panel">
-  <h2>Receive files</h2>
-  <input id="document-files" type="file" multiple aria-label="Choose documents">
-  <button class="primary" type="button" id="document-upload">Upload</button>
-  <p class="why">Up to 5 MB per file. Uploaded files enter the inbox for review; upload alone does not post to the books.</p>
-  <div id="document-upload-result" role="status"></div>
-</section>
-<section class="panel"><h2>Received originals</h2>
-  ${documents.length ? `<table><thead><tr><th>File</th><th>Received</th><th>Status / CA note</th><th>Size</th><th>CA actions</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<p class="empty">No documents have been received for this client yet.</p>'}
-</section>
+  const query = (documentId?: string): string => {
+    const params = new URLSearchParams();
+    if (documentId) params.set('document', documentId);
+    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (classFilter !== 'all') params.set('type', classFilter);
+    return `/documents${params.size ? `?${params.toString()}` : ''}#inbox-detail`;
+  };
+  const statusCounts = {
+    all: documents.length,
+    'needs-review': documents.filter((document) => ['received', 'needs_information'].includes(document.status)).length,
+    'with-ca': documents.filter((document) => document.status === 'in_review').length,
+    moved: documents.filter((document) => document.status === 'processed').length,
+    'set-aside': documents.filter((document) => document.status === 'dismissed').length,
+  };
+  const filters = [
+    ['all', 'All'], ['needs-review', 'Needs review'], ['with-ca', 'With the CA'],
+    ['moved', 'Completed'], ['set-aside', 'Set aside'],
+  ] as const;
+  const filterHref = (status: string): string => {
+    const params = new URLSearchParams();
+    if (status !== 'all') params.set('status', status);
+    if (classFilter !== 'all') params.set('type', classFilter);
+    return `/documents${params.size ? `?${params.toString()}` : ''}`;
+  };
+  const docList = filteredDocuments.length ? filteredDocuments.map((document) => {
+    const docClass = document.classConfirmation?.documentClass ?? document.classSuggestion?.documentClass ?? 'uncertain';
+    const destination = document.classConfirmation?.documentClass === 'bank_statement' ? 'Bank statements'
+      : document.classConfirmation?.documentClass === 'purchase_bill' ? 'Bills'
+      : document.classConfirmation?.documentClass === 'sales_invoice' ? 'Sales'
+      : document.classConfirmation?.documentClass === 'tds_document' ? 'TDS'
+      : document.classConfirmation?.documentClass === 'gst_document' ? 'GST review' : '';
+    return `<a class="inbox-document ${document.id === selectedDocument?.id ? 'selected' : ''}" href="${esc(query(document.id))}">
+      <span><b>${esc(document.originalName)}</b><small>${esc(new Date(document.receivedAt).toLocaleString('en-IN'))}</small></span>
+      <span class="inbox-document-status">${esc(statusLabel(document.available ? document.status : 'unavailable'))}</span>
+      <small>${esc(classLabels[docClass] ?? docClass)}${destination ? ` · Now in ${esc(destination)}` : ''}</small>
+    </a>`;
+  }).join('') : '<p class="empty">No documents match these filters.</p>';
+  return `<div class="inbox-heading"><div><h1>Inbox</h1>
+    <p class="sub">Files from email or upload. Confirm the type before a document moves into a work area.</p></div>
+    <label class="inbox-upload">＋ Upload files<input id="document-files" type="file" multiple aria-label="Choose documents"></label>
+    <button class="primary" type="button" id="document-upload">Upload</button>
+  </div>
+  <p class="why inbox-limit">Up to 5 MB per file. Uploading stores the original; it does not import or post anything.</p>
+  <div id="document-upload-result" role="status" aria-live="polite"></div>
+  <details class="panel inbox-ai"><summary><b>Nexus document suggestions</b>
+    <span class="tag ${classifier.enabled ? 'good' : ''}">${classifier.enabled ? 'On' : 'Off for this firm'}</span></summary>
+    <p class="why">Suggestions need your confirmation. If enabled, Nexus sends text from the first two PDF pages or supported text files after redacting some sensitive identifiers and amounts. Filenames and document text may still identify people or businesses.</p>
+    ${!classifier.available ? '<p class="why">Nexus AI is not configured on this server.</p>' : ''}
+    <button type="button" id="toggle-document-classifier" ${!classifier.available && !classifier.enabled ? 'disabled' : ''}>${classifier.enabled ? 'Turn off for this firm' : 'Turn on for this firm'}</button>
+  </details>
+  <nav class="inbox-filters" aria-label="Filter received documents">
+    ${filters.map(([key, label]) => `<a href="${esc(filterHref(key))}" data-document-filter="${key}" class="${statusFilter === key ? 'on' : ''}">${label}<b>${statusCounts[key]}</b></a>`).join('')}
+    <form method="get" action="/documents" class="inbox-type-filter">
+      <input type="hidden" name="status" value="${esc(statusFilter)}">
+      <label>Type <select name="type" onchange="this.form.submit()"><option value="all">All types</option>${documentClasses.map((value) => `<option value="${value}" ${classFilter === value ? 'selected' : ''}>${esc(classLabels[value]!)}</option>`).join('')}</select></label>
+    </form>
+  </nav>
+  <div class="inbox-layout">
+    <nav class="panel inbox-list" aria-label="Received documents">
+      <h2>Received · ${filteredDocuments.length}</h2>${docList}
+    </nav>
+    <section class="panel inbox-detail" id="inbox-detail" aria-label="Selected document review">
+      ${selectedDocument ? `<h2>${esc(selectedDocument.originalName)}</h2>
+        <p class="why">${esc(statusLabel(selectedDocument.available ? selectedDocument.status : 'unavailable'))} · Received ${esc(new Date(selectedDocument.receivedAt).toLocaleString('en-IN'))} · ${esc((selectedDocument.size / 1024).toFixed(1))} KB</p>
+        ${selectedDocument.available ? `<a class="primary-link" href="/api/documents/${esc(selectedDocument.id)}/download">Download original</a>` : '<p class="why">The original file is unavailable.</p>'}
+        <div class="inbox-detail-table"><table><thead><tr><th>Classification and source</th><th>Received</th><th>Status / history</th><th>Size</th><th>CA actions</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : documents.length ? '<p class="empty">No document matches these filters.</p>' : '<p class="empty">No documents have been received yet. Email or upload a file to start the review.</p>'}
+    </section>
+  </div>
 <script>(() => {
   const files = document.getElementById('document-files');
   const button = document.getElementById('document-upload');
@@ -1136,8 +1199,56 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .period-close-form textarea { min-height: 76px; font: inherit; }
 .doc-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
 .doc-actions a { font-size: 12px; }
+.inbox-heading { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.inbox-heading > div { margin-right: auto; }
+.inbox-heading .sub { margin-bottom: 2px; }
+.inbox-upload { display: inline-flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--line);
+  border-radius: 6px; background: #fff; color: var(--navy); font-size: 12px; font-weight: 600; }
+.inbox-upload input { max-width: 205px; font-size: 12px; }
+.inbox-limit { margin: 0 0 8px; }
+.inbox-ai { padding: 9px 12px; }
+.inbox-ai summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.inbox-ai p { max-width: 880px; }
+.inbox-filters { display: flex; align-items: center; gap: 7px; margin: 12px 0; overflow-x: auto; }
+.inbox-filters > a { display: inline-flex; gap: 6px; align-items: center; flex: 0 0 auto; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 18px; color: var(--muted); text-decoration: none; font-size: 12px; }
+.inbox-filters > a.on { border-color: var(--navy); background: var(--navy); color: #fff; }
+.inbox-filters > a b { font: 600 10px var(--mono); }
+.inbox-type-filter { flex: 0 0 auto; margin-left: auto; }
+.inbox-type-filter label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.inbox-type-filter select { padding: 5px 8px; }
+.inbox-layout { display: grid; grid-template-columns: minmax(240px, 310px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.inbox-list { max-height: 70vh; overflow-y: auto; padding: 0; }
+.inbox-list h2 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 12px 13px; background: #fff; border-bottom: 1px solid var(--line); }
+.inbox-document { display: grid; gap: 5px; padding: 11px 13px; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+.inbox-document:hover, .inbox-document.selected { background: var(--sel); }
+.inbox-document.selected { box-shadow: inset 3px 0 0 var(--accent); }
+.inbox-document > span:first-child { display: flex; justify-content: space-between; gap: 7px; }
+.inbox-document b { overflow-wrap: anywhere; }
+.inbox-document small { color: var(--muted); font-size: 11px; }
+.inbox-document-status { color: var(--accent); font-size: 11px; }
+.inbox-detail { min-width: 0; }
+.inbox-detail > h2 { margin: 0 0 3px; overflow-wrap: anywhere; }
+.inbox-detail-table { overflow-x: auto; margin-top: 12px; }
+.inbox-detail-table table { min-width: 780px; }
+.inbox-detail-table td:first-child { min-width: 250px; }
+.inbox-detail-table td:nth-child(3) { min-width: 185px; }
+.inbox-detail-table td:last-child { min-width: 180px; }
 .doc-review-actions { display: grid; gap: 6px; min-width: 190px; }
 .doc-review-actions textarea { min-height: 54px; width: 100%; resize: vertical; }
+.page-intro { display:flex; align-items:end; justify-content:space-between; gap:12px; margin-bottom:8px; }
+.page-intro .sub { margin-bottom:4px; }
+.eyebrow { margin:0 0 4px; color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.09em; }
+.bill-next-step { margin-bottom:14px; }
+.bill-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); padding:0; overflow:hidden; }
+.bill-filter { display:grid; justify-items:start; gap:4px; min-height:76px; padding:13px 16px; border:0; border-right:1px solid var(--line); border-radius:0; background:#fff; text-align:left; }
+.bill-filter:last-child { border-right:0; }
+.bill-filter:hover,.bill-filter.on { background:var(--sel); }
+.bill-filter b { font:600 21px/1.2 var(--mono); }
+.bill-filter span { color:var(--muted); font-size:12px; }
+.bill-review-guidance { margin:0 0 10px; }
+.bill-card-list { display:grid; gap:10px; }
+.billcard[hidden] { display:none; }
 .strip { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; }
 .stat b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
 .stat span { color: var(--muted); font-size: 12px; }
@@ -1390,9 +1501,14 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .balance-columns { grid-template-columns: 1fr; }
   .today-grid { grid-template-columns: 1fr; }
+  .inbox-layout { grid-template-columns: 1fr; }
+  .inbox-list { max-height: 300px; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .customer-form { grid-template-columns: 1fr 1fr; }
   .ledger-proof { position: static; }
+  .bill-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .bill-filter:nth-child(2) { border-right:0; }
+  .bill-filter:nth-child(-n+2) { border-bottom:1px solid var(--line); }
   .entry-scroll { overflow-x: auto; }
   .nexus { grid-template-columns: 1fr; }
   .nexus-chat { min-height: 560px; }
@@ -1410,6 +1526,11 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .firm-nav { order: 2; max-width: 100%; min-height: 36px; margin: 0; padding: 0 0 7px; }
   .pagebar .ask-toggle { align-self: flex-end; position: absolute; top: 7px; right: 12px; }
   .today-heading { flex-direction: column; }
+  .inbox-heading { align-items: start; }
+  .inbox-heading > div { flex-basis: 100%; }
+  .inbox-upload { width: 100%; justify-content: space-between; }
+  .inbox-type-filter { margin-left: 0; }
+  .page-intro { align-items:start; flex-direction:column; }
 }
 @media print {
   header, .no-print { display: none !important; }
@@ -1719,9 +1840,12 @@ export function renderBankAccountSetup(today: string, returnTo = '/reconcile'): 
 // ---------------------------------------------------------------------------
 
 export function renderCustomers(customers: SalesDesk['customers']): string {
-  return `<div class="sales-head"><div><h1>Customers</h1>
+  return `<section class="page-intro"><div><p class="eyebrow">SALES</p><h1>Customers</h1>
     <p class="sub">Customer records and statements for this client.</p></div>
-    <a class="primary-link" href="/sales#customer-form">Add customer</a></div>
+    <a class="primary-link" href="/sales#customer-form">＋ Add customer</a></section>
+    <div class="panel strip"><div class="stat"><b>${customers.length}</b><span>customers</span></div>
+      <div class="stat"><b>${customers.filter((customer) => customer.gstCategory !== 'unregistered').length}</b><span>GST registered</span></div>
+      <div class="stat"><a href="/sales">Prepare an invoice →</a><span>Sales workflow</span></div></div>
     ${customers.length ? `<section class="panel" style="padding:0"><table><thead><tr>
       <th>Customer</th><th>GST status</th><th>GSTIN</th><th>State</th><th>Phone</th><th></th>
       </tr></thead><tbody>${customers.map((customer) => `<tr>
@@ -1767,10 +1891,13 @@ export function renderSales(a: {
   const ready = desk.customers.length > 0 && desk.registrations.length > 0 &&
     desk.incomeAccounts.length > 0;
 
-  return `<div class="sales-head">
-  <div><h1>Sales invoices</h1>
-    <p class="sub">Raise a GST invoice and post it to the ledger in one step.</p></div>
-</div>
+  return `<section class="page-intro"><div><p class="eyebrow">SALES</p><h1>Sales invoices</h1>
+    <p class="sub">Prepare a GST invoice, check the preview, then post it to the ledger.</p></div>
+    <a class="primary-link" href="/customers">View customers →</a></section>
+<div class="panel strip sales-overview"><div class="stat"><b>${desk.invoices.length}</b><span>invoices in this view</span></div>
+  <div class="stat"><b>${desk.customers.length}</b><span>customers</span></div>
+  <div class="stat"><b>${desk.registrations.length}</b><span>GST registrations</span></div>
+  <div class="stat"><span>Next: enter customer and invoice lines. Review totals and tax before posting.</span></div></div>
 ${a.created ? `<div class="msg good"><b>Invoice ${esc(a.created)} posted.</b> It is now in receivables and GSTR-1.</div>` : ''}
 ${a.draft ? '<div class="msg warn"><b>AI-prepared draft.</b> It has not posted anything. Confirm the description, HSN/SAC, amount, GST and dates before posting.</div>' : ''}
 
@@ -3391,10 +3518,11 @@ export function renderBillReview(a: {
   const summary = a.proposals.length === 0 ? '' : (() => {
     const c = { ready: 0, needs_answer: 0, blocked: 0 };
     for (const p of a.proposals) c[p.status]++;
-    return `<div class="panel strip">
-      <div class="stat"><b class="good">${c.ready}</b><span>ready</span></div>
-      <div class="stat"><b class="${c.needs_answer ? 'warn' : ''}">${c.needs_answer}</b><span>need an answer</span></div>
-      <div class="stat"><b class="${c.blocked ? 'bad' : ''}">${c.blocked}</b><span>blocked</span></div>
+    return `<div class="panel bill-summary" aria-label="Bill review counts">
+      <button type="button" class="bill-filter on" data-status="all" aria-pressed="true"><b>${a.proposals.length}</b><span>All to review</span></button>
+      <button type="button" class="bill-filter" data-status="ready" aria-pressed="false"><b class="good">${c.ready}</b><span>Ready</span></button>
+      <button type="button" class="bill-filter" data-status="needs_answer" aria-pressed="false"><b class="${c.needs_answer ? 'warn' : ''}">${c.needs_answer}</b><span>Need your input</span></button>
+      <button type="button" class="bill-filter" data-status="blocked" aria-pressed="false"><b class="${c.blocked ? 'bad' : ''}">${c.blocked}</b><span>Blocked</span></button>
     </div>`;
   })();
 
@@ -3402,14 +3530,16 @@ export function renderBillReview(a: {
     <tr><td class="mono">${esc(b.number)}</td><td>${esc(b.party)}</td>
         <td>${esc(b.date)}</td><td class="num">${inr(b.total)}</td></tr>`).join('');
 
-  return `<h1>Bills</h1>
-<p class="sub">Every figure is read on the page and checked before it can post.
-${canApprove ? 'Nothing posts without your approval.' : 'You can prepare the review; a CA partner must approve before anything posts to the books.'}</p>
+  return `<section class="page-intro bill-intro"><div><p class="eyebrow">PURCHASES</p><h1>Bills</h1>
+<p class="sub">Review supplier invoices, correct anything Nexus could not read, then send them for approval.</p></div>
+<a class="primary-link" href="/documents">Open document inbox →</a></section>
+<div class="msg bill-next-step"><b>Next:</b> upload a supplier invoice or open a bill below. Read and correct its details before posting.
+${canApprove ? ' Posting always needs your explicit approval.' : ' A CA partner must approve before anything posts to the books.'}</div>
 
 ${a.hasExpenseAccount ? '' :
   '<div class="msg bad">This client has no Purchases account, so a bill has nowhere to post. Seed the chart of accounts first.</div>'}
 
-${upload}
+<section class="panel bill-upload"><h2>Start with a supplier invoice</h2><p class="why">Upload a PDF or photo. Nexus prepares a review; it does not post the bill.</p>${upload}</section>
 ${a.classifier ? `<section class="panel bill-ai-consent">
   <div><b>Nexus expense-account suggestions</b>
     <div class="why">Optional AI suggestions for expense accounts. Suggestions are editable and never post by themselves.</div>
@@ -3424,7 +3554,8 @@ ${a.classifier ? `<section class="panel bill-ai-consent">
 <div id="msg"></div>
 
 ${summary}
-<div id="cards">
+<p class="why bill-review-guidance" id="bill-filter-guidance">Select a bill to review its source, confirm the details and expense accounts, then use the approval action at the bottom of that bill.</p>
+<div id="cards" class="bill-card-list">
   ${a.proposals.map((p) => proposalCard(p, p.token ?? a.token ?? '', a.accounts, a.defaultAccountId, canApprove)).join('')}
 </div>
 
@@ -3443,6 +3574,23 @@ const post = (url, body) => fetch(url, {
 const canApprove = ${canApprove ? 'true' : 'false'};
 const say = (ok, t) => { document.getElementById('msg').innerHTML =
   '<div class="msg ' + (ok ? 'good' : 'bad') + '">' + t + '</div>'; };
+
+document.querySelectorAll('.bill-filter').forEach((filter) => filter.onclick = () => {
+  const status = filter.dataset.status;
+  document.querySelectorAll('.bill-filter').forEach((item) => {
+    const selected = item === filter;
+    item.classList.toggle('on', selected);
+    item.setAttribute('aria-pressed', String(selected));
+  });
+  document.querySelectorAll('.billcard').forEach((card) => {
+    card.hidden = status !== 'all' && !card.classList.contains(status);
+  });
+  const shown = [...document.querySelectorAll('.billcard')].filter((card) => !card.hidden).length;
+  document.getElementById('bill-filter-guidance').textContent = shown
+    ? shown + (shown === 1 ? ' bill shown. Open it, confirm the details and expense accounts, then use its approval action.'
+      : ' bills shown. Review each source and use the approval action on the bill when ready.')
+    : 'No bills in this group.';
+});
 
 const billAiToggle = document.getElementById('bill-ai-toggle');
 if (billAiToggle) billAiToggle.onchange = async () => {

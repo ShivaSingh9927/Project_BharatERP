@@ -477,7 +477,13 @@ async function handle(
       body: renderDocumentInbox(documents,
         session.role === 'ca_partner' || session.role === 'ca_staff',
         requestHistory, { enabled: classifierEnabled, available: assistantLlm !== null },
-        ['owner','ca_partner','ca_staff'].includes(session.role)),
+        ['owner','ca_partner','ca_staff'].includes(session.role),
+        url.searchParams.get('document') ?? undefined,
+        ['needs-review','with-ca','moved','set-aside'].includes(url.searchParams.get('status') ?? '')
+          ? url.searchParams.get('status')! : 'all',
+        ['bank_statement','purchase_bill','sales_invoice','expense_receipt','tds_document',
+          'gst_document','payroll','contract_legal','other','uncertain'].includes(url.searchParams.get('type') ?? '')
+          ? url.searchParams.get('type')! : 'all'),
     }));
   }
 

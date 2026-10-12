@@ -34,6 +34,9 @@ describe('sales desk', () => {
       },
     });
     expect(html).toContain('id="invoice-lines"');
+    expect(html).toContain('class="page-intro"');
+    expect(html).toContain('invoices in this view');
+    expect(html).toContain('Next: enter customer and invoice lines');
     expect(html).toContain('Posting preview');
     expect(html).toContain("$('post-invoice').disabled = !$('invoice-registration').value");
     expect(html).toContain('&lt;Acme &amp; Sons&gt;');

@@ -23,6 +23,24 @@
   Responsive styles are in place; authenticated page-by-page visual review is
   still a follow-up verification item.
 
+### Rebranding follow-on — Inbox, Bills, Sales orientation (2026-10-12)
+
+- /documents now presents a selectable client-scoped list with status and
+  document-class filters, source download, class confirmation, request history,
+  and the existing CA review actions together. Filter and selection state is
+  read from the existing GET route; classification and review continue through
+  the current endpoints.
+- /bills now groups pending items by existing ready / needs-answer / blocked
+  states and explains the review sequence. Filters only hide/show loaded cards;
+  CA approval remains required and no new posting route was added.
+- /sales and /customers now use a shared page heading and a compact count
+  summary that links the customer and invoice workflows. Invoice entry, tax
+  calculation, ledger posting, and receivable actions are unchanged.
+- Focused tests passed: 41 tests across document inbox/workspace, bill review,
+  and sales view suites; Node 22.23.3 typecheck passed. These slices have not
+  yet had authenticated visual review at owner and CA roles. Bank, GST/TDS,
+  Tally, and remaining route refinements are still in progress.
+
 ### Nexus money question and saved chat presentation (2026-10-10)
 
 - “How much do we have?” now bypasses AI intent routing and reads exact posted

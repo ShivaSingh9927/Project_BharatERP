@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAccounts, renderAssistantRuns, renderBalanceSheet, renderClientSetup, renderCustomers, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderPeriodClose, renderProfitAndLoss, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
+import { renderAccounts, renderAssistantRuns, renderBalanceSheet, renderBillReview, renderClientSetup, renderCustomers, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderPeriodClose, renderProfitAndLoss, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
 
 describe('document class review UI', () => {
   const document = {
@@ -21,6 +21,42 @@ describe('document class review UI', () => {
     }], false, [], { enabled: true, available: true });
     expect(confirmed).toContain('/import?document=doc-1');
     expect(confirmed).toContain('Continue to statement preview');
+  });
+
+  it('keeps received documents selectable and filterable without changing their review state', () => {
+    const completed = { ...document, id: 'doc-2', originalName: 'bill.pdf', status: 'processed',
+      classSuggestion: null,
+      classConfirmation: { documentClass: 'purchase_bill', confirmedAt: '2026-10-02T00:00:00.000Z' } };
+    const html = renderDocumentInbox([document, completed], false, [],
+      { enabled: true, available: true }, true, 'doc-2', 'moved', 'purchase_bill');
+    expect(html).toContain('<h1>Inbox</h1>');
+    expect(html).toContain('Received · 1');
+    expect(html).toContain('bill.pdf');
+    expect(html).not.toContain('statement.pdf');
+    expect(html).toContain('Now in Bills');
+    expect(html).toContain('aria-label="Filter received documents"');
+  });
+});
+
+describe('bill review navigation', () => {
+  it('shows status filters and plain next-step guidance without changing bill approval rules', () => {
+    const bill = {
+      index: 0, status: 'ready' as const, documentNumber: 'INV-10', partyName: 'Supplier',
+      supplierGstin: null, billDate: '2026-10-01', readBy: 'coordinates',
+      taxable: '100.00', tax: '18.00', total: '118.00', totalIsUnverified: false,
+      canRecordExpenseOnly: false, registrationStatus: null, partyId: null,
+      lines: [{ description: 'Office supplies', amount: '100.00', hsn: null }],
+      warnings: [], blockers: [], confirmations: [], tds: null,
+    };
+    const html = renderBillReview({
+      proposals: [bill], token: null, posted: [], hasExpenseAccount: true,
+      accounts: [], defaultAccountId: null, canApprove: false,
+    });
+    expect(html).toContain('Need your input');
+    expect(html).toContain('data-status="ready"');
+    expect(html).toContain('bill shown');
+    expect(html).toContain('CA partner must approve');
+    expect(html.split('<script>')[0]).not.toContain('class="primary post"');
   });
 });
 
