@@ -31,6 +31,12 @@ must never be used as application data.
   review-state filters and explicit next-step cue. /sales and /customers now use the same
   page heading and orientation pattern. These additions keep using the current
   server-rendered, client-scoped data and existing write endpoints.
+  Current follow-on work adds local image/PDF/table previews, PDF page controls,
+  red/amber/green confidence, prominent unresolved low-confidence warnings,
+  and an Inbox-local password → editable rows → explicit import confirmation
+  path for confirmed bank statements. It reuses the local parser and existing
+  account, arithmetic, period, role, and tenant checks. Focused view/parser
+  tests, the full app suite, and a synthetic two-page PDF smoke test pass.
 - Bank reconciliation, statement import, BRS, cash, GSTR-1/2B/3B, TDS, fixed
   assets, and report views now share section-labelled page headings. Their
   existing domain data and action controls remain in place.
@@ -77,7 +83,7 @@ must never be used as application data.
 | `/firm` | Today 12b | CA firm cockpit, client attention and period filter | Restyled; cockpit and full-suite tests pass |
 | `/setup` | Restyle in shared shell | Client setup progress | Retained; full-suite tests pass |
 | `/activity` | Restyle in shared shell | Client activity history | Retained; full-suite tests pass |
-| `/documents` | Inbox 10a | Upload/email documents, classification suggestion and human confirmation, review/request info/dismiss/restore, source download, client answer to CA request | Redesigned to list/preview/review layout; view, email-intake, and role-gated response workflow tests pass |
+| `/documents` | Inbox 10a | Upload/email documents, classification suggestion and human confirmation, review/request info/dismiss/restore, source download, client answer to CA request, statement password and review flow | Redesigned with source previews and review steps; focused view tests pass; parser keeps password local and import remains explicit |
 | `/email-inbox` | Inbox 10c | Firm email intake, assignment, trusted sender behavior | Restyled; email intake and role navigation tests pass |
 | `/nexus` | Ask Nexus 11a/11c | Durable cases, saved response blocks/evidence, read-only bank activity, bounded long-running review tasks and consent | Redesigned; Nexus view tests pass; signed-in responsive visual checks remain |
 | `/attention` | Restyle in shared shell | Alerts, obligation attention and source links | Retained; attention view/domain tests pass |
@@ -113,7 +119,7 @@ the redesign must not call around them or create parallel write paths.
 | Area | Existing actions to keep reachable | State |
 |---|---|---|
 | Authentication | `POST /logout`; password change page and submit | Existing handlers retained; auth suite passes |
-| Inbox | upload/download, classifier consent, confirm class, in-review, request information, dismiss/restore, founder answers with attachments; firm email sample and assignment/trust actions | Existing handlers retained; inbox/email suites pass |
+| Inbox | upload/download, local image/PDF/table preview, PDF pages, classifier consent, confidence/low-confidence review, confirm class, password-protected statement review, in-review, request information, dismiss/restore, founder answers with attachments; firm email sample and assignment/trust actions | Existing actions retained; statement import goes through account, arithmetic, period, tenant, and role checks; password store remains account scoped |
 | Nexus | ask question, read-only bank activity, task consent/create/run; follow-up list/create/update/history | Existing handlers retained; assistant/Nexus/follow-up suites pass |
 | Sales | create customer and invoice; invoice print/share; receipts, TDS withheld, write-off | Existing handlers retained; sales/invoice/receivable suites pass |
 | Bills | classifier consent, preview/fill/post, supplier creation, reverse-charge rate, supplier payment, returns and credit notes | Existing handlers retained; bill/purchase-return suites pass |
@@ -144,4 +150,4 @@ No database migration or JSON/public API route is added for this redesign.
   CA staff, and auditor views, including important empty/error/blocked states.
 - [x] No AI suggestion alone posts, pays, files, imports, or reconciles.
 - [x] Focused UI/domain tests and the complete app test suite pass (70 files,
-  1,010 tests); TypeScript typecheck passes.
+  1,016 tests); TypeScript typecheck passes.

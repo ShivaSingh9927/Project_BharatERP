@@ -66,6 +66,8 @@ export function renderDocumentInbox(
   classifier: { enabled: boolean; available: boolean } = { enabled: false, available: false },
   canConfirmClass = true, selectedDocumentId?: string, statusFilter = 'all', classFilter = 'all',
   openRequests: DocumentInformationRequest[] = [], canAnswerRequests = false,
+  bankAccounts: Array<{ id: string; bankName: string; last4: string; passwordSaved: boolean }> = [],
+  canRememberPasswords = false, canImportStatements = true,
 ): string {
   const statusLabel = (status: string): string => ({
     received: 'Received · waiting for CA',
@@ -113,17 +115,42 @@ export function renderDocumentInbox(
         <button class="primary" type="submit">Send reply</button><span class="inbox-request-result" role="status"></span>
       </form>`;
     }).join('')}</section>` : '';
+  const confirmedBankStatement = d?.classConfirmation?.documentClass === 'bank_statement';
+  const pdfFile = Boolean(d && (/\.pdf$/i.test(d.originalName) || /application\/pdf/i.test(d.mimeType)));
+  const imageFile = Boolean(d && /^image\//i.test(d.mimeType));
+  const tableFile = Boolean(d && (/\.(csv|tsv|txt|xlsx?)$/i.test(d.originalName)
+    || /spreadsheet|text\/(csv|plain|tab-separated-values)/i.test(d.mimeType)));
+  const statementWorkspace = confirmedBankStatement && d?.available && canImportStatements
+    ? `<section class="inbox-statement" data-document-id="${esc(d.id)}">
+        <div class="inbox-statement-top"><div><b>Statement review</b><span>Step <span id="statement-step-number">1</span> of 3 · nothing imports until you confirm</span></div>
+          <div class="inbox-step-actions"><button type="button" id="statement-back">↑ View file</button><button type="button" class="primary" id="statement-next" disabled>Next →</button></div></div>
+        <div class="inbox-step-view" data-step="1">
+          ${bankAccounts.length ? `<label>Bank account<select id="inbox-bank-account" required><option value="" selected disabled>Choose the account shown on this statement</option>${bankAccounts.map((account) => `<option value="${esc(account.id)}" data-saved="${account.passwordSaved}">${esc(account.bankName)} ··${esc(account.last4)}${account.passwordSaved ? ' · password saved' : ''}</option>`).join('')}</select></label>` : '<p class="why">No bank account is connected. <a href="/accounts">Add a bank account</a> before reviewing this statement.</p>'}
+          <label>Statement password <input id="inbox-statement-password" type="password" autocomplete="current-password" placeholder="Leave blank if this file is not protected" maxlength="256"></label>
+          <label class="inbox-remember"><input id="inbox-remember-password" type="checkbox" checked ${canRememberPasswords ? '' : 'disabled'}> Remember securely for this account</label>
+          ${canRememberPasswords ? '' : '<p class="why">Only a CA partner or staff member can save a statement password for future use.</p>'}
+          <button type="button" class="primary" id="statement-preview" ${bankAccounts.length ? '' : 'disabled'}>Open statement and extract rows</button>
+          <p id="statement-preview-status" role="status" aria-live="polite"></p>
+        </div>
+        <div class="inbox-step-edit" data-step="2" hidden><p id="statement-summary" class="why"></p><div class="inbox-edit-table-wrap"><table class="inbox-edit-table"><thead><tr><th>Date</th><th>Value date</th><th>Description</th><th>Money out</th><th>Money in</th><th>Balance</th></tr></thead><tbody id="statement-rows"></tbody></table></div><p class="why">Nexus does not invent or approve these values. Check the extracted rows and correct them before continuing.</p></div>
+        <div class="inbox-step-confirm" data-step="3" hidden><h3>Confirm statement import</h3><p id="statement-confirm-summary"></p><p class="why">Importing adds statement evidence for this account. Reconciliation and posting remain separate review steps.</p><button type="button" class="primary" id="statement-import">Confirm and import statement</button><p id="statement-import-status" role="status" aria-live="polite"></p></div>
+      </section>` : '';
+  const previewMarkup = !d?.available ? '<div><b>Original unavailable</b><span>The source file is not stored here.</span></div>'
+    : pdfFile ? `<div class="inbox-pdf-view"><div id="document-pdf-status" role="status">Loading page preview…</div><img id="document-pdf-image" alt="PDF page preview" hidden></div>`
+      : imageFile ? `<div class="inbox-image-stack"><img class="inbox-image-view" src="/api/documents/${esc(d.id)}/view" alt="Preview of uploaded image" loading="lazy"><span class="inbox-image-status" role="status"></span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`
+        : tableFile ? `<div class="inbox-table-wrap">${/\.xlsx?$/i.test(d.originalName) ? '<label class="table-password">Spreadsheet password <input id="document-table-password" type="password" autocomplete="current-password" maxlength="256"></label><button type="button" id="document-table-open">Open spreadsheet</button>' : ''}<div id="document-table-status" role="status">Loading table preview…</div><table id="document-table-preview" hidden></table></div>`
+          : `<div><b>${esc(d.mimeType || 'Document')}</b><span>Preview is not available for this file type.</span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`;
   const selectedPanel = d ? `<div class="inbox-review-grid">
     <section class="inbox-preview" aria-label="Document preview">
-      <div class="inbox-preview-canvas">${d.available
-        ? `<div><b>${esc(d.mimeType)}</b><span>Preview is not available in this workspace yet.</span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`
-        : '<div><b>Original unavailable</b><span>The source file is not stored here.</span></div>'}</div>
+      <div class="inbox-preview-canvas ${pdfFile ? 'pdf-canvas' : ''}">${previewMarkup}</div>
+      ${pdfFile && d.available ? `<div class="inbox-pdf-pages"><button type="button" id="pdf-page-prev" aria-label="Previous page" disabled>←</button><span>Page <b id="pdf-page-current">1</b> of <b id="pdf-page-count">…</b></span><button type="button" id="pdf-page-next" aria-label="Next page" disabled>→</button></div>` : ''}
       <p class="why">${d.available ? `Original retained · ${esc((d.size / 1024).toFixed(1))} KB · SHA-256 ${esc(d.hash.slice(0, 12))}…` : 'Source file unavailable'}</p>
     </section>
     <section class="inbox-review" aria-label="Nexus classification and review">
-      <div class="inbox-file-head"><h2>${esc(d.originalName)}</h2><span class="inbox-document-status">${esc(statusLabel(d.available ? d.status : 'unavailable'))}</span>
+      <div class="inbox-file-head"><h2 title="${esc(d.originalName)}">${esc(d.originalName)}</h2><span class="inbox-document-status">${esc(statusLabel(d.available ? d.status : 'unavailable'))}</span>
         <small>Received ${esc(new Date(d.receivedAt).toLocaleString('en-IN'))}</small></div>
-      <article class="inbox-suggestion"><div class="inbox-suggestion-title"><b>✦ Nexus suggestion</b>${d.classSuggestion ? `<span>${d.classSuggestion.confidence}% confidence</span>` : ''}</div>
+      <article class="inbox-suggestion ${d.classSuggestion && !d.classConfirmation && d.classSuggestion.confidence < 50 ? 'low-confidence' : ''}"><div class="inbox-suggestion-title"><b>✦ Nexus suggestion</b>${d.classSuggestion ? `<span class="confidence-pill ${d.classSuggestion.confidence < 40 ? 'confidence-low' : d.classSuggestion.confidence < 75 ? 'confidence-medium' : 'confidence-high'}">${d.classSuggestion.confidence}% confidence</span>` : ''}</div>
+        ${d.classSuggestion && !d.classConfirmation && d.classSuggestion.confidence < 50 ? '<p class="inbox-confidence-alert">⚠ Nexus is unsure. Check the file and confirm its type before using it.</p>' : ''}
         ${d.classSuggestion ? `<strong>${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}${d.classSuggestion.subtype ? ` · ${esc(d.classSuggestion.subtype)}` : ''}</strong>
           <p>${esc(d.classSuggestion.rationale)}</p>${d.classSuggestion.evidence.length ? `<details><summary>Evidence and explanation</summary><p>${d.classSuggestion.evidence.map(esc).join(' · ')}</p></details>` : ''}
           <details><summary>What information is shared?</summary><p>For this suggestion, Nexus received text from the document after configured redaction. The file name and remaining text can still identify people or businesses. Nothing is imported or posted automatically.</p></details>`
@@ -133,9 +160,9 @@ export function renderDocumentInbox(
       ${d.status !== 'dismissed' && canConfirmClass && d.available ? `<section class="inbox-class-review"><h3>Confirm or correct type</h3>
         <div class="inbox-class-choices">${documentClasses.map((value) => `<button type="button" class="document-class-choice ${((d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value) ? 'selected' : ''}" data-id="${esc(d.id)}" data-class="${value}" aria-pressed="${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value}">${esc(classLabels[value]!)}</button>`).join('')}</div>
         <button type="button" class="confirm-document-class primary" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm type'}</button>
-        <p class="why">Confirming a type does not import, reconcile, or post anything. Confirm Bank statement to open statement review, where you can enter the PDF password and choose whether to remember it securely for this account.</p></section>` : ''}
+        <p class="why">Confirming a type does not import, reconcile, or post anything. Confirm Bank statement to open the password and statement review here.</p></section>` : ''}
       ${d.classConfirmation ? `<div class="inbox-next-step"><b>Next step</b>${d.classConfirmation.documentClass === 'bank_statement'
-        ? `<a href="/import?document=${encodeURIComponent(d.id)}">Continue to statement preview →</a>`
+      ? `<a href="#inbox-detail" data-open-statement>Continue to statement review →</a>`
         : d.classConfirmation.documentClass === 'purchase_bill'
           ? `<button type="button" class="review-document" data-id="${esc(d.id)}">Continue to bill review →</button>`
           : d.classConfirmation.documentClass === 'sales_invoice' ? '<a href="/sales">Open sales invoices →</a>'
@@ -150,7 +177,7 @@ export function renderDocumentInbox(
       </div></details>` : ''}
       ${d.reviewNote ? `<p class="msg">CA note: ${esc(d.reviewNote)}</p>` : ''}
       ${selectedRequests.filter((item) => item.status === 'answered').map((item) => `<details><summary>Founder answer · ${esc(new Date(item.answeredAt!).toLocaleString('en-IN'))}</summary><p><b>Asked:</b> ${esc(item.question)}</p>${item.answer ? `<p><b>Answered:</b> ${esc(item.answer)}</p>` : ''}${item.attachmentIds.map((id) => `<a href="/documents?document=${encodeURIComponent(id)}">${esc(documents.find((doc) => doc.id === id)?.originalName ?? 'Attached document')}</a>`).join('')}</details>`).join('')}
-    </section></div>` : `<div class="inbox-empty-detail"><h2>${documents.length ? 'No document in this view' : 'Your inbox is ready'}</h2><p>${documents.length ? 'Choose another filter or file to continue.' : 'Upload a file to start a review. Received documents stay here until a person confirms the next step.'}</p></div>`;
+    </section></div>${statementWorkspace}` : `<div class="inbox-empty-detail"><h2>${documents.length ? 'No document in this view' : 'Your inbox is ready'}</h2><p>${documents.length ? 'Choose another filter or file to continue.' : 'Upload a file to start a review. Received documents stay here until a person confirms the next step.'}</p></div>`;
   const query = (documentId?: string): string => {
     const params = new URLSearchParams();
     if (documentId) params.set('document', documentId);
@@ -182,8 +209,9 @@ export function renderDocumentInbox(
       : document.classConfirmation?.documentClass === 'sales_invoice' ? 'Sales'
       : document.classConfirmation?.documentClass === 'tds_document' ? 'TDS'
       : document.classConfirmation?.documentClass === 'gst_document' ? 'GST review' : '';
-    return `<a class="inbox-document ${document.id === selectedDocument?.id ? 'selected' : ''}" href="${esc(query(document.id))}">
-      <span><b>${esc(document.originalName)}</b><small>${esc(new Date(document.receivedAt).toLocaleString('en-IN'))}</small></span>
+    const lowConfidence = Boolean(document.classSuggestion && !document.classConfirmation && document.classSuggestion.confidence < 50);
+    return `<a class="inbox-document ${document.id === selectedDocument?.id ? 'selected' : ''} ${lowConfidence ? 'review-alert' : ''}" href="${esc(query(document.id))}">
+      <span><b title="${esc(document.originalName)}">${esc(document.originalName)}</b><small>${esc(new Date(document.receivedAt).toLocaleString('en-IN'))}</small></span>
       <span class="inbox-document-status">${esc(statusLabel(document.available ? document.status : 'unavailable'))}</span>
       <small>${esc(document.channel === 'email' ? `Email${document.sender ? ` · ${document.sender}` : ''}` : document.channel === 'upload' ? 'Upload' : 'Received file')} · ${esc(classLabels[docClass] ?? docClass)}${destination ? ` · Now in ${esc(destination)}` : ''}</small>
     </a>`;
@@ -249,7 +277,7 @@ export function renderDocumentInbox(
       });
       const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not confirm class');
       if (choice.dataset.class === 'bank_statement') {
-        location.href = '/import?document=' + encodeURIComponent(confirmClass.dataset.id);
+        location.href = '/documents?document=' + encodeURIComponent(confirmClass.dataset.id) + '#inbox-detail';
       } else location.reload();
     } catch (error) { result.textContent = String(error.message || error); confirmClass.disabled = false; }
   });
@@ -305,6 +333,144 @@ export function renderDocumentInbox(
       item.setAttribute('aria-pressed', String(selected));
     });
   });
+  const statementBox = document.querySelector('.inbox-statement');
+  const pdfImage = document.getElementById('document-pdf-image');
+  const pdfStatus = document.getElementById('document-pdf-status');
+  const passwordInput = document.getElementById('inbox-statement-password');
+  let pdfPage = 1, pdfPageCount = 0, previewRows = [], previewData = null, pdfObjectUrl = null;
+  const pdfButtons = () => {
+    const prev = document.getElementById('pdf-page-prev'), next = document.getElementById('pdf-page-next');
+    if (prev) prev.disabled = pdfPage <= 1;
+    if (next) next.disabled = !pdfPageCount || pdfPage >= pdfPageCount;
+    const current = document.getElementById('pdf-page-current'), count = document.getElementById('pdf-page-count');
+    if (current) current.textContent = String(pdfPage);
+    if (count) count.textContent = pdfPageCount ? String(pdfPageCount) : '…';
+  };
+  const loadPdfPage = async () => {
+    if (!pdfImage || !pdfStatus) return;
+    pdfStatus.textContent = 'Opening page ' + pdfPage + '…';
+    try {
+      const response = await fetch('/api/documents/' + encodeURIComponent(${JSON.stringify(d?.id ?? '')}) + '/pdf-page', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ page: pdfPage, password: passwordInput ? passwordInput.value : '' }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        if (/password/i.test(data.error || '')) passwordInput?.focus();
+        throw new Error(data.error || 'could not preview this page');
+      }
+      const nextCount = Number(response.headers.get('x-pdf-page-count')) || 1;
+      const blob = await response.blob();
+      if (pdfObjectUrl) URL.revokeObjectURL(pdfObjectUrl);
+      pdfObjectUrl = URL.createObjectURL(blob); pdfImage.src = pdfObjectUrl; pdfImage.hidden = false;
+      pdfPageCount = nextCount; pdfStatus.textContent = '';
+    } catch (error) { pdfStatus.textContent = String(error.message || error); }
+    pdfButtons();
+  };
+  if (pdfImage) loadPdfPage();
+  document.querySelectorAll('.inbox-image-view').forEach((image) => image.addEventListener('error', () => {
+    image.hidden = true;
+    image.parentElement.querySelector('.inbox-image-status').textContent = 'This image format cannot be previewed in the browser. Download the original to view it.';
+  }));
+  passwordInput?.addEventListener('change', () => { pdfPage = 1; loadPdfPage(); });
+  document.getElementById('pdf-page-prev')?.addEventListener('click', () => { if (pdfPage > 1) { pdfPage--; loadPdfPage(); } });
+  document.getElementById('pdf-page-next')?.addEventListener('click', () => { if (pdfPage < pdfPageCount) { pdfPage++; loadPdfPage(); } });
+  document.querySelector('[data-open-statement]')?.addEventListener('click', () => {
+    statementBox?.scrollIntoView({ behavior: 'smooth', block: 'center' }); passwordInput?.focus();
+  });
+  const statementAccount = document.getElementById('inbox-bank-account');
+  statementAccount?.addEventListener('change', () => {
+    const saved = statementAccount.selectedOptions[0]?.dataset.saved === 'true';
+    if (passwordInput) passwordInput.placeholder = saved ? 'Saved password will be tried if left blank' : 'Leave blank if this file is not protected';
+  });
+  const setStatementStep = (step) => {
+    document.querySelectorAll('.inbox-statement [data-step]').forEach((panel) => { panel.hidden = Number(panel.dataset.step) !== step; });
+    const number = document.getElementById('statement-step-number'); if (number) number.textContent = String(step);
+    const back = document.getElementById('statement-back'), next = document.getElementById('statement-next');
+    if (back) { back.disabled = false; back.textContent = step === 1 ? '↑ View file' : '← Back'; }
+    if (next) { next.textContent = step === 2 ? 'Review confirmation →' : 'Next →'; next.disabled = step === 1 || step === 3; next.hidden = step === 3; }
+  };
+  const previewButton = document.getElementById('statement-preview');
+  previewButton?.addEventListener('click', async () => {
+    const status = document.getElementById('statement-preview-status'); previewButton.disabled = true;
+    status.textContent = 'Reading the statement locally and checking its account and balances…';
+    try {
+      if (!statementAccount?.value) throw new Error('Choose the bank account shown on this statement first.');
+      const response = await fetch('/api/preview', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ documentId: statementBox.dataset.documentId,
+          bankAccountId: statementAccount?.value, password: passwordInput?.value || '',
+          rememberPassword: ${canRememberPasswords ? "document.getElementById('inbox-remember-password')?.checked === true" : 'false'} }) });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not read this statement');
+      if (!Array.isArray(data.rows) || data.rows.length === 0) throw new Error('No transaction rows were extracted. This statement needs another review method.');
+      previewData = data; previewRows = data.rows.map((row) => ({ ...row }));
+      document.getElementById('statement-summary').textContent = data.rowCount + ' rows · ' + (data.periodFrom || 'period not read') + ' to ' + (data.periodTo || 'period not read') + ' · opening ' + (data.openingBalance || 'not read') + ' · closing ' + (data.closingBalance || 'not read') + ' · account check: ' + (data.accountCheck?.ok ? 'matched' : data.accountCheck?.reason || 'review required');
+      const body = document.getElementById('statement-rows'); body.replaceChildren();
+      previewRows.forEach((row, index) => {
+        const tr = document.createElement('tr');
+        for (const [key, label, type] of [['txnDate','Transaction date','date'],['valueDate','Value date','date'],['narration','Description','text'],['debit','Money out','decimal'],['credit','Money in','decimal'],['runningBalance','Balance','decimal']]) {
+          const td = document.createElement('td'), input = document.createElement(key === 'narration' ? 'textarea' : 'input');
+          input.value = row[key] ?? ''; input.setAttribute('aria-label', label + ' row ' + (index + 1)); input.dataset.row = String(index); input.dataset.key = key;
+          if (key === 'narration') input.rows = 2; else input.type = type === 'date' ? 'date' : 'text';
+          if (type === 'decimal') input.inputMode = 'decimal';
+          td.append(input); tr.append(td);
+        }
+        body.append(tr);
+      });
+      status.textContent = data.rowCount + ' rows extracted. Check and edit them before import.';
+      setStatementStep(2); document.getElementById('statement-next').disabled = false;
+    } catch (error) { status.textContent = String(error.message || error); }
+    finally { previewButton.disabled = false; }
+  });
+  document.getElementById('statement-back')?.addEventListener('click', () => {
+    const visible = [...document.querySelectorAll('.inbox-statement [data-step]')].find((panel) => !panel.hidden);
+    if (!visible || Number(visible.dataset.step) === 1) {
+      document.querySelector('.inbox-preview')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else setStatementStep(Number(visible.dataset.step) - 1);
+  });
+  document.getElementById('statement-next')?.addEventListener('click', () => {
+    document.querySelectorAll('#statement-rows input, #statement-rows textarea').forEach((input) => {
+      previewRows[Number(input.dataset.row)][input.dataset.key] = input.value;
+    });
+    const summary = document.getElementById('statement-confirm-summary');
+    summary.textContent = previewRows.length + ' transaction rows for ' + (statementAccount?.selectedOptions[0]?.textContent || 'the selected account') + '. The server will check statement arithmetic before saving.';
+    setStatementStep(3);
+  });
+  document.getElementById('statement-import')?.addEventListener('click', async (event) => {
+    const submit = event.currentTarget, status = document.getElementById('statement-import-status'); submit.disabled = true;
+    document.querySelectorAll('#statement-rows input, #statement-rows textarea').forEach((input) => {
+      previewRows[Number(input.dataset.row)][input.dataset.key] = input.value;
+    });
+    status.textContent = 'Checking balances and saving statement evidence…';
+    try {
+      const response = await fetch('/api/import-reviewed-statement', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ documentId: statementBox.dataset.documentId, bankAccountId: statementAccount?.value,
+          password: passwordInput?.value || '', rememberPassword: ${canRememberPasswords ? "document.getElementById('inbox-remember-password')?.checked === true" : 'false'},
+          bank: previewData?.bank, rows: previewRows }) });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'statement import was refused');
+      status.textContent = 'Statement evidence added. ' + data.imported + ' new rows; ' + data.duplicates + ' duplicates skipped.' + (data.warnings?.length ? ' ' + data.warnings.join(' ') : '');
+      const reconcileLink = document.createElement('a'); reconcileLink.href = '/reconcile'; reconcileLink.textContent = ' Open reconciliation';
+      status.append(reconcileLink);
+      submit.hidden = true;
+    } catch (error) { status.textContent = String(error.message || error); submit.disabled = false; }
+  });
+  if (tableFile && document.getElementById('document-table-preview')) {
+    const table = document.getElementById('document-table-preview'), status = document.getElementById('document-table-status');
+    const openTable = async () => {
+      status.textContent = 'Opening spreadsheet…';
+      try {
+        const response = await fetch('/api/documents/' + encodeURIComponent(${JSON.stringify(d?.id ?? '')}) + '/table-preview', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: passwordInput?.value || document.getElementById('document-table-password')?.value || '' }),
+        });
+        const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not preview the table');
+        const head = document.createElement('thead'), body = document.createElement('tbody');
+        data.rows.forEach((row, index) => { const tr = document.createElement('tr'); row.forEach((cell) => { const td = document.createElement(index === 0 ? 'th' : 'td'); td.textContent = cell; tr.append(td); }); (index === 0 ? head : body).append(tr); });
+        table.replaceChildren(head, body); table.hidden = false; status.textContent = data.truncated ? 'Preview limited to the first 200 rows and 30 columns.' : '';
+      } catch (error) { status.textContent = String(error.message || error); }
+    };
+    document.getElementById('document-table-open')?.addEventListener('click', openTable);
+    openTable();
+  }
   const encodeFile = async (file) => {
     if (file.size > 5 * 1024 * 1024) throw new Error(file.name + ': exceeds 5 MB');
     const bytes = new Uint8Array(await file.arrayBuffer()); let binary = '';
@@ -1432,13 +1598,31 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-document:hover, .inbox-document.selected { background: var(--sel); }
 .inbox-document.selected { box-shadow: inset 3px 0 0 var(--accent); }
 .inbox-document > span:first-child { display: flex; justify-content: space-between; gap: 7px; }
-.inbox-document b { overflow-wrap: anywhere; }
+.inbox-document b { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; text-overflow: ellipsis; }
+.inbox-document.review-alert { background: #fff3eb; box-shadow: inset 3px 0 0 #ee6c2e; }
+.inbox-document.review-alert.selected { background: #ffe8d9; }
+.inbox-document.review-alert > span:first-child::after { content: 'CHECK TYPE'; flex: 0 0 auto; align-self: center; padding: 3px 5px; border-radius: 4px; background: #ff7a3d; color: #fff; font-size: 8px; font-weight: 700; letter-spacing: .04em; }
 .inbox-document small { color: var(--muted); font-size: 11px; }
 .inbox-document-status { color: var(--accent); font-size: 11px; }
 .inbox-detail { min-width: 0; padding: 16px !important; }
 .inbox-review-grid { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(270px, .88fr); gap: 18px; align-items: start; }
 .inbox-preview { min-width: 0; position: sticky; top: 16px; }
-.inbox-preview-canvas { display: grid; place-items: center; min-height: 440px; border: 1px solid #dce1eb; border-radius: 8px; background: repeating-linear-gradient(135deg,#fff,#fff 12px,#f3f5fa 12px,#f3f5fa 24px); text-align: center; padding: 20px; }
+.inbox-preview-canvas { display: grid; place-items: center; min-height: 440px; border: 1px solid #dce1eb; border-radius: 8px; background: repeating-linear-gradient(135deg,#fff,#fff 12px,#f3f5fa 12px,#f3f5fa 24px); text-align: center; padding: 20px; overflow: hidden; }
+.inbox-preview-canvas.pdf-canvas { padding: 8px; background: #eef1f7; }
+.inbox-pdf-view { display: grid; place-items: center; gap: 8px; width: 100%; min-height: 420px; }
+.inbox-pdf-view img { display: block; max-width: 100%; max-height: 72vh; object-fit: contain; box-shadow: 0 2px 12px #1c2c5624; background: #fff; }
+.inbox-pdf-view [role="status"] { color: var(--muted); font-size: 12px; }
+.inbox-image-view { display: block; max-width: 100%; max-height: 72vh; object-fit: contain; }
+.inbox-image-stack { display: grid; justify-items: center; gap: 8px; width: 100%; }
+.inbox-image-status { color: var(--muted); font-size: 12px; }
+.inbox-image-stack a { display: inline-flex; justify-content: center; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--navy); text-decoration: none; }
+.inbox-pdf-pages { display: flex; justify-content: center; align-items: center; gap: 18px; margin: 9px auto; color: var(--muted); font-size: 12px; }
+.inbox-pdf-pages button { width: 34px; height: 32px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--navy); cursor: pointer; }
+.inbox-pdf-pages button:disabled { opacity: .42; cursor: not-allowed; }
+.inbox-table-wrap, .inbox-edit-table-wrap { width: 100%; max-height: 68vh; overflow: auto; background: #fff; }
+.inbox-table-wrap table, .inbox-edit-table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
+.inbox-table-wrap td, .inbox-table-wrap th, .inbox-edit-table td, .inbox-edit-table th { padding: 6px; border: 1px solid var(--line); min-width: 90px; max-width: 260px; overflow-wrap: anywhere; }
+.inbox-table-wrap th { position: sticky; top: 0; background: #f5f7fc; }
 .inbox-preview-canvas > div { display: grid; gap: 12px; max-width: 270px; }
 .inbox-preview-canvas b { color: var(--navy); overflow-wrap: anywhere; }
 .inbox-preview-canvas span, .inbox-preview > .why { color: var(--muted); font-size: 12px; }
@@ -1449,6 +1633,28 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-suggestion, .inbox-class-review, .inbox-next-step, .inbox-history, .inbox-ca-actions { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-bottom: 10px; }
 .inbox-suggestion-title { display: flex; justify-content: space-between; gap: 8px; color: var(--navy); font-size: 12px; }
 .inbox-suggestion-title span { color: var(--muted); }
+.confidence-pill { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.confidence-low { color: #a52d21 !important; background: #ffebe8; }
+.confidence-medium { color: #8a5700 !important; background: #fff3d6; }
+.confidence-high { color: #087443 !important; background: #e7f6ed; }
+.inbox-suggestion.low-confidence { border-color: #f2a078; background: #fff8f3; box-shadow: inset 4px 0 0 #ed6d38; }
+.inbox-confidence-alert { padding: 8px 10px; border: 1px solid #f0b295; border-radius: 6px; background: #fff0e7; color: #9b3d16 !important; font-weight: 650; }
+.inbox-statement { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.inbox-statement [hidden] { display: none !important; }
+.inbox-statement-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.inbox-statement-top > div:first-child { display: grid; gap: 3px; color: var(--navy); }
+.inbox-statement-top span { color: var(--muted); font-size: 11px; }
+.inbox-step-actions { display: flex; gap: 6px; }
+.inbox-step-actions button, .inbox-statement button { padding: 7px 10px; }
+.inbox-step-view { display: grid; grid-template-columns: minmax(0,1fr); align-items: end; gap: 10px; max-width: 620px; }
+.inbox-step-view > label:not(.inbox-remember) { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.inbox-step-view select, .inbox-step-view input[type="password"] { width: 100%; }
+.inbox-step-view .inbox-remember { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; }
+.inbox-step-view #statement-preview, .inbox-step-view #statement-preview-status { grid-column: 1 / -1; }
+.inbox-step-view #statement-preview-status, .inbox-statement [role="status"] { color: var(--muted); font-size: 12px; }
+.inbox-edit-table input, .inbox-edit-table textarea { width: 100%; min-width: 105px; padding: 5px; font-size: 11px; }
+.inbox-edit-table textarea { min-width: 180px; }
+.inbox-step-confirm { display: grid; gap: 9px; }
 .inbox-suggestion > strong { display: block; color: var(--navy); margin-top: 4px; }
 .inbox-suggestion p, .inbox-suggestion details p { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .inbox-suggestion details summary, .inbox-history summary, .inbox-ca-actions summary { color: var(--navy); cursor: pointer; font-size: 12px; font-weight: 600; }
@@ -1756,6 +1962,8 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .inbox-review-grid { grid-template-columns: 1fr; }
   .inbox-preview { position: static; }
   .inbox-preview-canvas { min-height: 260px; }
+  .inbox-pdf-view { min-height: 240px; }
+  .inbox-statement-top { align-items: flex-start; flex-direction: column; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .customer-form { grid-template-columns: 1fr 1fr; }
   .ledger-proof { position: static; }

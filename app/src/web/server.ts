@@ -26,13 +26,17 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { parseDelimited } from '../parse/csv.ts';
+import { readXlsxSheet, decryptOfficeFile } from '../parse/xlsx.ts';
+import { looksLikeEncryptedOffice } from '../parse/zip.ts';
+import { renderPdfPage } from '../parse/pdf.ts';
 import { ownerPool, withFirm } from '../db/pool.ts';
 import { reconciliationQueue } from '../domain/matching.ts';
 import { addDeepSeekFundingSuggestions, setBankClassifierEnabled }
   from '../domain/bankFundingClassifier.ts';
 import { billClassifierEnabled, setBillClassifierEnabled,
          suggestBillLineAccounts } from '../domain/billExpenseClassifier.ts';
-import { bankSyncCoverage, importStatementBytes, importStatementFile,
+import { bankSyncCoverage, importStatement, importStatementBytes, importStatementFile,
          confirmStatementBankAccount } from '../domain/statement.ts';
 import {
   saveStatementPassword, savedStatementPassword, statementPasswordSettings,
@@ -473,6 +477,11 @@ async function handle(
       documentClassifierEnabled(session.firmId),
       listOpenDocumentRequests(session.firmId, session.clientId),
     ]);
+    const inboxBankAccounts = await Promise.all(accounts.map(async (account) => ({
+      id: account.id, bankName: account.bank_name, last4: account.last4,
+      passwordSaved: (await statementPasswordSettings(
+        session.firmId, session.clientId, account.id)).saved,
+    })));
     return html(res, 200, renderShell({
       session, accounts, active: 'documents',
       body: renderDocumentInbox(documents,
@@ -485,7 +494,8 @@ async function handle(
         ['bank_statement','purchase_bill','sales_invoice','expense_receipt','tds_document',
           'gst_document','payroll','contract_legal','other','uncertain'].includes(url.searchParams.get('type') ?? '')
           ? url.searchParams.get('type')! : 'all',
-        openRequests, session.role === 'owner'),
+        openRequests, session.role === 'owner', inboxBankAccounts,
+        ['ca_partner', 'ca_staff'].includes(session.role), hasBankCapability(session.role, 'import')),
     }));
   }
 
@@ -781,6 +791,83 @@ async function handle(
       return json(res, 200, { ok: true, ...result, suggestion });
     } catch (e) {
       return json(res, 400, { ok: false, error: (e as Error).message });
+    }
+  }
+
+  const documentPagePreview = /^\/api\/documents\/([0-9a-f-]{36})\/pdf-page$/i.exec(path);
+  if (req.method === 'POST' && documentPagePreview) {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const requestedPage = Number(body.page ?? 1);
+      const password = typeof body.password === 'string' && body.password.length > 0
+        ? body.password : undefined;
+      const { bytes } = await getDocumentBytes(
+        session.firmId, session.clientId, documentPagePreview[1]!);
+      const page = renderPdfPage(bytes, requestedPage, password);
+      res.writeHead(200, {
+        'content-type': 'image/png', 'content-length': page.png.length,
+        'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
+        'x-pdf-page-count': String(page.pageCount),
+      });
+      res.end(page.png);
+      return;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'could not preview this page';
+      return json(res, /password/i.test(message) ? 422 : 400, { ok: false, error: message });
+    }
+  }
+
+  const documentTablePreview = /^\/api\/documents\/([0-9a-f-]{36})\/table-preview$/i.exec(path);
+  if (req.method === 'POST' && documentTablePreview) {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const password = typeof body.password === 'string' ? body.password : '';
+      const { document, bytes } = await getDocumentBytes(
+        session.firmId, session.clientId, documentTablePreview[1]!);
+      let rows: string[][];
+      if (looksLikeEncryptedOffice(bytes)) {
+        if (!password) throw new Error('This spreadsheet is password-protected. Enter its password to view it.');
+        rows = readXlsxSheet(await decryptOfficeFile(bytes, password));
+      } else if (/\.xlsx?$/i.test(document.originalName) ||
+          (bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'PK\u0003\u0004')) {
+        rows = readXlsxSheet(bytes);
+      } else if (/\.(csv|tsv|txt)$/i.test(document.originalName) ||
+          /^(text\/(csv|plain|tab-separated-values))$/i.test(document.mimeType)) {
+        rows = parseDelimited(bytes.toString('utf8')).rows;
+      } else {
+        throw new Error('This file type does not contain a spreadsheet or delimited table.');
+      }
+      const grid = rows.slice(0, 200).map((row) => row.slice(0, 30)
+        .map((cell) => String(cell).slice(0, 1000)));
+      return json(res, 200, { ok: true, rows: grid, truncated: rows.length > 200
+        || rows.some((row) => row.length > 30) });
+    } catch (e) {
+      return json(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  const documentImagePreview = /^\/api\/documents\/([0-9a-f-]{36})\/view$/i.exec(path);
+  if (req.method === 'GET' && documentImagePreview) {
+    try {
+      const { bytes } = await getDocumentBytes(
+        session.firmId, session.clientId, documentImagePreview[1]!);
+      const mime = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? 'image/jpeg'
+        : bytes[0] === 0x89 && bytes.subarray(1, 4).toString('latin1') === 'PNG' ? 'image/png'
+          : bytes.subarray(0, 4).toString('latin1') === 'RIFF'
+            && bytes.subarray(8, 12).toString('latin1') === 'WEBP' ? 'image/webp'
+            : ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('latin1')) ? 'image/gif'
+              : bytes.subarray(0, 4).toString('latin1') === 'II*\u0000'
+                || bytes.subarray(0, 4).toString('latin1') === 'MM\u0000*' ? 'image/tiff' : null;
+      if (!mime) return json(res, 415, { ok: false, error: 'This image format cannot be previewed here.' });
+      res.writeHead(200, {
+        'content-type': mime, 'content-length': bytes.length,
+        'content-disposition': 'inline', 'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(bytes);
+      return;
+    } catch (e) {
+      return json(res, 404, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -2011,6 +2098,79 @@ async function handle(
       });
     } catch (e) {
       return json(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (req.method === 'POST' && path === '/api/import-reviewed-statement') {
+    if (!hasBankCapability(session.role, 'import')) {
+      return json(res, 403, { ok: false, error: 'authorized bank-workflow access required' });
+    }
+    try {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.documentId !== 'string' || typeof body.bankAccountId !== 'string'
+          || !Array.isArray(body.rows) || body.rows.length > 20_000) {
+        throw new Error('choose a statement and review its transaction rows first');
+      }
+      const stored = await getDocumentBytes(session.firmId, session.clientId, body.documentId);
+      if (stored.document.status === 'dismissed') {
+        throw new Error('restore this dismissed document before importing it');
+      }
+      const suppliedPassword = typeof body.password === 'string' && body.password.length > 0
+        ? body.password : undefined;
+      const password = suppliedPassword ?? await savedStatementPassword(
+        session.firmId, session.clientId, body.bankAccountId);
+      const source = await parseStatementBytes(stored.bytes, {
+        bank: typeof body.bank === 'string' ? body.bank : undefined,
+        password: password ?? undefined,
+      });
+      if (source.rows.length !== body.rows.length) {
+        throw new Error('The reviewed rows no longer match the statement. Preview it again before importing.');
+      }
+      const rows = body.rows.map((row: Record<string, unknown>, index: number) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+            || typeof row.txnDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.txnDate)
+            || typeof row.narration !== 'string' || row.narration.length > 2000
+            || !row.narration.trim()) {
+          throw new Error(`Transaction row ${index + 1} needs a valid date and narration.`);
+        }
+        const amount = (value: unknown, label: string): string | undefined => {
+          if (value === undefined || value === null || value === '') return undefined;
+          if (typeof value !== 'string' || !/^-?\d{1,18}(?:\.\d{1,2})?$/.test(value)) {
+            throw new Error(`Transaction row ${index + 1} has an invalid ${label}.`);
+          }
+          return value;
+        };
+        if (row.valueDate !== undefined && row.valueDate !== ''
+            && (typeof row.valueDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.valueDate))) {
+          throw new Error(`Transaction row ${index + 1} has an invalid value date.`);
+        }
+        const debit = amount(row.debit, 'debit');
+        const credit = amount(row.credit, 'credit');
+        const runningBalance = amount(row.runningBalance, 'balance');
+        return {
+          txnDate: row.txnDate, narration: row.narration,
+          ...(typeof row.valueDate === 'string' && row.valueDate ? { valueDate: row.valueDate } : {}),
+          ...(debit ? { debit } : {}), ...(credit ? { credit } : {}),
+          ...(runningBalance ? { runningBalance } : {}),
+        };
+      });
+      await confirmStatementBankAccount(session.firmId, session.clientId,
+        body.bankAccountId, source.statementAccountNumber);
+      if (!source.openingBalance || !source.closingBalance || !source.periodFrom || !source.periodTo) {
+        throw new Error('The statement is missing its period or opening/closing balance, so it cannot pass the required import checks.');
+      }
+      const imported = await importStatement(session.firmId, {
+        clientId: session.clientId, bankAccountId: body.bankAccountId,
+        periodFrom: source.periodFrom, periodTo: source.periodTo,
+        openingBalance: source.openingBalance, closingBalance: source.closingBalance,
+        rows, uploadedBy: session.userId, sourceDocumentId: stored.document.id,
+        parserVersion: `statement-parser/1.0.0 (${source.bank}; reviewed rows)`,
+      });
+      return json(res, 200, { ok: true, imported: imported.imported,
+        duplicates: imported.duplicates, arithmetic: imported.arithmetic,
+        coverage: imported.coverage, warnings: imported.warnings });
+    } catch (e) {
+      return json(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
   }
 

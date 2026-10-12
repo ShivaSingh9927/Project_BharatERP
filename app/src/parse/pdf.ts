@@ -26,7 +26,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ValidationError } from '../domain/types.ts';
@@ -36,6 +36,62 @@ import { parseLayoutText, type ParsedLayoutStatement } from './layout.ts';
 
 export function isPdf(buffer: Buffer): boolean {
   return buffer.length > 5 && buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+}
+
+/** Render exactly one authenticated PDF page for the Inbox viewer. The PDF
+ * and rendered page live only in a private temporary directory; callers must
+ * not log the password or the returned bytes. */
+export function renderPdfPage(
+  buffer: Buffer, page: number, password?: string,
+): { pageCount: number; png: Buffer } {
+  if (!isPdf(buffer)) throw new ValidationError('this file is not a PDF', 'BR-3');
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new ValidationError('choose a valid PDF page', 'BR-3');
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'bharaterp-view-'));
+  const file = join(dir, 'source.pdf');
+  const prefix = join(dir, 'page');
+  try {
+    writeFileSync(file, buffer, { mode: 0o600 });
+    const auth = password ? ['-upw', password] : [];
+    const info = spawnSync('pdfinfo', [...auth, file], {
+      encoding: 'utf8', maxBuffer: 256 * 1024, timeout: 10_000,
+    });
+    if ((info.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      throw new ValidationError('PDF preview needs the Poppler pdfinfo and pdftoppm tools.', 'BR-3');
+    }
+    if (info.status !== 0) {
+      if (/password|encrypted/i.test(`${info.stderr ?? ''}\n${info.stdout ?? ''}`)) {
+        throw new ValidationError(password
+          ? 'That password did not open this PDF.'
+          : 'This PDF is password-protected. Enter its password to view it.', 'BR-4');
+      }
+      throw new ValidationError('The PDF could not be opened for preview.', 'BR-3');
+    }
+    const pageCount = Number(/\bPages:\s+(\d+)/i.exec(String(info.stdout))?.[1]);
+    if (!Number.isSafeInteger(pageCount) || pageCount < 1) {
+      throw new ValidationError('The PDF page count could not be read.', 'BR-3');
+    }
+    if (page > pageCount) throw new ValidationError('That page is outside this PDF.', 'BR-3');
+    const rendered = spawnSync('pdftoppm', [
+      ...auth, '-f', String(page), '-l', String(page), '-singlefile',
+      '-scale-to', '1600', '-png', file, prefix,
+    ], { encoding: 'utf8', maxBuffer: 256 * 1024, timeout: 20_000 });
+    if ((rendered.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      throw new ValidationError('PDF preview needs the Poppler pdftoppm tool.', 'BR-3');
+    }
+    if (rendered.status !== 0) {
+      if (/password|encrypted/i.test(`${rendered.stderr ?? ''}\n${rendered.stdout ?? ''}`)) {
+        throw new ValidationError(password
+          ? 'That password did not open this PDF.'
+          : 'This PDF is password-protected. Enter its password to view it.', 'BR-4');
+      }
+      throw new ValidationError('This PDF page could not be rendered.', 'BR-3');
+    }
+    return { pageCount, png: readFileSync(`${prefix}.png`) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**

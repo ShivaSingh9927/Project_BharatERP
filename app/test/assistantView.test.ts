@@ -19,8 +19,12 @@ describe('document class review UI', () => {
     const confirmed = renderDocumentInbox([{ ...document,
       classConfirmation: { documentClass: 'bank_statement', confirmedAt: '2026-10-01T00:01:00.000Z' },
     }], false, [], { enabled: true, available: true });
-    expect(confirmed).toContain('/import?document=doc-1');
-    expect(confirmed).toContain('Continue to statement preview');
+    expect(confirmed).toContain('Continue to statement review');
+    expect(confirmed).toContain('id="inbox-statement-password"');
+    expect(confirmed).toContain('id="statement-preview"');
+    expect(confirmed).toContain('Step <span id="statement-step-number">1</span> of 3');
+    expect(confirmed).toContain('id="pdf-page-prev"');
+    expect(confirmed).toContain('id="pdf-page-next"');
   });
 
   it('keeps received documents selectable and filterable without changing their review state', () => {
@@ -44,11 +48,11 @@ describe('document class review UI', () => {
     const owner = renderDocumentInbox([receivedByEmail], false, [],
       { enabled: true, available: true }, true, document.id, 'all', 'all', [request], true);
     expect(owner).toContain('inbox-review-grid');
-    expect(owner).toContain('Preview is not available in this workspace yet.');
+    expect(owner).toContain('id="document-pdf-image"');
     expect(owner).toContain('Email · accounts@example.test');
     expect(owner).toContain('Confirm or correct type');
     expect(owner).toContain('data-class="bank_statement"');
-    expect(owner).toContain("location.href = '/import?document='");
+    expect(owner).toContain("location.href = '/documents?document='");
     expect(owner).toContain('Your CA asked · 1');
     expect(owner).toContain('/api/document-requests/');
     expect(owner).not.toContain('deepseek');
@@ -57,6 +61,37 @@ describe('document class review UI', () => {
       { enabled: true, available: true }, true, document.id, 'all', 'all', [request], false);
     expect(ca).toContain('CA review actions');
     expect(ca).not.toContain('Your CA asked · 1');
+  });
+
+  it('highlights unconfirmed low confidence, colors confidence, truncates list names, and clears warnings after confirmation', () => {
+    const low = { ...document, originalName: 'A_very_long_statement_filename_that_should_not_take_over_the_document_list.pdf',
+      classSuggestion: { ...document.classSuggestion, confidence: 10 } };
+    const pending = renderDocumentInbox([low], false, [], { enabled: true, available: true });
+    expect(pending).toContain('inbox-document selected review-alert');
+    expect(pending).toContain('confidence-pill confidence-low');
+    expect(pending).toContain('inbox-confidence-alert');
+    expect(pending).toContain('title="A_very_long_statement_filename_that_should_not_take_over_the_document_list.pdf"');
+    const shell = renderShell({ session: { clientName: 'Client', role: 'owner', boundClientId: 'client-1' }, accounts: [], active: 'documents', body: pending });
+    expect(shell).toContain('-webkit-line-clamp: 2');
+    expect(shell).toContain('.inbox-statement [hidden] { display: none !important; }');
+
+    const confirmed = renderDocumentInbox([{ ...low,
+      classConfirmation: { documentClass: 'uncertain', confirmedAt: '2026-10-01T00:01:00.000Z' },
+    }], false, [], { enabled: true, available: true });
+    expect(confirmed).not.toContain('inbox-confidence-alert');
+    expect(confirmed).not.toContain('review-alert');
+  });
+
+  it('renders spreadsheet preview and defaults secure password remembrance on for eligible reviewers', () => {
+    const spreadsheet = { ...document, originalName: 'statement.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      classConfirmation: { documentClass: 'bank_statement', confirmedAt: '2026-10-01T00:01:00.000Z' } };
+    const html = renderDocumentInbox([spreadsheet], false, [], { enabled: true, available: true }, true,
+      spreadsheet.id, 'all', 'all', [], false,
+      [{ id: 'account-1', bankName: 'HDFC', last4: '4961', passwordSaved: true }], true);
+    expect(html).toContain('id="document-table-preview"');
+    expect(html).toContain('HDFC ··4961 · password saved');
+    expect(html).toContain('id="inbox-remember-password" type="checkbox" checked');
+    expect(html).toContain('nothing imports until you confirm');
   });
 });
 

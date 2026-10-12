@@ -52,6 +52,29 @@
 
 ### Rebranding follow-on — Inbox, Bills, Sales orientation (2026-10-12)
 
+- Extended Inbox previews to show stored JPEG/PNG/WebP/GIF/TIFF images, render
+  PDF pages locally with previous/next controls, and display CSV/TSV/TXT and
+  Excel tables without inserting imported cell content as HTML. Protected PDFs
+  and workbooks can be opened with a password from Inbox. Only authorized CA
+  roles can save the password; the checkbox starts checked, uses the existing
+  encrypted client/account scoped password store, and is never sent to Nexus.
+- A confirmed bank statement now has an Inbox-local three-step review: choose
+  the matching account, locally extract and edit transaction rows, then
+  explicitly confirm statement import. Existing account-fingerprint, exact
+  balance arithmetic, date-period, duplicate, tenant, and role checks remain
+  gates. Import creates statement evidence only; reconciliation and posting
+  remain separate human actions. Low-confidence unconfirmed classes are
+  visibly flagged in the list and detail, confidence has red/amber/green
+  styling, and confirmation clears the warning. Long list names are clamped.
+- The statement reader is the existing local deterministic parser rather than
+  an AI extraction path; scanned-image OCR stays opt-in. User passwords and
+  document bytes are not sent to an AI provider. No schema or public API was
+  changed. Node 22 typecheck and Inbox view tests pass; live browser review
+  confirmed the protected-PDF prompt, page controls, visible password field,
+  checked remember control, and statement review steps. A synthetic two-page
+  PDF smoke test rendered both pages; the full app suite passed (70 files,
+  1,016 tests). Live financial statement import was deliberately not run.
+
 - /documents now follows the Inbox 10a list, preview, and review-panel layout.
   It shows the real source channel/sender, tells the user when preview is not
   available, and keeps original download, status/type filters, Nexus class
