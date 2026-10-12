@@ -16,6 +16,12 @@ must never be used as application data.
   and an explicit next-step cue. /sales and /customers now use the same
   page heading and orientation pattern. These additions keep using the current
   server-rendered, client-scoped data and existing write endpoints.
+- Bank reconciliation, statement import, BRS, cash, GSTR-1/2B/3B, TDS, fixed
+  assets, and report views now share section-labelled page headings. Their
+  existing domain data and action controls remain in place.
+- The CA firm cockpit and Tally import also use the shared heading pattern;
+  their period filter, client switch links, XML preview, ledger mapping, and
+  human-confirmed import remain unchanged.
 - Focused views and workflow tests pass for documents, bills, sales, and the
   shared shell. Authenticated visual review across owner and CA roles, and
   remaining Bank, GST/TDS, and Tally mockup-specific refinements, are still

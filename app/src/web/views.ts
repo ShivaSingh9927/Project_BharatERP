@@ -44,6 +44,11 @@ const esc = (v: unknown): string =>
   String(v ?? '').replace(/[&<>"']/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
 
+function pageIntro(section: string, title: string, description: string): string {
+  return `<section class="page-intro"><div><p class="eyebrow">${esc(section)}</p>
+    <h1>${esc(title)}</h1><p class="sub">${esc(description)}</p></div></section>`;
+}
+
 /** Indian digit grouping — 12,34,567.89, not 1,234,567.89. */
 const inr = (v: string): string => {
   const neg = v.startsWith('-');
@@ -2173,9 +2178,7 @@ export function renderSalesInvoice(a: SalesInvoiceDetail): string {
 // ---------------------------------------------------------------------------
 
 export function renderTallyImport(): string {
-  return `<h1>Import from Tally</h1>
-  <p class="sub">Start with a safe preview. Nothing is added to the books until
-  the ledgers are mapped and you confirm the import.</p>
+  return `${pageIntro('FIRM TOOLS', 'Import from Tally', 'Start with a safe preview. Nothing is added to the books until the ledgers are mapped and you confirm the import.')}
 
   <div class="msg"><b>Current scope:</b> ledger history only. Customer and supplier
   bill-wise balances, invoice detail, and inventory are not migrated yet.</div>
@@ -2289,8 +2292,7 @@ export function renderImport(a: {
   banks: string[];
 }): string {
   if (a.accounts.length === 0) {
-    return `<h1>Bank sync</h1>
-<p class="sub">A statement must be linked to a bank account before it can be imported or reconciled.</p>
+    return `${pageIntro('BANKING', 'Bank sync', 'A statement must be linked to a bank account before it can be imported or reconciled.')}
 <div class="msg"><b>Add the bank account first.</b><br>
 This only records the account in BharatERP. It cannot access or move money in your bank.</div>
 <p><a href="/accounts"><button class="primary">Add bank account →</button></a></p>`;
@@ -2301,11 +2303,11 @@ This only records the account in BharatERP. It cannot access or move money in yo
     a.accounts.map((x) => [x.id, x.saved ?? x.hasSavedPassword ?? false]))).replace(/</g, '\\u003c');
   const autoOpenByAccount = JSON.stringify(Object.fromEntries(
     a.accounts.map((x) => [x.id, x.autoOpenEmail ?? false]))).replace(/</g, '\\u003c');
-  return `<h1>Bank sync</h1>
+  return `<section class="page-intro"><div><p class="eyebrow">BANKING</p><h1>Bank sync</h1>
 <p class="sub">Upload CSV, Excel or PDF bank statements. Overlapping dates are safe:
 transactions already present are skipped. Every file must pass its own balance
-and running-balance checks before anything is saved. This screen is for bank statements;
-  upload supplier and grocery invoices from <a href="/bills">Bills</a>.</p>
+and running-balance checks before anything is saved. Upload supplier and grocery
+invoices from <a href="/bills">Bills</a>.</p></div></section>
 ${a.sourceDocument ? `<div class="msg">Using received document <b>${esc(a.sourceDocument.name)}</b>. Choose the bank account, then preview it below. <a href="/documents">Choose another file</a>.</div>` : ''}
 
 <div class="panel">
@@ -2693,9 +2695,8 @@ export function renderQueue(
       <td>${proposalCell(it.proposal, it.suggestedClassification)}${reviewControl(it, i)}</td>
     </tr>`).join('');
 
-  return `<h1>Reconcile</h1>
-<p class="sub">Sorted by confidence — clear the top in bulk, spend your attention
-at the bottom. Nothing posts without you.</p>
+  return `${pageIntro('BANKING', 'Reconcile',
+    'Sorted by confidence — clear the top in bulk, spend your attention at the bottom. Nothing posts without you.')}
 
 <div class="msg"><b>Review a transaction:</b> choose a type, fill in the sender or evidence if you know it, then select <b>Save answer</b>. If you are unsure, leave “Unsure” selected. Saving a review does not post or reconcile anything.</div>
 
@@ -2945,10 +2946,8 @@ export function renderBrs(brs: Brs, accountId: string): string {
     <td class="num">${l.effect === 'less' ? '(' : ''}${inr(l.amount)}${l.effect === 'less' ? ')' : ''}</td>
   </tr>`).join('');
 
-  return `<h1>Bank Reconciliation Statement</h1>
-<p class="sub">As at ${esc(brs.asOf)}. Book and bank balances differ legitimately —
-this explains the difference item by item. A residual left over is an error, and
-is never rounded away (BR-22).</p>
+  return `${pageIntro('BANKING', 'Bank Reconciliation Statement',
+    `As at ${brs.asOf}. Book and bank balances differ legitimately — this explains the difference item by item. A residual left over is an error, and is never rounded away (BR-22).`)}
 
 <div class="panel"><table>
   <tr><td><b>Balance as per books</b></td><td class="num"><b>${inr(brs.bookBalance)}</b></td></tr>
@@ -2996,7 +2995,7 @@ export function renderCashRegister(r: {
     </form>`;
 
   if (r.ok) {
-    return `<h1>Cash register</h1>${form}
+    return `${pageIntro('BANKING', 'Cash register', 'Check the cash balance for every day in a selected period.')}${form}
       <p class="ok">✔ ${r.accountsChecked} cash account(s) stayed at or above
       zero on every day in this period.</p>
       <p class="muted">Overdraft and cash-credit accounts are excluded: going
@@ -3014,7 +3013,7 @@ export function renderCashRegister(r: {
       ).join('<br>')}</td>
     </tr>`).join('');
 
-  return `<h1>Cash register</h1>${form}
+  return `${pageIntro('BANKING', 'Cash register', 'Check the cash balance for every day in a selected period.')}${form}
     <p class="bad"><b>${r.negativeDays.length} impossible balance(s).</b>
     Cash cannot go below zero — you cannot pay out money you do not hold. For
     each one, either a receipt was never recorded, a payment was recorded twice,
@@ -3084,9 +3083,7 @@ export function renderGstr2b(a: {
     </div>`;
 
   if (a.periods.length === 0) {
-    return `<h1>GSTR-2B</h1>
-      <p class="sub">Reconcile the purchase ledger against what suppliers filed.
-      Under s.16(2)(aa), credit is claimable only on an invoice that appears here.</p>
+    return `${pageIntro('GST & TDS', 'GSTR-2B', 'Reconcile the purchase ledger against what suppliers filed. Credit needs supplier filing support in this return.')}
       <form method="get" action="/gstr2b" class="row">
         <label>Return period <input name="period" value="${esc(a.period)}" placeholder="YYYY-MM"></label>
         <button type="submit">Set period</button>
@@ -3121,9 +3118,7 @@ export function renderGstr2b(a: {
         : `<button class="resolve" data-id="${esc(l.id)}">Resolve</button>`}</td>
     </tr>`;
 
-  return `<h1>GSTR-2B</h1>
-<p class="sub">What the books claim, against what suppliers filed. Credit is
-claimable only on invoices that appear in 2B (s.16(2)(aa)).</p>
+  return `${pageIntro('GST & TDS', 'GSTR-2B', 'What the books claim, against what suppliers filed. Credit needs supplier filing support in this return.')}
 
 ${periodPicker}
 
@@ -3982,8 +3977,7 @@ export function renderProfitAndLoss(a: {
     ['Non-operating expenses', a.report.nonOperating, false],
     ['Net profit', a.report.netProfit, true],
   ];
-  return `<h1>Profit &amp; loss</h1>
-    <p class="sub">Income and expenses recorded in the ledger for this date range. Opening balances are excluded.</p>
+  return `${pageIntro('REPORTS', 'Profit & loss', 'Income and expenses recorded in the ledger for this date range. Opening balances are excluded.')}
     <form class="report-range" method="get" action="/reports/profit-loss">
       <label>From <input type="date" name="from" value="${esc(a.from)}" required></label>
       <label>To <input type="date" name="to" value="${esc(a.to)}" required></label>
@@ -4023,7 +4017,7 @@ export function renderBalanceSheet(a: {
   ];
   const list = (rows: Array<[string, string]>): string => `<table><tbody>${rows.map(([label, amount]) =>
     `<tr class="${label.startsWith('Total') || label === 'Liabilities and equity' ? 'report-total' : ''}"><td>${label}</td><td class="num">${inr(amount)}</td></tr>`).join('')}</tbody></table>`;
-  return `<h1>Balance sheet</h1><p class="sub">What the company owns and owes as at a recorded date.</p>
+  return `${pageIntro('REPORTS', 'Balance sheet', 'What the company owns and owes as at a recorded date.')}
     <form class="report-range" method="get" action="/reports/balance-sheet">
       <label>As of <input type="date" name="asOf" value="${esc(a.asOf)}" required></label>
       <button class="primary" type="submit">Show report</button>
@@ -4051,7 +4045,7 @@ export interface PeriodCloseView {
 
 export function renderPeriodClose(a: PeriodCloseView): string {
   const selected = a.periods.find((period) => period.label === a.selected) ?? null;
-  return `<h1>Close month</h1><p class="sub">Check what is ready before closing a period. Closing is recorded and blocks later postings into that period.</p>
+  return `${pageIntro('REPORTS', 'Close month', 'Check what is ready before closing a period. Closing is recorded and blocks later postings into that period.')}
     ${a.error ? `<div class="msg bad" role="alert">${esc(a.error)}</div>` : ''}
     ${a.periods.length ? `<form class="report-range" method="get" action="/reports/close-month"><label>Accounting period
       <select name="period">${a.periods.map((period) => `<option value="${esc(period.label)}" ${period.label === a.selected ? 'selected' : ''}>${esc(period.label)}${period.isClosed ? ' · closed' : ''}</option>`).join('')}</select></label><button type="submit">Review period</button></form>`
@@ -4385,9 +4379,7 @@ export function renderGstr1(a: Gstr1V): string {
       <td class="num">${inr(r.taxable)}</td></tr>`).join(''),
     '<tr><th>HSN</th><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Taxable</th></tr>');
 
-  return `<h1>GSTR-1</h1>
-<p class="sub">Outward supplies for the period — what the client sold, sorted
-into the boxes the return files. The tax total below is the liability declared.</p>
+  return `${pageIntro('GST & TDS', 'GSTR-1', 'Outward supplies for the selected period, grouped into the return sections for review. The tax total below is the declared liability.')}
 
 ${picker}
 
@@ -4437,9 +4429,7 @@ export function renderGstr3b(a: Gstr3bV): string {
     `<td class="num">${inr(h.igst)}</td><td class="num">${inr(h.cgst)}</td>
      <td class="num">${inr(h.sgst)}</td><td class="num">${inr(h.cess)}</td>`;
 
-  return `<h1>GSTR-3B</h1>
-<p class="sub">The net: output tax owed, less the input credit available, is the
-cash to pay. Credit is set off in the order the law fixes (Rule 88A).</p>
+  return `${pageIntro('GST & TDS', 'GSTR-3B', 'Review output tax, eligible input credit, set-off, and the resulting cash position for the selected period.')}
 
 ${picker}
 
@@ -4526,10 +4516,7 @@ export function renderAssets(a: AssetsV): string {
             <td class="num"><b>${inr(a.register.totalCarrying)}</b></td></tr>
       </table></div>`;
 
-  return `<h1>Fixed assets</h1>
-<p class="sub">What the client owns, what it has depreciated, and what it is
-carried at. Accumulated depreciation sits as a contra-asset, so the cost stays
-visible — what was paid and what is left are different questions.</p>
+  return `${pageIntro('REPORTS', 'Fixed assets', 'What the client owns, what it has depreciated, and what it is carried at. Accumulated depreciation stays separate from original cost.')}
 
 <div class="tiles">
   <div class="tile"><b>${inr(a.register.totalCarrying)}</b><span>carrying amount</span></div>
@@ -5098,10 +5085,7 @@ interface TdsPositionV {
 
 export function renderTds(a: TdsPositionV): string {
   if (a.months.length === 0) {
-    return `<h1>TDS</h1>
-<p class="sub">Nothing has been withheld yet. A bill posted to a head that
-attracts TDS — professional fees, contract payments, rent, commission — asks
-before it posts, and what is withheld shows up here with its deposit date.</p>`;
+    return `${pageIntro('GST & TDS', 'TDS', 'Nothing has been withheld yet. A bill posted to a head that attracts TDS asks before posting; the amount withheld appears here with its deposit date.')}`;
   }
 
   const row = (m: TdsPositionV['months'][number]): string => {
@@ -5132,11 +5116,7 @@ before it posts, and what is withheld shows up here with its deposit date.</p>`;
   const accounts = a.paymentAccounts
     .map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('');
 
-  return `<h1>TDS</h1>
-<p class="sub">Tax withheld on bills, and what is owed to the government. The
-deadline hangs off the month the tax was DEDUCTED in, not the month somebody
-gets round to paying it — so a March deduction is payable by 30 April however
-late the bill was entered.</p>
+  return `${pageIntro('GST & TDS', 'TDS', 'Tax withheld on bills, and what is owed to the government. Deposit deadlines follow the month the tax was deducted in, not the month somebody gets round to paying it.')}
 
 <div class="tiles">
   <div class="tile"><b class="${a.totalOutstanding === '0.00' ? 'good' : 'bad'}">${inr(a.totalOutstanding)}</b>
@@ -5339,10 +5319,7 @@ export function renderCockpit(a: {
       <td>${flags(r)}</td>
     </tr>`).join('');
 
-  return `<h1>The firm</h1>
-<p class="sub">Every client, sorted by what needs you. Deadlines are the
-standard monthly dates — clients on the QRMP scheme file to a different
-calendar this does not know about.</p>
+  return `${pageIntro('FIRM WORKSPACE', 'The firm', 'Every client, sorted by what needs you. Deadlines shown are standard monthly dates; QRMP clients may follow a different calendar.')}
 
 ${picker}
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAccounts, renderAssistantRuns, renderBalanceSheet, renderBillReview, renderClientSetup, renderCustomers, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderPeriodClose, renderProfitAndLoss, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
+import { renderAccounts, renderAssistantRuns, renderBalanceSheet, renderBillReview, renderClientSetup, renderCockpit, renderCustomers, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderPeriodClose, renderProfitAndLoss, renderQueue, renderReceivables, renderSales, renderShell, renderTallyImport } from '../src/web/views.ts';
 
 describe('document class review UI', () => {
   const document = {
@@ -57,6 +57,24 @@ describe('bill review navigation', () => {
     expect(html).toContain('bill shown');
     expect(html).toContain('CA partner must approve');
     expect(html.split('<script>')[0]).not.toContain('class="primary post"');
+  });
+});
+
+describe('firm workspace orientation', () => {
+  it('labels firm cockpit and Tally tools while preserving review-first guidance', () => {
+    const cockpit = renderCockpit({
+      period: '2026-10', periods: ['2026-10'], today: '2026-10-12', rows: [],
+      totals: { clients: 0, outputTax: '0.00', creditAtRisk: '0.00',
+        overduePayable: '0.00', needingAttention: 0, documentsWaiting: 0,
+        informationRequested: 0 },
+    });
+    expect(cockpit).toContain('<p class="eyebrow">FIRM WORKSPACE</p>');
+    expect(cockpit).toContain('Every client, sorted by what needs you');
+
+    const tally = renderTallyImport();
+    expect(tally).toContain('<p class="eyebrow">FIRM TOOLS</p>');
+    expect(tally).toContain('Preview each XML file here');
+    expect(tally).toContain('Nothing is added to the books until');
   });
 });
 
@@ -248,6 +266,7 @@ describe('BharatERP redesign shell', () => {
     } });
     expect(profit).toContain('name="from" value="2026-10-01"');
     expect(profit).toContain('name="to" value="2026-10-31"');
+    expect(profit).toContain('<p class="eyebrow">REPORTS</p>');
     expect(profit).toContain('1,23,45,67,89,01,23,45,67,890.12');
     expect(profit).toContain('Figures are computed from posted ledger entries');
 
@@ -259,6 +278,7 @@ describe('BharatERP redesign shell', () => {
     }, trialBalance: { rows: [{ code: '1000', name: 'Cash', debit: '100.00', credit: '0.00' }],
       totalDebit: '100.00', totalCredit: '100.00', balanced: true } });
     expect(balance).toContain('<details class="panel"><summary>Trial balance');
+    expect(balance).toContain('<p class="eyebrow">REPORTS</p>');
     expect(balance).toContain('Balance and trial balance checks');
     expect(balance).toContain('Cash');
   });
@@ -269,6 +289,7 @@ describe('BharatERP redesign shell', () => {
     const partner = renderPeriodClose({ periods: [period], selected: '2026-10',
       check: { ok: false, blockers: ['<unmatched bank items>'] }, canClose: true });
     expect(partner).toContain('Close with recorded reason');
+    expect(partner).toContain('<p class="eyebrow">REPORTS</p>');
     expect(partner).toContain('&lt;unmatched bank items&gt;');
     expect(partner).toContain('method="post" action="/reports/close-month"');
     const owner = renderPeriodClose({ periods: [period], selected: '2026-10',
@@ -315,6 +336,7 @@ describe('BharatERP redesign shell', () => {
       { enabled: true, available: true },
     );
     expect(html).toContain('choose a type');
+    expect(html).toContain('<p class="eyebrow">BANKING</p>');
     expect(html).toContain('1. What best describes this transaction?');
     expect(html).toContain('class="review-kind-picker"');
     expect(html).toContain('data-kind="share_application_pending"');

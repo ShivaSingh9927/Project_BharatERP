@@ -40,6 +40,15 @@
   and sales view suites; Node 22.23.3 typecheck passed. These slices have not
   yet had authenticated visual review at owner and CA roles. Bank, GST/TDS,
   Tally, and remaining route refinements are still in progress.
+- A follow-on shared-heading pass now labels Bank reconciliation, statement
+  import, BRS, cash, GSTR-1/2B/3B, TDS, fixed assets, and the financial reports
+  with their workspace section. Their existing dates, figures, summaries,
+  review actions, and role checks remain attached to the same views. Focused
+  renderer tests and typecheck pass; mockup-specific visual adjustments and
+  authenticated role review are still open.
+- The firm cockpit and Tally XML import now use the same section heading
+  pattern. Existing client switching, period selection, XML preview, ledger
+  mapping, and confirmation flows remain unchanged.
 
 ### Nexus money question and saved chat presentation (2026-10-10)
 
