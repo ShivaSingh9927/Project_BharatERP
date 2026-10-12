@@ -48,6 +48,7 @@ describe('document class review UI', () => {
     expect(owner).toContain('Email · accounts@example.test');
     expect(owner).toContain('Confirm or correct type');
     expect(owner).toContain('data-class="bank_statement"');
+    expect(owner).toContain("location.href = '/import?document='");
     expect(owner).toContain('Your CA asked · 1');
     expect(owner).toContain('/api/document-requests/');
     expect(owner).not.toContain('deepseek');

@@ -62,6 +62,10 @@
   typecheck pass. Browser review confirms the three-pane desktop composition;
   the available seed document has no original file, so a real PDF preview was
   not visually validated. No route, database schema, or accounting API changed.
+- After the user confirms a suggested bank statement, Inbox now opens the
+  existing statement-review screen directly; that screen asks for the account
+  and exposes the optional secure password remember control. No password is
+  requested or stored before the user confirms the document class.
 - /bills now groups pending items by existing ready / needs-answer / blocked
   states and explains the review sequence. Filters only hide/show loaded cards;
   CA approval remains required and no new posting route was added.

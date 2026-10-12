@@ -133,7 +133,7 @@ export function renderDocumentInbox(
       ${d.status !== 'dismissed' && canConfirmClass && d.available ? `<section class="inbox-class-review"><h3>Confirm or correct type</h3>
         <div class="inbox-class-choices">${documentClasses.map((value) => `<button type="button" class="document-class-choice ${((d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value) ? 'selected' : ''}" data-id="${esc(d.id)}" data-class="${value}" aria-pressed="${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value}">${esc(classLabels[value]!)}</button>`).join('')}</div>
         <button type="button" class="confirm-document-class primary" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm type'}</button>
-        <p class="why">Confirming a type does not import, reconcile, or post anything.</p></section>` : ''}
+        <p class="why">Confirming a type does not import, reconcile, or post anything. Confirm Bank statement to open statement review, where you can enter the PDF password and choose whether to remember it securely for this account.</p></section>` : ''}
       ${d.classConfirmation ? `<div class="inbox-next-step"><b>Next step</b>${d.classConfirmation.documentClass === 'bank_statement'
         ? `<a href="/import?document=${encodeURIComponent(d.id)}">Continue to statement preview →</a>`
         : d.classConfirmation.documentClass === 'purchase_bill'
@@ -248,7 +248,9 @@ export function renderDocumentInbox(
         body: JSON.stringify({ documentClass: choice.dataset.class }),
       });
       const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not confirm class');
-      location.reload();
+      if (choice.dataset.class === 'bank_statement') {
+        location.href = '/import?document=' + encodeURIComponent(confirmClass.dataset.id);
+      } else location.reload();
     } catch (error) { result.textContent = String(error.message || error); confirmClass.disabled = false; }
   });
   document.querySelectorAll('.mark-in-review').forEach((button) => button.onclick = async () => {
