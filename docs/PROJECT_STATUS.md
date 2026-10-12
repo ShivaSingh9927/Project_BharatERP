@@ -1,5 +1,28 @@
 # Project status and handoff
 
+### Rebranding branch — first UI integration slice (2026-10-12)
+
+- Created local `rebranding` from the current `feat/purchase-bills` HEAD,
+  carried the pre-existing worktree forward, and pushed the bank-permission
+  checkpoint as `f39066c` to `origin/rebranding` before UI work.
+- Replaced the sidebar with the new responsive top navigation and contextual
+  sub-navigation, kept CA-only links role-gated, made those links and Upload
+  reachable on narrow screens, added a keyboard skip link and focus treatment,
+  removed the duplicated page title, and applied the handoff's IBM Plex font
+  and color tokens. Fonts are bundled with their SIL OFL 1.1 license.
+- Reorganized Today around attention items and existing client-scoped money
+  summaries. Added a customer list route using the current sales read model and
+  customer statement links. Added client-scoped Profit & Loss, Balance Sheet,
+  and Close Month pages using existing reports and period-close domain logic.
+  Closing is a CA-partner-only server-rendered form; no database migration or
+  JSON API was added.
+- [`UI_REDESIGN_PARITY.md`](UI_REDESIGN_PARITY.md) is the route/action
+  completion checklist. Mockup-only capabilities marked New remain deferred.
+- Node 22.23.3 typecheck passed. Focused shell/dashboard/report/period-close
+  tests passed, followed by the full app suite: 70 files, 1,004 tests passed.
+  Responsive styles are in place; authenticated page-by-page visual review is
+  still a follow-up verification item.
+
 ### Nexus money question and saved chat presentation (2026-10-10)
 
 - “How much do we have?” now bypasses AI intent routing and reads exact posted

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAccounts, renderAssistantRuns, renderClientSetup, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
+import { renderAccounts, renderAssistantRuns, renderBalanceSheet, renderClientSetup, renderCustomers, renderDocumentInbox, renderEmailInbox, renderImport, renderNexus, renderNexusBankTransactionSource, renderPayables, renderPeriodClose, renderProfitAndLoss, renderQueue, renderReceivables, renderSales, renderShell } from '../src/web/views.ts';
 
 describe('document class review UI', () => {
   const document = {
@@ -24,7 +24,7 @@ describe('document class review UI', () => {
   });
 });
 
-describe('Ask Bharat shell', () => {
+describe('BharatERP redesign shell', () => {
   it('hides bank setup controls from read-only roles', () => {
     const empty = renderAccounts([], '2026-10-11', false);
     expect(empty).toContain('No bank accounts are configured');
@@ -66,7 +66,11 @@ describe('Ask Bharat shell', () => {
     const founderShell = renderShell({ session: { clientName: 'ABC Traders', role: 'owner',
       boundClientId: 'client-1' }, accounts: [], active: 'nexus', body: '' });
     expect(caShell).toContain('href="/email-inbox"');
+    expect(caShell).toContain('href="/firm"');
+    expect(caShell).toContain('href="/tally"');
+    expect(caShell).toContain('.firm-nav { display: flex; max-width: 36vw; overflow-x: auto;');
     expect(founderShell).not.toContain('href="/email-inbox"');
+    expect(founderShell).not.toContain('href="/tally"');
   });
   it('gives the agent a dedicated client-scoped chat with saved exchanges', () => {
     const html = renderNexus('Acme & Co', [{
@@ -75,7 +79,7 @@ describe('Ask Bharat shell', () => {
       answer: 'Three files were received.', evidence: ['Client document inbox'],
       supported: true, durationMs: 15, createdAt: '2026-10-01T00:00:00.000Z',
     }]);
-    expect(html).toContain('Bharat Nexus');
+    expect(html).toContain('Ask Nexus');
     expect(html).toContain('Acme &amp; Co');
     expect(html).toContain('&lt;Where are my files?&gt;');
     expect(html).toContain('Three files were received.');
@@ -184,13 +188,66 @@ describe('Ask Bharat shell', () => {
     expect(html).toContain('How many bank transactions need reconciliation?');
     expect(html).toContain('Read-only preview. It cannot post or change the books.');
     expect(html).toContain("fetch('/api/assistant'");
-    expect(html).toContain('<summary>WORKFLOW</summary>');
-    expect(html).toContain('<summary>BOOKS</summary>');
-    expect(html).toContain('<summary>BANKING</summary>');
-    expect(html).toContain('<summary>COMPLIANCE</summary>');
-    expect(html).toContain('<summary>TOOLS</summary>');
-    expect(html).toContain('overscroll-behavior: contain');
-    expect(html).toContain('.page-context b { display: none; }');
+    expect(html).toContain('class="primary-header"');
+    expect(html).toContain('aria-label="Main navigation"');
+    expect(html).toContain('href="/reconcile" class="on" aria-current="page">Bank</a>');
+    expect(html).toContain('href="/brs" class=""');
+    expect(html).toContain('class="secondary-nav" aria-label="Bank navigation"');
+    expect(html).toContain('id="ask-toggle"');
+    expect(html).toContain('aria-label="Ask Nexus"');
+    expect(html).toContain('href="/documents#document-files"');
+    expect(html).toContain('href="/password"');
+    expect(html).toContain('@font-face');
+    expect(html).toContain('href="#main-content"');
+    expect(html).toContain('<main id="main-content">');
+    expect(html).not.toContain('<div class="page-context"><b>Reconcile</b>');
+    expect(html).not.toContain('WORKFLOW');
+  });
+
+  it('renders exact client report values with date filters and an expandable trial balance', () => {
+    const profit = renderProfitAndLoss({ from: '2026-10-01', to: '2026-10-31', report: {
+      revenue: '12345678901234567890.12', cogs: '1.00', grossProfit: '12345678901234567889.12',
+      operatingExpenses: '2.00', operatingProfit: '12345678901234567887.12',
+      nonOperating: '3.00', netProfit: '12345678901234567884.12',
+    } });
+    expect(profit).toContain('name="from" value="2026-10-01"');
+    expect(profit).toContain('name="to" value="2026-10-31"');
+    expect(profit).toContain('1,23,45,67,89,01,23,45,67,890.12');
+    expect(profit).toContain('Figures are computed from posted ledger entries');
+
+    const balance = renderBalanceSheet({ asOf: '2026-10-31', report: {
+      currentAssets: '100.00', nonCurrentAssets: '20.00', totalAssets: '120.00',
+      currentLiabilities: '30.00', nonCurrentLiabilities: '10.00', totalLiabilities: '40.00',
+      equity: '60.00', retainedProfit: '20.00', totalEquity: '80.00',
+      totalLiabilitiesAndEquity: '120.00', workingCapital: '70.00', balanced: true,
+    }, trialBalance: { rows: [{ code: '1000', name: 'Cash', debit: '100.00', credit: '0.00' }],
+      totalDebit: '100.00', totalCredit: '100.00', balanced: true } });
+    expect(balance).toContain('<details class="panel"><summary>Trial balance');
+    expect(balance).toContain('Balance and trial balance checks');
+    expect(balance).toContain('Cash');
+  });
+
+  it('makes close-month human approval and blockers clear without exposing an action to owners', () => {
+    const period = { label: '2026-10', startDate: '2026-10-01', endDate: '2026-10-31',
+      isClosed: false, closedAt: null };
+    const partner = renderPeriodClose({ periods: [period], selected: '2026-10',
+      check: { ok: false, blockers: ['<unmatched bank items>'] }, canClose: true });
+    expect(partner).toContain('Close with recorded reason');
+    expect(partner).toContain('&lt;unmatched bank items&gt;');
+    expect(partner).toContain('method="post" action="/reports/close-month"');
+    const owner = renderPeriodClose({ periods: [period], selected: '2026-10',
+      check: { ok: true, blockers: [] }, canClose: false });
+    expect(owner).not.toContain('id="period-close-form"');
+    expect(owner).toContain('A CA partner must complete the close');
+  });
+
+  it('provides a client-scoped customer list with statement links and safe empty state', () => {
+    const html = renderCustomers([{ id: 'customer-1', name: '<Acme>', legalName: 'Acme Trading',
+      gstin: null, gstCategory: 'unregistered', stateCode: '27', phone: null }]);
+    expect(html).toContain('&lt;Acme&gt;');
+    expect(html).toContain('Unregistered');
+    expect(html).toContain('/receivables?party=customer-1');
+    expect(renderCustomers([])).toContain('No customers have been added yet');
   });
 
   it('shows the CA an evidence-bearing AI run log', () => {
@@ -200,7 +257,7 @@ describe('Ask Bharat shell', () => {
       answer: 'You owe suppliers ₹117.00.', evidence: ['Payable ledger settlements'],
       supported: true, durationMs: 44, createdAt: '2026-09-16T00:00:00.000Z',
     }]);
-    expect(html).toContain('Ask Bharat AI log');
+    expect(html).toContain('Nexus activity');
     expect(html).toContain('Nexus · payables');
     expect(html).toContain('Payable ledger settlements');
   });

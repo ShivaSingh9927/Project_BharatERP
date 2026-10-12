@@ -333,15 +333,15 @@ export function renderNexus(
   thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29);
   const fromIndia = thirtyDaysAgo.toISOString().slice(0, 10);
   return `<div class="nexus">
-  <section class="nexus-chat" aria-label="Bharat Nexus conversation">
-    <div class="nexus-head"><h1>Bharat Nexus</h1>
+<section class="nexus-chat" aria-label="Ask Nexus conversation">
+    <div class="nexus-head"><h1>Ask Nexus</h1>
       <p>${esc(clientName)} · Ask about the books, received documents, and work needing attention.</p></div>
     <div class="nexus-thread" id="nexus-thread" aria-live="polite">
       ${visibleTurns || '<div class="nexus-answer">Hello. Ask me what has been received, what needs attention, or what the books show.</div>'}
     </div>
     <div class="nexus-compose">
       <form id="nexus-form">
-        <textarea id="nexus-input" maxlength="500" aria-label="Message Bharat Nexus"
+        <textarea id="nexus-input" maxlength="500" aria-label="Message Ask Nexus"
           placeholder="Ask about this client’s books…"></textarea>
         <button class="primary" id="nexus-send" type="submit">Send</button>
       </form>
@@ -674,7 +674,7 @@ function activityRow(item: ActivityItem): string {
 
 export function renderActivity(items: ActivityItem[]): string {
   return `<h1>Activity</h1>
-    <p class="sub">A timeline of what came in, what Bharat Nexus answered, and what is still waiting for someone to act.</p>
+    <p class="sub">A timeline of what came in, what Nexus answered, and what is still waiting for someone to act.</p>
     <section class="activity-feed">
       ${items.map(activityRow).join('') || '<p class="empty">Activity will appear here when a document arrives, Nexus answers, or a follow-up changes.</p>'}
     </section>`;
@@ -796,7 +796,7 @@ export function renderFollowUps(items: FollowUpItem[], assignees: FollowUpAssign
     <p class="sub">Priority: <b>${esc(item.priority)}</b> · Assignee: ${esc(item.assigneeName ?? 'Unassigned')} · Due: ${esc(item.dueDate ?? 'No due date')}</p>
     <p><b>Next action:</b> ${item.status === 'completed' ? 'Completed by a user' : item.blockerReason ? `Resolve blocker: ${esc(item.blockerReason)}` : item.snoozedUntil ? `Review after ${esc(item.snoozedUntil)}` : 'Review this item'}</p>
     ${item.sourceQuestion ? `<details><summary>Chat context</summary><p><b>You asked:</b> ${esc(item.sourceQuestion)}</p>
-      ${item.sourceAnswer ? `<p><b>Bharat Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
+      ${item.sourceAnswer ? `<p><b>Nexus replied:</b> ${esc(item.sourceAnswer)}</p>` : ''}</details>` : ''}
     <small>Added ${esc(new Date(item.createdAt).toLocaleString('en-IN'))}</small>
     ${item.history.length ? `<details><summary>Activity history · ${item.history.length}</summary><ol>${item.history.map((event) => `<li>${esc(event.eventType.replaceAll('_', ' '))}${event.reason ? `: ${esc(event.reason)}` : ''}${event.snoozedUntil ? ` until ${esc(event.snoozedUntil)}` : ''} · ${esc(event.actorName)} · ${esc(new Date(event.recordedAt).toLocaleString('en-IN'))}</li>`).join('')}</ol></details>` : '<p class="sub">No activity recorded yet.</p>'}
     ${canComplete ? `<form class="blocker-follow-up" data-id="${esc(item.id)}"><label>Record blocker or reason<textarea name="reason" maxlength="2000" required placeholder="What is preventing the review?"></textarea></label><button type="submit">Save blocker</button></form>
@@ -912,54 +912,79 @@ export function renderAttention(
 }
 
 const CSS = `
+@font-face { font-family: "IBM Plex Sans"; src: url("/assets/fonts/IBMPlexSans-400.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/assets/fonts/IBMPlexSans-500.woff2") format("woff2"); font-style: normal; font-weight: 500; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/assets/fonts/IBMPlexSans-600.woff2") format("woff2"); font-style: normal; font-weight: 600; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("/assets/fonts/IBMPlexSans-700.woff2") format("woff2"); font-style: normal; font-weight: 700; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/IBMPlexMono-400.woff2") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/IBMPlexMono-500.woff2") format("woff2"); font-style: normal; font-weight: 500; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("/assets/fonts/IBMPlexMono-600.woff2") format("woff2"); font-style: normal; font-weight: 600; font-display: swap; }
 :root {
   color-scheme: light;
-  --bg: #fff; --canvas: #fff; --panel: #fff; --ink: #1a1a18; --muted: #6b7280;
-  --line: #e3e3df; --accent: #1d4ed8; --good: #0f7b3f; --warn: #9a5b00;
-  --bad: #b02020; --sel: #eef2ff; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --bg: #fff; --canvas: #fff; --panel: #fff; --ink: #142354; --muted: #66708f;
+  --line: #dfe4f1; --accent: #0046ff; --good: #087a42; --warn: #a34a13;
+  --bad: #b02020; --sel: #e8eeff; --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --navy: #001bb7; --orange: #ff8040; --surface: #f6f7fb;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--canvas); color: var(--ink);
-  font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 14px/1.5 "IBM Plex Sans", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 238px minmax(0, 1fr); }
-.sidebar { display: flex; flex-direction: column; height: 100vh; min-height: 0; position: sticky; top: 0;
-  padding: 22px 12px 14px;
-  background: #f8f9fd; border-right: 1px solid #e1e5f0; }
-.brand { color: #162653; text-decoration: none; font: 700 21px/1 Georgia, serif; letter-spacing: -.03em;
-  padding: 0 13px 24px; }
+.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
+a.skip-link { position: fixed; z-index: 30; top: 8px; left: 8px; transform: translateY(-160%);
+  padding: 8px 12px; border-radius: 6px; background: #fff; color: var(--navy); }
+a.skip-link:focus { transform: translateY(0); }
+:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+.primary-header { position: sticky; z-index: 10; top: 0; min-height: 60px; display: flex; align-items: center;
+  gap: 18px; padding: 0 24px; background: var(--navy); color: #fff; }
+.brand { display: inline-flex; flex: 0 0 auto; align-items: center; color: #fff; text-decoration: none;
+  font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .brand-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-right: 7px;
-  border-radius: 50%; background: #17275b; color: #fff; font: 700 13px/1 system-ui; vertical-align: 2px; }
-.sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0;
-  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.nav-section { margin: 8px 0 0; }
-.nav-section summary { list-style: none; cursor: pointer; padding: 8px 13px; color: #79819a;
-  font-size: 11px; font-weight: 700; letter-spacing: .05em; border-radius: 7px; }
-.nav-section summary::-webkit-details-marker { display: none; }
-.nav-section summary::after { content: '⌄'; float: right; font-size: 13px; transition: transform .15s; }
-.nav-section[open] summary::after { transform: rotate(180deg); }
-.nav-section summary:hover { background: #e8ecf8; }
-.nav-section nav { flex: none; min-height: auto; overflow: visible; }
+  border-radius: 6px; background: var(--orange); color: var(--navy); font: 700 13px/1 system-ui; }
+.primary-nav { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1;
+  overflow-x: auto; scrollbar-width: thin; }
+.primary-nav a { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  padding: 7px 10px; border-radius: 6px; color: rgba(255,255,255,.82); text-decoration: none;
+  font-size: 13px; font-weight: 500; }
+.primary-nav a:hover, .primary-nav a:focus-visible { background: rgba(255,255,255,.14); color: #fff; }
+.primary-nav a.on { background: var(--accent); color: #fff; }
+.primary-nav .count { min-width: 20px; padding: 1px 6px; border-radius: 12px; background: var(--orange);
+  color: var(--navy); text-align: center; font: 600 10px/1.5 var(--mono); }
+.top-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.top-actions .upload-link { padding: 6px 10px; border-radius: 6px; background: #fff; color: var(--navy);
+  text-decoration: none; font-weight: 600; }
+.top-actions .client-chip { max-width: 210px; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; border: 1px solid rgba(255,255,255,.35); border-radius: 6px; color: #fff; }
+.top-actions .who { margin: 0; padding: 0; border: 0; color: #fff; }
+.top-actions .who span { display: none; }
+.top-actions .who a { margin-right: 4px; color: #fff; font-size: 12px; }
+.top-actions .who button { margin: 0; border: 0; background: transparent; color: #fff; }
+.top-actions .who button:hover { background: rgba(255,255,255,.12); }
+.workspace { min-width: 0; flex: 1; }
+.workspace > header.pagebar { position: sticky; top: 60px; z-index: 5; min-height: 56px; display: flex; align-items: center;
+  gap: 14px; padding: 0 28px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.97); }
+.page-context { display: none; }
+.secondary-nav { display: flex; align-items: stretch; gap: 20px; flex: 1; min-width: 0;
+  overflow-x: auto; scrollbar-width: thin; }
+.secondary-nav a { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 16px 1px 13px;
+  border-bottom: 3px solid transparent; color: #555b80; text-decoration: none; font-size: 13px; font-weight: 500; }
+.secondary-nav a:hover, .secondary-nav a:focus-visible { color: var(--navy); }
+.secondary-nav a.on { color: var(--navy); border-bottom-color: var(--accent); font-weight: 650; }
+.firm-nav { display: flex; gap: 14px; align-items: center; margin-left: auto; flex: 0 0 auto; }
+.firm-nav a { color: #555b80; text-decoration: none; font-size: 12px; }
+.firm-nav a.on { color: var(--navy); font-weight: 650; }
+.pagebar .ask-toggle { margin-left: 0; }
 .suggestion-details { margin: 0 0 10px; padding: 8px 10px; background: #fff;
   border: 1px solid #e2e7f3; border-radius: 7px; }
 .suggestion-details summary { cursor: pointer; color: #34446f; font-size: 12px; font-weight: 600; }
 .suggestion-details p { margin: 8px 0 0; white-space: pre-wrap; }
 .nav-group { margin: 13px 0 4px; padding: 0 13px; color: #79819a; font-size: 11px; font-weight: 700;
   letter-spacing: .05em; }
-.sidebar nav a { display: flex; gap: 10px; align-items: center; color: #29335a; text-decoration: none;
-  padding: 8px 12px; border-radius: 7px; font-size: 13px; font-weight: 550; }
-.sidebar nav a:hover { background: #e8ecf8; }
-.sidebar nav a.on { background: #17275b; color: #fff; box-shadow: 0 3px 8px rgba(23,39,91,.16); }
-.nav-icon { width: 15px; text-align: center; font-size: 14px; opacity: .85; }
-.workspace { min-width: 0; }
-header { position: sticky; top: 0; z-index: 5; min-height: 70px; display: flex; align-items: center;
-  gap: 16px; padding: 12px 30px; border-bottom: 1px solid #e1e5f0; background: rgba(255,255,255,.94);
-  backdrop-filter: blur(10px); }
-.page-context { min-width: 0; }
-.page-context b { display: none; }
-header .client { color: var(--muted); font-size: 12px; }
-.ask-toggle { margin-left: auto; white-space: nowrap; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.ask-toggle { white-space: nowrap; border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.primary-link { display: inline-flex; align-items: center; padding: 8px 12px; border-radius: 6px;
+  background: var(--navy); color: #fff; text-decoration: none; font-weight: 600; }
+.primary-link:hover, .primary-link:focus-visible { background: var(--accent); color: #fff; }
 .ask-shade { position: fixed; inset: 0; z-index: 19; background: rgba(0,0,0,.38); }
 .ask-drawer { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0;
   width: min(390px, 94vw); box-sizing: border-box; display: flex; flex-direction: column;
@@ -1067,7 +1092,25 @@ header .client { color: var(--muted); font-size: 12px; }
   .ask-drawer { animation: ask-in .16s ease-out; }
   @keyframes ask-in { from { transform: translateX(18px); opacity: .7; } }
 }
-main { padding: 30px; max-width: 1320px; }
+main { padding: 30px; max-width: 1520px; margin: 0 auto; }
+.today-heading { display: flex; justify-content: space-between; gap: 18px; align-items: start; }
+.today-heading h1 { margin-bottom: 2px; }
+.today-heading .row { margin: 0; }
+.today-grid { display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.4fr); gap: 14px; align-items: start; }
+.today-grid > .panel { margin: 0; }
+.today-grid h2, .today-recent h2 { margin: 0 0 8px; }
+.today-section-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.today-section-head .sub { margin-bottom: 8px; }
+.today-actions { display: grid; }
+.today-action { display: grid; gap: 3px; padding: 11px 0; border-top: 1px solid var(--line); text-decoration: none; }
+.today-action b { color: var(--ink); }
+.today-action span, .today-clear { color: var(--muted); font-size: 12px; }
+.today-action:hover b { color: var(--accent); }
+.today-needs .msg { margin-top: 12px; }
+.today-position .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 0; }
+.today-position .tile { padding: 13px; }
+.today-position .tile b { font-size: 19px; }
+.today-recent { margin-top: 22px; }
 h1 { color: #142354; font-size: 25px; letter-spacing: -.035em; margin: 0 0 6px; }
 h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .sub { color: var(--muted); margin: 0 0 16px; }
@@ -1075,6 +1118,22 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
   background: var(--panel); border: 1px solid #e0e4ee;
   border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(20,35,84,.025);
 }
+.report-range { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin: 14px 0 18px; }
+.report-range label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.report-range input, .report-range select { min-width: 170px; }
+.report-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.report-summary > div { display: grid; gap: 4px; padding: 4px 8px; border-right: 1px solid var(--line); }
+.report-summary > div:last-child { border: 0; }
+.report-summary span { color: var(--muted); font-size: 12px; }
+.report-summary b { font: 600 20px/1.35 var(--mono); overflow-wrap: anywhere; }
+.report-total td, .report-total th { border-top: 1px solid #c4cbe0; font-weight: 700; color: var(--navy); }
+.balance-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.balance-columns h2 { margin-top: 0; }
+.period-close-head { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
+.period-close-head h2 { margin: 0; }
+.period-close-form { display: grid; gap: 10px; max-width: 600px; margin-top: 14px; }
+.period-close-form label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.period-close-form textarea { min-height: 76px; font: inherit; }
 .doc-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
 .doc-actions a { font-size: 12px; }
 .doc-review-actions { display: grid; gap: 6px; min-width: 190px; }
@@ -1318,18 +1377,19 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
 .invoice-total { font-size: 22px; font-family: var(--mono); }
 @media (max-width: 900px) {
-  .app-shell { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; min-height: auto; padding: 12px; border-right: 0; border-bottom: 1px solid #e1e5f0; }
-  .brand { padding: 0 4px 10px; }
-  .sidebar > nav { flex-direction: row; overflow-x: auto; overflow-y: visible; padding-bottom: 3px; }
-  .nav-section { flex: 0 0 auto; position: relative; }
-  .nav-section > nav { position: absolute; top: 100%; left: 0; z-index: 8; min-width: 190px; max-height: 55vh;
-    overflow-y: auto; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: 9px;
-    box-shadow: 0 8px 24px rgba(20,35,84,.16); }
-  .who { display: none; }
-  header { padding: 10px 16px; }
+  .primary-header { min-height: 56px; gap: 12px; padding: 8px 14px 0; flex-wrap: wrap; }
+  .primary-nav { order: 3; flex-basis: calc(100% + 28px); margin: 0 -14px; padding: 0 14px; }
+  .top-actions { margin-left: auto; }
+  .top-actions .upload-link { display: inline-flex; padding: 4px 7px; font-size: 11px; }
+  .workspace > header.pagebar { top: 56px; min-height: 49px; gap: 9px; padding: 0 12px; }
+  .firm-nav { display: flex; max-width: 36vw; overflow-x: auto; gap: 10px; }
+  .secondary-nav { gap: 16px; }
+  .secondary-nav a { padding-top: 13px; padding-bottom: 10px; }
   main { padding: 20px 16px; }
   .sales-grid { grid-template-columns: 1fr; }
+  .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .balance-columns { grid-template-columns: 1fr; }
+  .today-grid { grid-template-columns: 1fr; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .customer-form { grid-template-columns: 1fr 1fr; }
   .ledger-proof { position: static; }
@@ -1339,6 +1399,17 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .nexus-thread { max-height: 55vh; }
   .nexus-side { display: flex; gap: 10px; overflow-x: auto; }
   .nexus-side .panel { flex: 0 0 230px; }
+}
+@media (max-width: 560px) {
+  .primary-header { gap: 8px; }
+  .brand { font-size: 16px; }
+  .top-actions .client-chip { max-width: 125px; padding: 5px 7px; font-size: 11px; }
+  .top-actions .who button { padding: 5px 4px; font-size: 11px; }
+  .workspace > header.pagebar { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
+  .secondary-nav { min-height: 45px; order: 1; padding-right: 94px; }
+  .firm-nav { order: 2; max-width: 100%; min-height: 36px; margin: 0; padding: 0 0 7px; }
+  .pagebar .ask-toggle { align-self: flex-end; position: absolute; top: 7px; right: 12px; }
+  .today-heading { flex-direction: column; }
 }
 @media print {
   header, .no-print { display: none !important; }
@@ -1363,12 +1434,35 @@ export function renderShell(a: {
   const canManageEmail = a.session.boundClientId == null &&
     ['ca_partner', 'ca_staff'].includes(a.session.role ?? '');
   const q = a.accountId ? `?account=${encodeURIComponent(a.accountId)}` : '';
-  const link = (href: string, key: string, label: string, icon: string): string =>
-    `<a href="${href}" class="${a.active === key ? 'on' : ''}"><span class="nav-icon">${icon}</span>${label}</a>`;
-  const navSection = (label: string, keys: string[], links: string[]): string =>
-    `<details class="nav-section" ${keys.includes(a.active) ? 'open' : ''}>
-      <summary>${label}</summary><nav aria-label="${label}">${links.join('')}</nav>
-    </details>`;
+  const groups: Array<{ label: string; keys: string[]; href: string; links: Array<[string, string, string]> }> = [
+    { label: 'Today', keys: ['home','setup','activity','attention','follow-ups'], href: '/', links: [
+      ['/', 'home', 'Overview'], ['/setup', 'setup', 'Setup'], ['/activity', 'activity', 'Activity'],
+      ['/attention', 'attention', 'Attention'], ['/follow-ups', 'follow-ups', 'Review desk']] },
+    { label: 'Ask Nexus', keys: ['nexus','assistant-runs'], href: '/nexus', links: [
+      ['/nexus', 'nexus', 'Conversations'], ['/assistant-runs', 'assistant-runs', 'AI activity']] },
+    { label: 'Inbox', keys: ['documents','email-inbox'], href: '/documents', links: [
+      ['/documents', 'documents', 'Documents'], ['/email-inbox', 'email-inbox', 'Firm email']] },
+    { label: 'Bills', keys: ['bills','payables','suppliers','returns'], href: '/bills', links: [
+      ['/bills', 'bills', 'To review'], ['/payables', 'payables', 'Payables'],
+      ['/suppliers', 'suppliers', 'Suppliers'], ['/returns', 'returns', 'Returns']] },
+    { label: 'Sales', keys: ['sales','receivables','customers'], href: '/sales', links: [
+      ['/sales', 'sales', 'Invoices'], ['/receivables', 'receivables', 'Receivables'],
+      ['/customers', 'customers', 'Customers']] },
+    { label: 'Bank', keys: ['reconcile','import','brs','cash','accounts'], href: `/reconcile${q}`, links: [
+      [`/reconcile${q}`, 'reconcile', 'Reconcile'], ['/import', 'import', 'Statements'],
+      [`/brs${q}`, 'brs', 'BRS'], ['/cash', 'cash', 'Cash'], ['/accounts', 'accounts', 'Accounts']] },
+    { label: 'GST & TDS', keys: ['gstr2b','gstr1','gstr3b','tds'], href: '/gstr2b', links: [
+      ['/gstr2b', 'gstr2b', 'GSTR-2B'], ['/gstr1', 'gstr1', 'GSTR-1'],
+      ['/gstr3b', 'gstr3b', 'GSTR-3B'], ['/tds', 'tds', 'TDS']] },
+    { label: 'Reports', keys: ['reports','profit-loss','balance-sheet','close-month','assets'], href: '/reports/profit-loss', links: [
+      ['/reports/profit-loss', 'profit-loss', 'Profit & loss'], ['/reports/balance-sheet', 'balance-sheet', 'Balance sheet'],
+      ['/reports/close-month', 'close-month', 'Close month'], ['/assets', 'assets', 'Fixed assets']] },
+  ];
+  const currentGroup = groups.find((group) => group.keys.includes(a.active)) ?? groups[0]!;
+  const primaryLink = (group: typeof groups[number]): string =>
+    `<a href="${esc(group.href)}" class="${group === currentGroup ? 'on' : ''}"${group === currentGroup ? ' aria-current="page"' : ''}>${esc(group.label)}</a>`;
+  const subLink = ([href, key, label]: [string, string, string]): string =>
+    `<a href="${esc(href)}" class="${a.active === key ? 'on' : ''}"${a.active === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
   const prompts: Record<string, string[]> = {
     bills: ['How does this page work?', 'What needs attention?'],
     payables: ['How much do we owe suppliers?', 'What needs attention?'],
@@ -1382,10 +1476,14 @@ export function renderShell(a: {
     documents: ['What documents have we received?', 'What needs attention?'],
   };
   const quick = prompts[a.active] ?? ['What needs attention?', 'How does this page work?'];
-  const pageName = a.active === 'gstr2b' ? 'GSTR-2B'
-    : a.active === 'gstr1' ? 'GSTR-1'
-    : a.active === 'gstr3b' ? 'GSTR-3B'
-    : a.active.charAt(0).toUpperCase() + a.active.slice(1);
+  const pageNames: Record<string, string> = {
+    home: 'Today', nexus: 'Ask Nexus', documents: 'Inbox', 'email-inbox': 'Firm email inbox',
+    'follow-ups': 'Review desk', 'assistant-runs': 'Nexus activity', gstr2b: 'GSTR-2B',
+    gstr1: 'GSTR-1', gstr3b: 'GSTR-3B', reconcile: 'Reconcile', import: 'Statements',
+    brs: 'BRS', cash: 'Cash', accounts: 'Accounts', 'profit-loss': 'Profit & loss',
+    'balance-sheet': 'Balance sheet', 'close-month': 'Close month', assets: 'Fixed assets',
+  };
+  const pageName = pageNames[a.active] ?? a.active.replaceAll('-', ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1393,58 +1491,45 @@ export function renderShell(a: {
 <title>BharatERP — ${esc(a.session.clientName)}</title>
 <style>${CSS}</style></head>
 <body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
 <div class="app-shell">
-<aside class="sidebar">
+<div class="primary-header">
   <a class="brand" href="/"><span class="brand-mark">B</span>BharatERP</a>
-  <nav aria-label="Main navigation">
-    ${navSection('WORKFLOW', ['home','firm','setup','activity','documents','email-inbox','nexus','attention','follow-ups'], [
-      link('/', 'home', 'Home', '⌂'),
-      ...(canSeeFirm ? [link('/firm', 'firm', 'Firm', '◫')] : []),
-      link('/setup', 'setup', 'Setup', '✓'), link('/activity', 'activity', 'Activity', '◷'),
-      link('/documents', 'documents', 'Documents', '▤'),
-      ...(canManageEmail ? [link('/email-inbox', 'email-inbox', 'Email inbox', '✉')] : []),
-      link('/nexus', 'nexus', 'Bharat Nexus', '✦'), link('/attention', 'attention', 'Attention', '!'),
-      link('/follow-ups', 'follow-ups', 'Review desk', '✓'),
-    ])}
-    ${navSection('BOOKS', ['bills','sales','payables','receivables','suppliers'], [
-      link('/bills', 'bills', 'Bills', '▤'), link('/sales', 'sales', 'Sales', '↗'),
-      link('/payables', 'payables', 'Payables', '↓'), link('/receivables', 'receivables', 'Receivables', '↑'),
-      link('/suppliers', 'suppliers', 'Suppliers', '◉'),
-    ])}
-    ${navSection('BANKING', ['accounts','import','reconcile','brs','cash'], [
-      link('/accounts', 'accounts', 'Accounts', '▣'), link('/import', 'import', 'Import statement', '⇩'),
-      link(`/reconcile${q}`, 'reconcile', 'Reconcile', '≡'), link(`/brs${q}`, 'brs', 'BRS', '≐'),
-      link('/cash', 'cash', 'Cash', '₹'),
-    ])}
-    ${navSection('COMPLIANCE', ['gstr2b','gstr1','gstr3b','tds','returns','assets'], [
-      link('/gstr2b', 'gstr2b', 'GSTR-2B', '2'), link('/gstr1', 'gstr1', 'GSTR-1', '1'),
-      link('/gstr3b', 'gstr3b', 'GSTR-3B', '3'), link('/tds', 'tds', 'TDS', 'T'),
-      link('/returns', 'returns', 'Returns', '↶'), link('/assets', 'assets', 'Assets', '□'),
-    ])}
-    ${navSection('TOOLS', ['tally','assistant-runs'], [
-      link('/tally', 'tally', 'Tally import', '⇄'), link('/assistant-runs', 'assistant-runs', 'AI log', '◌'),
-    ])}
-  </nav>
-  <form method="post" action="/logout" class="who">
-    <span title="${esc(a.session.email ?? '')}">${esc(a.session.displayName ?? '')}</span>
-    <button type="submit">Sign out</button>
-  </form>
-</aside>
+  <nav class="primary-nav" aria-label="Main navigation">${groups.map(primaryLink).join('')}</nav>
+  <div class="top-actions">
+    <a class="upload-link" href="/documents#document-files">＋ Upload</a>
+    <span class="client-chip" title="${esc(a.session.clientName)}">${esc(a.session.clientName)}</span>
+    <form method="post" action="/logout" class="who" aria-label="Sign out">
+      <span title="${esc(a.session.email ?? '')}">${esc(a.session.displayName ?? '')}</span>
+      <a href="/password">Password</a>
+      <button type="submit">Sign out</button>
+    </form>
+  </div>
+</div>
 <div class="workspace">
-<header>
-  <div class="page-context"><b>${esc(pageName)}</b><span class="client">${esc(a.session.clientName)}</span></div>
+<header class="pagebar">
+  <div class="page-context"><span class="client">${esc(a.session.clientName)}</span></div>
+  <nav class="secondary-nav" aria-label="${esc(currentGroup.label)} navigation">
+    ${currentGroup.links.filter(([href]) => href !== '/email-inbox' || canManageEmail).map(subLink).join('')}
+  </nav>
+  ${canSeeFirm ? `<nav class="firm-nav" aria-label="Firm workspace">
+    <a href="/firm" class="${a.active === 'firm' ? 'on' : ''}">Firm</a>
+    ${canManageEmail ? `<a href="/email-inbox" class="${a.active === 'email-inbox' ? 'on' : ''}">Email</a>` : ''}
+    <a href="/follow-ups" class="${a.active === 'follow-ups' ? 'on' : ''}">Review desk</a>
+    <a href="/tally" class="${a.active === 'tally' ? 'on' : ''}">Tally</a>
+  </nav>` : ''}
   <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
-    aria-expanded="false">Ask Bharat</button>
+    aria-expanded="false">Ask Nexus</button>
 </header>
-<main>${a.body}</main>
+<main id="main-content">${a.body}</main>
 </div>
 </div>
 <div class="ask-shade" id="ask-shade" hidden></div>
-<aside class="ask-drawer" id="ask-drawer" aria-label="Ask Bharat" hidden>
+<aside class="ask-drawer" id="ask-drawer" aria-label="Ask Nexus" hidden>
   <div class="ask-head">
-    <div><h2>Ask Bharat</h2>
+    <div><h2>Ask Nexus</h2>
       <div class="ask-context">${esc(a.session.clientName)} · ${esc(pageName)}</div></div>
-    <button type="button" class="ask-close" id="ask-close" aria-label="Close Ask Bharat">×</button>
+    <button type="button" class="ask-close" id="ask-close" aria-label="Close Ask Nexus">×</button>
   </div>
   <div class="ask-quick">
     ${quick.map((prompt) => `<button type="button" data-ask="${esc(prompt)}">${esc(prompt)}</button>`).join('')}
@@ -1455,7 +1540,7 @@ export function renderShell(a: {
   <div class="ask-compose">
     <form id="ask-form">
       <input id="ask-input" maxlength="500" autocomplete="off" placeholder="Ask about this client…"
-        aria-label="Question for Ask Bharat">
+        aria-label="Question for Ask Nexus">
       <button class="primary" id="ask-send" type="submit">Ask</button>
     </form>
     <div class="why">Read-only preview. It cannot post or change the books.</div>
@@ -1530,9 +1615,9 @@ export function renderAssistantRuns(runs: Array<{
     ? `Nexus · ${esc(r.intent ?? 'unsupported')}`
     : r.routingMode === 'deepseek_fallback' ? 'Nexus unavailable · local fallback'
     : 'Local deterministic tool';
-  return `<section class="card wide"><h1>Ask Bharat AI log</h1>
+  return `<section class="card wide"><h1>Nexus activity</h1>
     <p class="muted">A read-only record of what was asked, what route was used, and the evidence shown to this client.</p>
-    ${runs.length === 0 ? '<p>No Ask Bharat questions have been recorded for this client yet.</p>' :
+    ${runs.length === 0 ? '<p>No Nexus questions have been recorded for this client yet.</p>' :
       `<table><thead><tr><th>When</th><th>Question and answer</th><th>Route</th><th>Evidence</th></tr></thead>
       <tbody>${runs.map((r) => `<tr>
         <td>${esc(new Date(r.createdAt).toLocaleString('en-IN'))}<br><small>${r.durationMs} ms</small></td>
@@ -1633,6 +1718,26 @@ export function renderBankAccountSetup(today: string, returnTo = '/reconcile'): 
 
 // ---------------------------------------------------------------------------
 
+export function renderCustomers(customers: SalesDesk['customers']): string {
+  return `<div class="sales-head"><div><h1>Customers</h1>
+    <p class="sub">Customer records and statements for this client.</p></div>
+    <a class="primary-link" href="/sales#customer-form">Add customer</a></div>
+    ${customers.length ? `<section class="panel" style="padding:0"><table><thead><tr>
+      <th>Customer</th><th>GST status</th><th>GSTIN</th><th>State</th><th>Phone</th><th></th>
+      </tr></thead><tbody>${customers.map((customer) => `<tr>
+        <td><b>${esc(customer.name)}</b>${customer.legalName && customer.legalName !== customer.name
+          ? `<br><small>${esc(customer.legalName)}</small>` : ''}</td>
+        <td>${customer.gstCategory === 'unregistered' ? 'Unregistered' : 'Registered'}</td>
+        <td class="mono">${esc(customer.gstin ?? '—')}</td>
+        <td>${esc(customer.stateCode ?? '—')}</td><td>${esc(customer.phone ?? '—')}</td>
+        <td><a href="/receivables?party=${encodeURIComponent(customer.id)}">View statement</a></td>
+      </tr>`).join('')}</tbody></table></section>`
+      : `<section class="panel"><p class="empty">No customers have been added yet.</p>
+        <p><a href="/sales#customer-form">Add the first customer</a> to prepare a sales invoice.</p></section>`}`;
+}
+
+// ---------------------------------------------------------------------------
+
 export function renderSales(a: {
   desk: SalesDesk;
   today: string;
@@ -1669,7 +1774,7 @@ export function renderSales(a: {
 ${a.created ? `<div class="msg good"><b>Invoice ${esc(a.created)} posted.</b> It is now in receivables and GSTR-1.</div>` : ''}
 ${a.draft ? '<div class="msg warn"><b>AI-prepared draft.</b> It has not posted anything. Confirm the description, HSN/SAC, amount, GST and dates before posting.</div>' : ''}
 
-<details class="panel" ${desk.customers.length === 0 ? 'open' : ''}>
+<details class="panel" id="customer-form" ${desk.customers.length === 0 ? 'open' : ''}>
   <summary><b>Add customer</b></summary>
   <form id="customer-form" class="customer-form" style="margin-top:12px">
     <label>Customer name<input name="name" required autocomplete="organization"></label>
@@ -1750,6 +1855,7 @@ ${desk.invoices.length === 0 ? '<p class="empty">No sales invoices yet.</p>' : `
 const $ = (id) => document.getElementById(id);
 const lines = $('invoice-lines');
 const template = $('invoice-line-template');
+if (location.hash === '#customer-form') $('customer-form').open = true;
 const fmt = (n) => '₹' + (Number.isFinite(n) ? n : 0).toFixed(2);
 
 function addLine() {
@@ -3656,11 +3762,6 @@ export function renderDashboard(a: DashboardV): string {
       : `<div class="tile">${inner}</div>`;
   };
 
-  const risk = a.creditAtRisk === null
-    ? tile('—', 'run a 2B reconciliation', 'muted', '/gstr2b')
-    : tile(inr(a.creditAtRisk), 'credit booked, not yet filed',
-           a.creditAtRisk === '0.00' ? 'good' : 'bad', '/gstr2b');
-
   const issues = a.registrationIssues.length === 0 ? '' : `
     <div class="msg bad"><b>${a.registrationIssues.length} supplier(s) with a
     registration that is not active.</b> Credit on their invoices needs a look.
@@ -3677,29 +3778,149 @@ export function renderDashboard(a: DashboardV): string {
           <td>${esc(b.date)}</td><td class="num">${inr(b.total)}</td></tr>`).join('')}
       </table></div>`;
 
-  return `<h1>Overview</h1>
-<p class="sub">Where the client stands this period — and what still needs you.</p>
+  const needs = [
+    ...(a.creditAtRisk === null
+      ? [`<a class="today-action" href="/gstr2b"><b>Compare supplier filings</b><span>Run the 2B reconciliation to see which recorded credit is supported.</span></a>`]
+      : a.creditAtRisk !== '0.00'
+        ? [`<a class="today-action" href="/gstr2b"><b>${inr(a.creditAtRisk)} credit needs a supplier filing</b><span>Review the unmatched GSTR-2B items.</span></a>`] : []),
+    ...(a.openReconItems > 0
+      ? [`<a class="today-action" href="/gstr2b"><b>${a.openReconItems} GST match(es) need review</b><span>Resolve the remaining supplier statement differences.</span></a>`] : []),
+    ...(a.overdueCount > 0
+      ? [`<a class="today-action" href="/payables"><b>${a.overdueCount} overdue bill(s)</b><span>${inr(a.overduePayable)} is overdue for review.</span></a>`] : []),
+    ...(a.registrationIssues.length > 0
+      ? [`<a class="today-action" href="/suppliers"><b>${a.registrationIssues.length} supplier registration issue(s)</b><span>Check the GST status before relying on input credit.</span></a>`] : []),
+  ];
 
-${picker}
+  return `<div class="today-heading"><div><h1>Today</h1>
+  <p class="sub">The latest recorded position for this client. Open an item to review its source and decide what to do.</p></div>
+  ${picker}</div>
+  <div class="today-grid">
+    <section class="panel today-needs"><div class="today-section-head"><div><h2>Needs attention</h2>
+      <p class="sub">${needs.length ? `${needs.length} item(s) need review` : 'No immediate review items from these checks.'}</p></div>
+      <a href="/nexus">Ask Nexus</a></div>
+      ${needs.length ? `<div class="today-actions">${needs.join('')}</div>` : '<p class="today-clear">These checks are clear. New documents and statements will appear in their review queues.</p>'}
+      ${issues}
+    </section>
+    <section class="panel today-position"><h2>Money and activity</h2>
+      <div class="tiles">
+        ${tile(a.creditAtRisk === null ? '—' : inr(a.creditAtRisk),
+          a.creditAtRisk === null ? 'run a 2B reconciliation' : 'credit booked, not yet filed',
+          a.creditAtRisk === null ? 'muted' : a.creditAtRisk === '0.00' ? 'good' : 'bad', '/gstr2b')}
+        ${tile(a.creditSupported !== null ? inr(a.creditSupported) : inr(a.creditClaimed),
+          a.creditSupported !== null ? 'credit 2B supports' : 'input credit claimed', 'good')}
+        ${tile(String(a.openReconItems), 'reconciliation items open', a.openReconItems ? 'warn' : '', '/gstr2b')}
+        ${tile(String(a.billsPosted), 'bills posted this period', '', '/bills')}
+        ${tile(inr(a.purchaseValue), 'purchase value', '')}
+        ${tile(inr(a.totalPayable), 'owed to suppliers', '', '/payables')}
+        ${tile(inr(a.overduePayable), a.overdueCount ? a.overdueCount + ' bill(s) overdue' : 'nothing overdue',
+          a.overduePayable === '0.00' ? 'good' : 'bad', '/payables')}
+      </div>
+    </section>
+  </div>
+  <section class="today-recent"><h2>Recently posted</h2>${recent}</section>`;
+}
 
-<div class="tiles">
-  ${risk}
-  ${tile(a.creditSupported !== null ? inr(a.creditSupported) : inr(a.creditClaimed),
-         a.creditSupported !== null ? 'credit 2B supports' : 'input credit claimed', 'good')}
-  ${tile(String(a.openReconItems), 'reconciliation items open',
-         a.openReconItems ? 'warn' : '', '/gstr2b')}
-  ${tile(String(a.billsPosted), 'bills posted this period', '', '/bills')}
-  ${tile(inr(a.purchaseValue), 'purchase value', '')}
-  ${tile(inr(a.totalPayable), 'owed to suppliers', '', '/payables')}
-  ${tile(inr(a.overduePayable),
-         a.overdueCount ? a.overdueCount + ' bill(s) overdue' : 'nothing overdue',
-         a.overduePayable === '0.00' ? 'good' : 'bad', '/payables')}
-</div>
+export function renderProfitAndLoss(a: {
+  from: string; to: string;
+  report: { revenue: string; cogs: string; grossProfit: string; operatingExpenses: string;
+    operatingProfit: string; nonOperating: string; netProfit: string };
+}): string {
+  const rows: Array<[string, string, boolean]> = [
+    ['Sales and other income', a.report.revenue, false],
+    ['Cost of goods sold', a.report.cogs, false],
+    ['Gross profit', a.report.grossProfit, true],
+    ['Operating expenses', a.report.operatingExpenses, false],
+    ['Operating profit', a.report.operatingProfit, true],
+    ['Non-operating expenses', a.report.nonOperating, false],
+    ['Net profit', a.report.netProfit, true],
+  ];
+  return `<h1>Profit &amp; loss</h1>
+    <p class="sub">Income and expenses recorded in the ledger for this date range. Opening balances are excluded.</p>
+    <form class="report-range" method="get" action="/reports/profit-loss">
+      <label>From <input type="date" name="from" value="${esc(a.from)}" required></label>
+      <label>To <input type="date" name="to" value="${esc(a.to)}" required></label>
+      <button class="primary" type="submit">Show report</button>
+    </form>
+    <section class="panel report-summary"><div><span>Revenue</span><b>${inr(a.report.revenue)}</b></div>
+      <div><span>Gross profit</span><b>${inr(a.report.grossProfit)}</b></div>
+      <div><span>Operating profit</span><b>${inr(a.report.operatingProfit)}</b></div>
+      <div><span>Net profit</span><b>${inr(a.report.netProfit)}</b></div></section>
+    <section class="panel report-ledger"><h2>How the result is worked out</h2>
+      <p class="sub">${esc(a.from)} to ${esc(a.to)} · statutory books</p>
+      <table><thead><tr><th>Accounting heading</th><th class="num">Amount</th></tr></thead><tbody>
+        ${rows.map(([label, amount, total]) => `<tr class="${total ? 'report-total' : ''}"><td>${label}</td><td class="num">${inr(amount)}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="why">Figures are computed from posted ledger entries. Selecting a total does not change the books.</p>
+    </section>`;
+}
 
-${issues}
+export function renderBalanceSheet(a: {
+  asOf: string;
+  report: { currentAssets: string; nonCurrentAssets: string; totalAssets: string;
+    currentLiabilities: string; nonCurrentLiabilities: string; totalLiabilities: string;
+    equity: string; retainedProfit: string; totalEquity: string;
+    totalLiabilitiesAndEquity: string; workingCapital: string; balanced: boolean };
+  trialBalance: { rows: Array<{ code: string | null; name: string; debit: string; credit: string }>;
+    totalDebit: string; totalCredit: string; balanced: boolean };
+}): string {
+  const left: Array<[string, string]> = [
+    ['Current assets', a.report.currentAssets], ['Non-current assets', a.report.nonCurrentAssets],
+    ['Total assets', a.report.totalAssets],
+  ];
+  const right: Array<[string, string]> = [
+    ['Current liabilities', a.report.currentLiabilities], ['Non-current liabilities', a.report.nonCurrentLiabilities],
+    ['Total liabilities', a.report.totalLiabilities], ['Paid-in equity', a.report.equity],
+    ['Retained profit', a.report.retainedProfit], ['Total equity', a.report.totalEquity],
+    ['Liabilities and equity', a.report.totalLiabilitiesAndEquity],
+  ];
+  const list = (rows: Array<[string, string]>): string => `<table><tbody>${rows.map(([label, amount]) =>
+    `<tr class="${label.startsWith('Total') || label === 'Liabilities and equity' ? 'report-total' : ''}"><td>${label}</td><td class="num">${inr(amount)}</td></tr>`).join('')}</tbody></table>`;
+  return `<h1>Balance sheet</h1><p class="sub">What the company owns and owes as at a recorded date.</p>
+    <form class="report-range" method="get" action="/reports/balance-sheet">
+      <label>As of <input type="date" name="asOf" value="${esc(a.asOf)}" required></label>
+      <button class="primary" type="submit">Show report</button>
+    </form>
+    <div class="tiles"><div class="tile"><b>${inr(a.report.workingCapital)}</b><span>Working capital</span></div>
+      <div class="tile"><b>${inr(a.report.totalAssets)}</b><span>What the company owns</span></div>
+      <div class="tile"><b>${inr(a.report.totalLiabilitiesAndEquity)}</b><span>What it owes plus owners' share</span></div>
+      <div class="tile"><b class="${a.report.balanced && a.trialBalance.balanced ? 'good' : 'bad'}">${a.report.balanced && a.trialBalance.balanced ? 'Agrees' : 'Check needed'}</b><span>Balance and trial balance checks</span></div></div>
+    <div class="balance-columns"><section class="panel"><h2>What the company owns</h2>${list(left)}</section>
+      <section class="panel"><h2>What it owes and owners' share</h2>${list(right)}</section></div>
+    <details class="panel"><summary>Trial balance · ${a.trialBalance.rows.length} accounts</summary>
+      <table><thead><tr><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>
+      ${a.trialBalance.rows.map((row) => `<tr><td>${row.code ? `<span class="mono">${esc(row.code)}</span> · ` : ''}${esc(row.name)}</td><td class="num">${inr(row.debit)}</td><td class="num">${inr(row.credit)}</td></tr>`).join('')}
+      <tr class="report-total"><th>Total</th><th class="num">${inr(a.trialBalance.totalDebit)}</th><th class="num">${inr(a.trialBalance.totalCredit)}</th></tr></tbody></table>
+    </details>`;
+}
 
-<h2 class="mt">Recently posted</h2>
-${recent}`;
+export interface PeriodCloseView {
+  periods: Array<{ label: string; startDate: string; endDate: string; isClosed: boolean; closedAt: string | null }>;
+  selected: string | null;
+  check: { ok: boolean; blockers: string[] } | null;
+  canClose: boolean;
+  error?: string;
+}
+
+export function renderPeriodClose(a: PeriodCloseView): string {
+  const selected = a.periods.find((period) => period.label === a.selected) ?? null;
+  return `<h1>Close month</h1><p class="sub">Check what is ready before closing a period. Closing is recorded and blocks later postings into that period.</p>
+    ${a.error ? `<div class="msg bad" role="alert">${esc(a.error)}</div>` : ''}
+    ${a.periods.length ? `<form class="report-range" method="get" action="/reports/close-month"><label>Accounting period
+      <select name="period">${a.periods.map((period) => `<option value="${esc(period.label)}" ${period.label === a.selected ? 'selected' : ''}>${esc(period.label)}${period.isClosed ? ' · closed' : ''}</option>`).join('')}</select></label><button type="submit">Review period</button></form>`
+      : '<section class="panel"><p class="empty">No accounting periods are configured for this client yet.</p></section>'}
+    ${selected ? `<section class="panel period-close-card"><div class="period-close-head"><div><h2>${esc(selected.label)}</h2><p class="sub">${esc(selected.startDate)} to ${esc(selected.endDate)}</p></div>
+      <span class="tag ${selected.isClosed ? 'good' : ''}">${selected.isClosed ? 'Closed' : 'Open'}</span></div>
+      ${selected.isClosed ? `<p class="good">Closed at ${esc(selected.closedAt ?? 'recorded date unavailable')}.</p>` : a.check?.ok
+        ? '<p class="good">All required checks pass. This period is ready to close.</p>'
+        : `<div class="msg bad"><b>${a.check?.blockers.length ?? 0} blocker(s) need review.</b><ul>${(a.check?.blockers ?? []).map((blocker) => `<li>${esc(blocker)}</li>`).join('')}</ul></div>`}
+      ${!selected.isClosed && a.canClose ? `<form id="period-close-form" class="period-close-form" method="post" action="/reports/close-month">
+        <input type="hidden" name="label" value="${esc(selected.label)}">
+        ${!a.check?.ok ? '<label>Reason to close with blockers<textarea name="reason" maxlength="1000" required placeholder="Explain why this period must close despite the listed blockers."></textarea></label>' : ''}
+        <button class="primary" type="submit">${a.check?.ok ? 'Close period' : 'Close with recorded reason'}</button></form>`
+        : !selected.isClosed ? '<p class="why">A CA partner must complete the close. Ask your CA to review this period.</p>' : ''}
+      </section>` : ''}
+    <section class="panel"><h2>Period history</h2>${a.periods.length ? `<table><thead><tr><th>Period</th><th>Dates</th><th>Status</th></tr></thead><tbody>${a.periods.map((period) => `<tr><td><a href="/reports/close-month?period=${encodeURIComponent(period.label)}">${esc(period.label)}</a></td><td>${esc(period.startDate)} – ${esc(period.endDate)}</td><td>${period.isClosed ? 'Closed' : 'Open'}</td></tr>`).join('')}</tbody></table>` : '<p class="empty">No period history.</p>'}</section>
+    `;
 }
 
 // ---------------------------------------------------------------------------

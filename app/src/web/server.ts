@@ -25,6 +25,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { ownerPool, withFirm } from '../db/pool.ts';
 import { reconciliationQueue } from '../domain/matching.ts';
 import { addDeepSeekFundingSuggestions, setBankClassifierEnabled }
@@ -79,10 +80,13 @@ import { resolveReaders, purchasesAccount, expenseAccounts, previewBills, postRe
          learnedDefaultsFor, lineKey,
          proposalView, type ReviewReaders } from '../domain/billReview.ts';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
+import { balanceSheet, profitAndLoss, trialBalance } from '../reports/index.ts';
+import { closePeriod, periodCloseCheck } from '../domain/periodClose.ts';
 import { login, logout, sessionFromToken, changePassword,
          lockoutRemaining, type Session as AuthSession } from '../domain/auth.ts';
 import { renderLogin } from './views.ts';
-import { renderAssistantRuns, renderSales, renderSalesInvoice, renderTallyImport } from './views.ts';
+import { renderAssistantRuns, renderCustomers, renderSales, renderSalesInvoice, renderTallyImport } from './views.ts';
+import { renderBalanceSheet, renderPeriodClose, renderProfitAndLoss } from './views.ts';
 import { createInvoice } from '../domain/invoicing.ts';
 import { createCustomer, salesDesk, salesInvoiceDetail } from '../domain/sales.ts';
 import { parseTallyXml } from '../parse/tallyXml.ts';
@@ -116,6 +120,11 @@ import { buildBankActivityResult, getNexusBankTransactionSource, listNexusBankAc
 
 const PORT = Number(process.env.PORT ?? 4321);
 const assistantLlm = llmClientFromEnv();
+const UI_FONT_ASSETS = new Set([
+  'IBMPlexSans-400.woff2', 'IBMPlexSans-500.woff2', 'IBMPlexSans-600.woff2',
+  'IBMPlexSans-700.woff2', 'IBMPlexMono-400.woff2', 'IBMPlexMono-500.woff2',
+  'IBMPlexMono-600.woff2',
+]);
 
 /**
  * Who is signed in. Resolved from the cookie on EVERY request — not once at
@@ -228,7 +237,7 @@ const html = (res: ServerResponse, code: number, body: string): void => {
     // and the browser reports only "TypeError: Failed to fetch". curl ignores
     // CSP, so this was invisible until the UI was driven from a browser.
     'content-security-policy':
-      "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; " +
+      "default-src 'none'; connect-src 'self'; font-src 'self'; style-src 'unsafe-inline'; " +
       "script-src 'unsafe-inline'; form-action 'self'",
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
@@ -294,6 +303,19 @@ async function handle(
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname;
+
+  // The bundled, open-license UI fonts are public static assets. Keep the
+  // allowlist explicit so this handler cannot read arbitrary server paths.
+  const fontName = path.startsWith('/assets/fonts/') ? path.slice('/assets/fonts/'.length) : '';
+  if ((req.method === 'GET' || req.method === 'HEAD') && UI_FONT_ASSETS.has(fontName)) {
+    const bytes = await readFile(new URL(`./fonts/${fontName}`, import.meta.url));
+    res.writeHead(200, { 'content-type': 'font/woff2', 'content-length': bytes.length,
+      'cache-control': 'public, max-age=31536000, immutable',
+      'content-security-policy': "default-src 'none'; font-src 'self'",
+      'x-content-type-options': 'nosniff' });
+    res.end(req.method === 'HEAD' ? undefined : bytes);
+    return;
+  }
 
   /*
    * Everything that CHANGES something must come from our own page.
@@ -776,6 +798,82 @@ async function handle(
     }));
   }
 
+  if (req.method === 'GET' && (path === '/reports' || path === '/reports/profit-loss')) {
+    const today = new Date().toISOString().slice(0, 10);
+    const from = url.searchParams.get('from') ?? `${today.slice(0, 7)}-01`;
+    const to = url.searchParams.get('to') ?? today;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)
+      || Number.isNaN(Date.parse(`${from}T00:00:00Z`)) || Number.isNaN(Date.parse(`${to}T00:00:00Z`)) || from > to) {
+      return html(res, 400, renderShell({ session, accounts, active: 'profit-loss',
+        body: '<h1>Profit &amp; loss</h1><div class="msg bad" role="alert">Choose a valid date range.</div><a href="/reports/profit-loss">Return to this report</a>' }));
+    }
+    return html(res, 200, renderShell({ session, accounts, active: 'profit-loss',
+      body: renderProfitAndLoss({ from, to,
+        report: await profitAndLoss(session.firmId, session.clientId, from, to) }) }));
+  }
+
+  if (req.method === 'GET' && path === '/reports/balance-sheet') {
+    const today = new Date().toISOString().slice(0, 10);
+    const asOf = url.searchParams.get('asOf') ?? today;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf) || Number.isNaN(Date.parse(`${asOf}T00:00:00Z`))) {
+      return html(res, 400, renderShell({ session, accounts, active: 'balance-sheet',
+        body: '<h1>Balance sheet</h1><div class="msg bad" role="alert">Choose a valid date.</div><a href="/reports/balance-sheet">Return to this report</a>' }));
+    }
+    const [report, tb] = await Promise.all([
+      balanceSheet(session.firmId, session.clientId, asOf),
+      trialBalance(session.firmId, session.clientId, asOf),
+    ]);
+    return html(res, 200, renderShell({ session, accounts, active: 'balance-sheet',
+      body: renderBalanceSheet({ asOf, report, trialBalance: tb }) }));
+  }
+
+  if (req.method === 'GET' && path === '/reports/close-month') {
+    const periods = await withFirm(session.firmId, async (c) => {
+      const result = await c.query<{ label: string; startDate: string; endDate: string;
+        isClosed: boolean; closedAt: string | null }>(
+        `SELECT label, start_date::text AS "startDate", end_date::text AS "endDate",
+                is_closed AS "isClosed", closed_at::text AS "closedAt"
+           FROM accounting_periods WHERE client_id = $1
+          ORDER BY start_date DESC LIMIT 36`, [session.clientId]);
+      return result.rows;
+    });
+    const selected = periods.find((period) => period.label === url.searchParams.get('period'))
+      ?? periods[0] ?? null;
+    let check = null;
+    if (selected && !selected.isClosed) {
+      try { check = await periodCloseCheck(session.firmId, session.clientId, selected.label); }
+      catch (error) { check = { ok: false, blockers: [(error as Error).message] }; }
+    }
+    return html(res, 200, renderShell({ session, accounts, active: 'close-month',
+      body: renderPeriodClose({ periods, selected: selected?.label ?? null, check,
+        canClose: session.role === 'ca_partner' }) }));
+  }
+
+  if (req.method === 'POST' && path === '/reports/close-month') {
+    if (session.role !== 'ca_partner') {
+      return html(res, 403, renderShell({ session, accounts, active: 'close-month',
+        body: '<h1>Close month</h1><div class="msg bad" role="alert">A CA partner must approve period close.</div><a href="/reports/close-month">Return to period review</a>' }));
+    }
+    try {
+      const body = new URLSearchParams(await readBody(req));
+      const label = body.get('label');
+      if (label === null || !/^\d{4}-\d{2}$/.test(label)) {
+        throw new Error('choose a valid accounting period');
+      }
+      const overrideReason = body.get('reason')?.trim() ?? '';
+      await closePeriod(session.firmId, { clientId: session.clientId,
+        label, closedBy: session.userId,
+        ...(overrideReason ? { overrideReason } : {}) });
+      res.writeHead(303, { location: `/reports/close-month?period=${encodeURIComponent(label)}`,
+        'cache-control': 'no-store' });
+      res.end();
+      return;
+    } catch (error) {
+      return html(res, 400, renderShell({ session, accounts, active: 'close-month',
+        body: '<h1>Close month</h1><div class="msg bad" role="alert">The period was not closed. Review the current blockers and reason, then try again.</div><a href="/reports/close-month">Return to period review</a>' }));
+    }
+  }
+
   if (req.method === 'GET' && path === '/accounts') {
     if (!hasBankCapability(session.role, 'read')) return html(res, 403, renderShell({
       session, accounts, active: 'accounts', body: '<h1>Bank accounts unavailable</h1>',
@@ -1032,6 +1130,12 @@ async function handle(
         draft,
       }),
     }));
+  }
+
+  if (req.method === 'GET' && path === '/customers') {
+    const desk = await salesDesk(session.firmId, session.clientId);
+    return html(res, 200, renderShell({ session, accounts, active: 'customers',
+      body: renderCustomers(desk.customers) }));
   }
 
   if (req.method === 'GET' && path.startsWith('/sales/')) {
