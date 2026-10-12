@@ -1,5 +1,24 @@
 # Project status and handoff
 
+### Nexus Ask screen handoff integration (2026-10-12)
+
+- Reworked `/nexus` into a three-pane workspace matching the Ask Nexus 11a
+  layout: saved conversations and shortcuts on the left, the conversation and
+  composer in the center, and evidence, document waiting states, review desk,
+  and recent activity on the right. Structured answer provenance supplies
+  receipt links when present; unsupported evidence is not fabricated.
+- Added a blank `?new=1` conversation state and static viewer-role label. The
+  user can attach files through the existing document intake endpoint and
+  reveal the existing read-only bank-activity form from the composer.
+- Existing client scoping, answer/review endpoints, document request answers,
+  consent gating, task run/history, and role-gated CA links remain in place.
+  No schema or public API changes were made. Mockup example names and figures
+  are not used as product data.
+- Node 22.23.3 typecheck passed and the focused Nexus view suite passed (27
+  tests). The full app suite passed: 70 files, 1,010 tests. The signed-in local
+  browser view was checked at desktop width; mobile and owner-role visual
+  checks remain outstanding.
+
 ### Rebranding branch — first UI integration slice (2026-10-12)
 
 - Created local `rebranding` from the current `feat/purchase-bills` HEAD,

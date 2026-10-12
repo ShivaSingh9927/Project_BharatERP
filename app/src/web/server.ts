@@ -573,9 +573,11 @@ async function handle(
       getNexusTask(session.firmId, session.clientId, task.id)));
     const nexusCases = await listNexusCases(session.firmId, session.clientId, 20);
     const nexusBankAccounts = await listNexusBankActivityAccounts(session.firmId, session.clientId);
-    const rawCaseId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('case');
+    const nexusUrl = new URL(req.url ?? '/', 'http://localhost');
+    const newConversation = nexusUrl.searchParams.get('new') === '1';
+    const rawCaseId = nexusUrl.searchParams.get('case');
     const requestedCaseId = rawCaseId && /^[0-9a-f-]{36}$/i.test(rawCaseId) ? rawCaseId : null;
-    const selectedCase = requestedCaseId
+    const selectedCase = newConversation ? null : requestedCaseId
       ? await getNexusCase(session.firmId, session.clientId, requestedCaseId)
       : nexusCases[0] ? await getNexusCase(session.firmId, session.clientId, String(nexusCases[0].id)) : null;
     const caseMessages = selectedCase
@@ -587,7 +589,10 @@ async function handle(
           enabled: taskConsent, available: assistantLlm !== null,
           canManage: ['owner','ca_partner','ca_staff'].includes(session.role),
           obligations, tasks: nexusTasks.filter((task): task is NonNullable<typeof task> => task !== null),
-        }, { cases: nexusCases, selectedCase, messages: caseMessages, bankAccounts: nexusBankAccounts }),
+        }, { cases: nexusCases, selectedCase, messages: caseMessages, bankAccounts: nexusBankAccounts,
+          newConversation,
+          viewerLabel: ({ owner: 'Owner', ca_partner: 'CA partner', ca_staff: 'CA staff', auditor: 'Auditor' } as Record<string, string>)[session.role] ?? 'User',
+        }),
     }));
   }
 

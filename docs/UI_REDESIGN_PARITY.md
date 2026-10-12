@@ -8,6 +8,16 @@ must never be used as application data.
 
 ## Implementation progress — 2026-10-12
 
+- `/nexus` now follows the Ask Nexus 11a handoff structure: a saved-chat rail,
+  a focused conversation/composer, and a live evidence and attention panel.
+  “New conversation” opens a blank thread while preserving prior chats. The
+  right panel uses the latest saved structured-answer provenance, client
+  documents, open review desk items, and recent activity; it shows an explicit
+  empty evidence state when no structured sources are attached. Upload, bank
+  activity, document-request answers, task consent/history, follow-up creation,
+  and CA-only firm links remain connected to their existing handlers and role
+  checks. No example client names or figures from the mockup were reused.
+
 - The shared navigation, Today/Nexus entry, firm cockpit, reports, close-month,
   and customer-list integration are in the pushed first slice described in
   PROJECT_STATUS.md.
@@ -31,7 +41,7 @@ must never be used as application data.
 - Firm-only screens use their firm navigation without falling back to the
   Today sub-navigation; CA email and review-desk destinations do not appear
   twice when the same route is already present in contextual navigation.
-- Typecheck passes and the full suite passes: 70 files, 1,008 tests. This is
+- Typecheck passes and the full suite passes: 70 files, 1,010 tests. This is
   automated behavior coverage, not a replacement for signed-in visual review.
 - Dedicated Bank, GST/TDS, and Tally mockup layouts were not invented where
   their handoff pages did not specify a concrete approved change. Those
@@ -64,7 +74,7 @@ must never be used as application data.
 | `/activity` | Restyle in shared shell | Client activity history | Retained; full-suite tests pass |
 | `/documents` | Inbox 10a | Upload/email documents, classification suggestion and human confirmation, review/request info/dismiss/restore, source download | Redesigned; inbox view/workflow tests pass |
 | `/email-inbox` | Inbox 10c | Firm email intake, assignment, trusted sender behavior | Restyled; email intake and role navigation tests pass |
-| `/nexus` | Ask Nexus 11a/11c | Durable cases, saved response blocks/evidence, read-only bank activity, bounded long-running review tasks and consent | Retained; Nexus view/domain tests pass |
+| `/nexus` | Ask Nexus 11a/11c | Durable cases, saved response blocks/evidence, read-only bank activity, bounded long-running review tasks and consent | Redesigned; Nexus view tests pass; signed-in responsive visual checks remain |
 | `/attention` | Restyle in shared shell | Alerts, obligation attention and source links | Retained; attention view/domain tests pass |
 | `/follow-ups` | Today 12c | Create, assign, complete, block, snooze, history | Retained; follow-up domain tests pass |
 | `/assistant-runs` | Restyle in shared shell | Audited assistant run history | Retained; assistant view/domain tests pass |
@@ -129,4 +139,4 @@ No database migration or JSON/public API route is added for this redesign.
   CA staff, and auditor views, including important empty/error/blocked states.
 - [x] No AI suggestion alone posts, pays, files, imports, or reconciles.
 - [x] Focused UI/domain tests and the complete app test suite pass (70 files,
-  1,008 tests); TypeScript typecheck passes.
+  1,010 tests); TypeScript typecheck passes.

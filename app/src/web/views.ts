@@ -38,6 +38,8 @@ type NexusChatWorkspace = {
   selectedCase: { id: string; title: string; state: string } | null;
   messages: Array<{ id: string; actor_type: 'user' | 'nexus' | 'system'; body: string; response_blocks?: NexusBlockEnvelope | null; recorded_at: Date | string }>;
   bankAccounts?: Array<{ id: string; bank_name: string; account_number_last4: string }>;
+  newConversation?: boolean;
+  viewerLabel?: string;
 };
 
 const esc = (v: unknown): string =>
@@ -340,11 +342,24 @@ export function renderNexus(
     ${message.body ? `<div class="${message.actor_type === 'user' ? 'nexus-question' : message.actor_type === 'nexus' ? 'nexus-answer' : 'nexus-system'}">${esc(message.body)}</div>` : ''}
     ${message.response_blocks ? renderNexusBlocks(message.response_blocks) : ''}
   </div>`).join('');
-  const visibleTurns = chatWorkspace?.selectedCase ? (caseTurns || '') : turns;
-  const recentCases = chatWorkspace ? `<section class="panel nexus-case-list" aria-label="Recent Nexus cases">
-    <h2>Recent conversations</h2>
-    ${chatWorkspace.cases.length ? `<ul>${chatWorkspace.cases.map((item) => `<li><a href="/nexus?case=${encodeURIComponent(item.id)}"${chatWorkspace.selectedCase?.id === item.id ? ' aria-current="page"' : ''}>${esc(item.title)}</a><span class="why">${esc(item.state.replaceAll('_',' '))}</span></li>`).join('')}</ul>` : '<p class="empty">No saved conversations yet.</p>'}
+  const visibleTurns = chatWorkspace?.newConversation ? ''
+    : chatWorkspace?.selectedCase ? (caseTurns || '') : turns;
+  const caseList = chatWorkspace ? `<section class="nexus-case-list" aria-label="Saved conversations">
+    <h2>Saved conversations</h2>
+    ${chatWorkspace.cases.length ? `<ul>${chatWorkspace.cases.map((item) => `<li class="${chatWorkspace.selectedCase?.id === item.id ? 'selected' : ''}"><a href="/nexus?case=${encodeURIComponent(item.id)}"${chatWorkspace.selectedCase?.id === item.id ? ' aria-current="page"' : ''}>${esc(item.title)}</a><span class="why">${esc(item.state.replaceAll('_',' '))}</span></li>`).join('')}</ul>` : '<p class="empty">No saved conversations yet.</p>'}
   </section>` : '';
+  const canViewFirmTools = ['CA partner', 'CA staff', 'Auditor'].includes(chatWorkspace?.viewerLabel ?? '');
+  const canManageFirmEmail = ['CA partner', 'CA staff'].includes(chatWorkspace?.viewerLabel ?? '');
+  const latestCaseAnswer = chatWorkspace?.messages.slice().reverse()
+    .find((message) => message.actor_type === 'nexus' && message.response_blocks);
+  const receiptSources = [...new Map((latestCaseAnswer?.response_blocks?.blocks ?? [])
+    .flatMap((block) => block.provenance?.sources ?? [])
+    .map((source) => [source.id, source])).values()];
+  const receiptRows = receiptSources.map((source, index) => {
+    const bankHref = source.kind === 'bank_transaction' && /^[0-9a-f-]{36}$/i.test(source.id)
+      ? `/nexus/source/bank-transaction?id=${encodeURIComponent(source.id)}` : null;
+    return `<li class="nexus-receipt"><span class="receipt-number">${index + 1}</span><span><b>${esc(source.label)}</b><small>${esc(source.kind.replaceAll('_',' '))}</small></span>${bankHref ? `<a href="${bankHref}">Open →</a>` : ''}</li>`;
+  }).join('');
   const openFollowUps = followUps.filter((item) => item.status === 'open');
   const completedFollowUps = followUps.filter((item) => item.status === 'completed').slice(0, 3);
   const needsFounder = documents.filter((doc) => doc.status === 'needs_information'
@@ -400,21 +415,47 @@ export function renderNexus(
   const thirtyDaysAgo = new Date(`${todayIndia}T00:00:00.000Z`);
   thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29);
   const fromIndia = thirtyDaysAgo.toISOString().slice(0, 10);
-  return `<div class="nexus">
-<section class="nexus-chat" aria-label="Ask Nexus conversation">
-    <div class="nexus-head"><h1>Ask Nexus</h1>
-      <p>${esc(clientName)} · Ask about the books, received documents, and work needing attention.</p></div>
+  return `<div class="nexus-workspace">
+  <aside class="nexus-rail" aria-label="Nexus conversations">
+    <a class="nexus-new" href="/nexus?new=1">＋ New conversation</a>
+    ${caseList}
+    <nav class="nexus-rail-links" aria-label="Nexus tools">
+      <a href="/assistant-runs">Nexus activity log →</a><a href="/follow-ups">Review desk →</a>
+      <a href="/follow-ups">Long-running reviews →</a>
+      ${canViewFirmTools ? '<a href="/firm">Firm workspace →</a><a href="/tally">Tally import →</a>' : ''}
+      ${canManageFirmEmail ? '<a href="/email-inbox">Firm email →</a>' : ''}
+    </nav>
+  </aside>
+  <section class="nexus-chat" aria-label="Ask Nexus conversation">
+    <div class="nexus-head"><div><h1>${chatWorkspace?.newConversation ? 'New conversation' : esc(chatWorkspace?.selectedCase?.title ?? 'Ask Nexus')}</h1>
+      <p>${esc(clientName)} · answers use this client’s records</p></div>
+      <span class="nexus-viewer">Viewing as <b>${esc(chatWorkspace?.viewerLabel ?? 'User')}</b></span>
+      ${chatWorkspace?.selectedCase ? `<span class="nexus-saved">${esc(chatWorkspace.selectedCase.state.replaceAll('_',' '))}</span>` : ''}
+    </div>
     <div class="nexus-thread" id="nexus-thread" aria-live="polite">
-      ${visibleTurns || '<div class="nexus-answer">Hello. Ask me what has been received, what needs attention, or what the books show.</div>'}
+      ${visibleTurns || (chatWorkspace?.newConversation
+        ? '<div class="nexus-welcome"><span class="nexus-spark">✦</span><div><h2>What would you like to work on?</h2><p>Ask about your books or choose a starting point below. Nexus will show the records behind its answers and ask before any review action.</p><div class="nexus-starters"><button type="button" class="nexus-prompt" data-prompt="What needs my attention?">What needs my attention?</button><button type="button" class="nexus-prompt" data-prompt="How much money is in our connected bank accounts?">How much money do we have?</button><button type="button" class="nexus-prompt" data-prompt="What documents have we received?">What documents have we received?</button></div></div></div>'
+        : '<div class="nexus-welcome"><span class="nexus-spark">✦</span><div><h2>Ask Nexus about this client</h2><p>Ask about the books, received documents, bank activity, or work that needs attention.</p></div></div>')}
     </div>
     <div class="nexus-compose">
-      <form id="nexus-form">
-        <textarea id="nexus-input" maxlength="500" aria-label="Message Ask Nexus"
-          placeholder="Ask about this client’s books…"></textarea>
-        <button class="primary" id="nexus-send" type="submit">Send</button>
+      <form id="nexus-form" class="nexus-message-form">
+        <textarea id="nexus-input" maxlength="500" aria-label="Message Nexus"
+          placeholder="Ask a follow-up, in Hindi or English…"></textarea>
+        <div class="nexus-compose-tools">
+          <label class="nexus-attach" for="nexus-upload-files">＋ Attach bill or statement</label>
+          <input id="nexus-upload-files" form="nexus-upload-form" type="file" multiple required class="nexus-file-input">
+          <button type="button" class="nexus-tool" id="nexus-bank-open">↔ Bank activity</button>
+          <span class="why">Read-only · cannot post</span>
+          <button class="primary" id="nexus-send" type="submit">Ask</button>
+        </div>
+        <span id="nexus-compose-result" class="why" role="status"></span>
       </form>
-      <details class="nexus-bank-activity">
-        <summary>Review bank activity</summary>
+      <form id="nexus-upload-form" class="nexus-upload-form">
+        <button id="nexus-upload" type="submit">Upload selected files</button>
+        <span class="why" id="nexus-upload-result" role="status"></span>
+      </form>
+      <details class="nexus-bank-activity" id="nexus-bank-panel">
+        <summary class="sr-only">Review bank activity</summary>
         ${chatWorkspace?.bankAccounts?.length ? `<form id="nexus-bank-activity-form">
           <label>Bank account<select name="accountId" required>${chatWorkspace.bankAccounts.map((account) => `<option value="${esc(account.id)}">${esc(account.bank_name)} · ending ${esc(account.account_number_last4)}</option>`).join('')}</select></label>
           <label>From<input type="date" name="fromDate" required value="${fromIndia}"></label>
@@ -424,58 +465,43 @@ export function renderNexus(
         </form>` : '<p class="why">No bank account is connected for this client yet.</p>'}
         <p class="why">Defaults to the last 30 India (IST) calendar dates. Read-only summary; it does not classify, reconcile, or post transactions.</p>
       </details>
-      ${chatWorkspace?.selectedCase ? `<p class="why">Conversation: ${esc(chatWorkspace.selectedCase.title)}</p>` : ''}
-      <form id="nexus-upload-form"><label>Send a statement, invoice, or receipt
-        <input id="nexus-upload-files" type="file" multiple required></label>
-        <button id="nexus-upload" type="submit">Upload files</button>
-        <span class="why" id="nexus-upload-result" role="status"></span>
-      </form>
-      <div class="why">Answers use this client’s records. The chat prepares reviewable work and does not post entries.</div>
+      ${chatWorkspace?.selectedCase ? `<p class="why nexus-conversation-label">Conversation: ${esc(chatWorkspace.selectedCase.title)}</p>` : ''}
     </div>
   </section>
-  <aside class="nexus-side" aria-label="Suggested questions and shortcuts">
-    ${recentCases}
-    <div class="panel nexus-next"><h2>Next step</h2>
-      ${nextAction && canAnswerRequests ? `<p>Answer the CA’s question about <b>${esc(nextAction.originalName)}</b> below.</p>`
+  <aside class="nexus-context" aria-label="Evidence and work needing attention">
+    <section class="nexus-context-section"><h2>Receipts for this answer</h2>
+      <ol class="nexus-receipts">${receiptRows || '<li class="nexus-context-empty">Evidence links appear here when Nexus answers with structured records.</li>'}</ol>
+    </section>
+    <section class="nexus-context-section"><h2>Next step</h2>
+      ${nextAction && canAnswerRequests ? `<p>Answer the CA’s question about <b>${esc(nextAction.originalName)}</b>.</p>`
         : missingOriginal ? `<p>Upload <b>${esc(missingOriginal.originalName)}</b> again so it can be reviewed.</p>`
         : waitingForCa.length ? '<p>Your files are with the CA. You can send another file or ask Nexus about your books.</p>'
-        : '<p>Send a statement, invoice, or receipt below, or ask Nexus a question about your books.</p>'}
-    </div>
-    <div class="panel nexus-waiting"><h2>What’s waiting</h2>
-      <section><b>Needs founder input · ${needsFounder.length}</b>
-        <ul>${waitingRows(needsFounder, 'founder') || '<li class="empty">No founder input is requested.</li>'}</ul>
-      </section>
-      <section><b>With the CA · ${waitingForCa.length}</b>
-        <ul>${waitingRows(waitingForCa, 'ca') || '<li class="empty">No documents are waiting for CA review.</li>'}</ul>
-      </section>
-      <section><b>Open follow-ups · <span id="nexus-open-followup-count">${openItems.length}</span></b>
-        <ul id="nexus-open-followups">${openItems.slice(0, 5).map((item) => `<li><span class="waiting-title">${esc(item.title)}</span>
-          <a href="/follow-ups#followup-${esc(item.id)}">Open follow-up →</a></li>`).join('')
-          || '<li class="empty">No open follow-ups.</li>'}</ul>
-      </section>
-    </div>
-    <div class="panel nexus-progress"><h2>Work in progress</h2>
-      <p class="nexus-progress-count"><b>${openFollowUps.length}</b> open follow-up${openFollowUps.length === 1 ? '' : 's'}</p>
-      <ul id="nexus-progress-list">${progressRows(openFollowUps) || '<li class="empty">No open follow-ups yet.</li>'}</ul>
-      ${completedFollowUps.length ? `<details><summary>Recently completed</summary><ul>${progressRows(completedFollowUps)}</ul></details>` : ''}
-      <a href="/follow-ups">Open Review desk →</a>
-    </div>
-    <div class="panel"><h2>Start here</h2>
-      <button class="nexus-prompt" type="button" data-prompt="What needs attention?">What needs attention?</button>
+        : '<p>Ask a question or send a statement, invoice, or receipt for review.</p>'}
+    </section>
+    <section class="nexus-context-section nexus-waiting"><h2>Waiting on you · ${needsFounder.length}</h2>
+      <ul>${waitingRows(needsFounder, 'founder') || '<li class="empty">Nothing needs your input.</li>'}</ul>
+    </section>
+    <section class="nexus-context-section nexus-waiting"><h2>With your CA · ${waitingForCa.length}</h2>
+      <ul>${waitingRows(waitingForCa, 'ca') || '<li class="empty">No documents are waiting for CA review.</li>'}</ul>
+    </section>
+    <section class="nexus-context-section"><h2>Review desk · ${openItems.length} open</h2>
+      <ul id="nexus-open-followups">${openItems.slice(0, 5).map((item) => `<li><a class="waiting-title" href="/follow-ups#followup-${esc(item.id)}">${esc(item.title)} →</a></li>`).join('') || '<li class="empty">No open review items.</li>'}</ul>
+      <a href="/follow-ups">Open review desk →</a>
+    </section>
+    <section class="nexus-context-section"><h2>Recent activity</h2>
+      ${activity.slice(0, 5).map(activityRow).join('') || '<p class="empty">No recent activity.</p>'}
+      <a href="/activity">All activity →</a>
+    </section>
+    <details class="nexus-advanced"><summary>Shortcuts and long-running reviews</summary>
+      <div class="nexus-starters"><button class="nexus-prompt" type="button" data-prompt="What needs attention?">What needs attention?</button>
       <button class="nexus-prompt" type="button" data-prompt="What documents have we received?">What documents have we received?</button>
       <button class="nexus-prompt" type="button" data-prompt="How many bank transactions need reconciliation?">What needs bank review?</button>
       <button class="nexus-prompt" type="button" data-prompt="How much GST credit is at risk?">How much GST credit is at risk?</button>
-    </div>
-    <div class="panel"><h2>Open a workspace</h2>
-      <a href="/follow-ups">Review desk</a><a href="/documents">Documents</a><a href="/reconcile">Bank reconciliation</a>
-      <a href="/bills">Bills</a><a href="/assistant-runs">AI activity log</a>
-    </div>
-    <div class="panel nexus-activity"><h2>Recent activity</h2>
-      ${activity.slice(0, 8).map(activityRow).join('') || '<p class="empty">No activity yet.</p>'}
-      <a href="/activity">View all activity →</a>
-    </div>
-    <section class="panel nexus-task-workspace" aria-label="Long-running Nexus reviews">
-      <h2>Long-running reviews</h2>
+      <a href="/documents">Documents</a><a href="/reconcile">Bank reconciliation</a><a href="/bills">Bills</a>
+      ${completedFollowUps.length ? `<h3>Recently completed</h3><ul>${progressRows(completedFollowUps)}</ul>` : ''}</div>
+    </details>
+    <details class="nexus-task-workspace" aria-label="Long-running Nexus reviews">
+      <summary>Long-running reviews</summary>
       <p class="why">Nexus can summarize selected compliance timeline records. A review cannot file, pay, reconcile, or change a book entry.</p>
       <details class="nexus-ai-consent">
         <summary>Data sharing and Nexus task consent · ${taskWorkspace.enabled ? 'On' : 'Off'}</summary>
@@ -491,7 +517,7 @@ export function renderNexus(
       </form>` : '<p class="why">A firm owner or authorized CA must enable task runs before client data is sent to AI.</p>'}
       <h3>Recent task history</h3>
       ${taskRows || '<p class="empty">No Nexus task runs yet.</p>'}
-    </section>
+    </details>
   </aside>
 </div>
 <script>(() => {
@@ -580,6 +606,15 @@ export function renderNexus(
     } catch (error) { result.textContent = String(error.message || error); }
     finally { button.disabled = false; }
   };
+  const bankPanel = document.getElementById('nexus-bank-panel');
+  document.getElementById('nexus-bank-open').onclick = () => {
+    bankPanel.open = !bankPanel.open;
+    if (bankPanel.open) bankPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  const uploadInput = document.getElementById('nexus-upload-files');
+  const uploadForm = document.getElementById('nexus-upload-form');
+  uploadForm.hidden = !uploadInput.files.length;
+  uploadInput.onchange = () => { uploadForm.hidden = !uploadInput.files.length; };
   document.querySelectorAll('.nexus-request').forEach((requestForm) => {
     requestForm.onsubmit = async (event) => {
       event.preventDefault();
@@ -1076,14 +1111,44 @@ a.skip-link:focus { transform: translateY(0); }
 .ask-compose form { display: flex; gap: 7px; }
 .ask-compose input { flex: 1; min-width: 0; background: var(--panel); }
 .ask-compose .why { margin-top: 7px; }
-.nexus { display: grid; grid-template-columns: minmax(0, 1fr) 245px; gap: 18px;
-  min-height: calc(100vh - 145px); }
-.nexus-chat { display: flex; flex-direction: column; min-height: 610px; min-width: 0;
-  border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
-.nexus-head { padding: 18px 22px; border-bottom: 1px solid var(--line); }
-.nexus-head h1 { margin: 0; }
-.nexus-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-.nexus-thread { flex: 1; overflow-y: auto; padding: 22px; max-height: calc(100vh - 355px); }
+.nexus-page { padding: 0; max-width: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.pagebar-nexus:not(:has(.firm-nav)) { display: none !important; }
+.pagebar-nexus { display: none !important; }
+.nexus-workspace { display: grid; grid-template-columns: 220px minmax(390px, 1fr) minmax(280px, 330px);
+  align-items: stretch; min-height: calc(100vh - 96px); color: #18265c; }
+.nexus-rail { position: sticky; top: 96px; height: calc(100vh - 96px); box-sizing: border-box;
+  display: flex; flex-direction: column; min-width: 0; padding: 18px 14px 16px;
+  border-right: 1px solid #dce2f0; background: #f6f7fb; overflow-y: auto; }
+.nexus-new { display: block; padding: 10px 12px; border-radius: 7px; background: var(--accent);
+  color: #fff !important; text-align: center; text-decoration: none; font-size: 13px; font-weight: 650; }
+.nexus-case-list { margin-top: 22px; }
+.nexus-case-list h2, .nexus-context h2 { margin: 0 0 10px; color: #626b88; font-size: 11px;
+  font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.nexus-case-list ul { list-style: none; margin: 0; padding: 0; }
+.nexus-case-list li { display: grid; gap: 3px; margin-bottom: 5px; padding: 9px 9px; border-radius: 7px; }
+.nexus-case-list li.selected { background: #e7edff; }
+.nexus-case-list a { overflow: hidden; color: #1536bd; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; font-size: 12px; }
+.nexus-case-list .why { font-size: 10px; }
+.nexus-rail-links { display: grid; gap: 8px; margin-top: auto; padding: 16px 8px 0; }
+.nexus-rail-links a { color: #2443b9; font-size: 11px; }
+.nexus-chat { display: flex; flex-direction: column; min-height: calc(100vh - 96px); min-width: 0;
+  border-right: 1px solid #dce2f0; background: #fff; }
+.nexus-head { position: sticky; top: 96px; z-index: 2; display: flex; align-items: center; gap: 12px;
+  min-height: 65px; box-sizing: border-box; padding: 12px 24px; border-bottom: 1px solid var(--line); background: #fff; }
+.nexus-head h1 { margin: 0; overflow: hidden; font-size: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.nexus-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.nexus-viewer { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.nexus-viewer b, .nexus-saved { padding: 5px 10px; border: 1px solid #dce2f0; border-radius: 7px; color: var(--navy); }
+.nexus-saved { font-size: 10px; text-transform: uppercase; }
+.nexus-thread { flex: 1; overflow-y: auto; padding: 24px clamp(18px, 4vw, 54px); max-height: calc(100vh - 305px); }
+.nexus-welcome { display: flex; gap: 12px; max-width: 680px; margin: 26px auto; color: #23367f; }
+.nexus-welcome h2 { margin: 0 0 6px; font-size: 19px; }
+.nexus-welcome p { margin: 0 0 14px; color: #69718e; line-height: 1.55; }
+.nexus-spark { flex: 0 0 28px; height: 28px; border-radius: 8px; background: var(--accent); color: white; text-align: center; line-height: 28px; }
+.nexus-starters { display: flex; gap: 7px; flex-wrap: wrap; }
+.nexus-starters .nexus-prompt { width: auto; margin: 0; padding: 7px 10px; border-color: #dce2f0; border-radius: 18px; color: #2443b9; font-size: 11px; }
 .nexus-turn { margin: 0 0 24px; }
 .nexus-question { width: fit-content; max-width: 85%; margin-left: auto; padding: 10px 14px;
   border-radius: 10px 10px 2px 10px; background: #17275b; color: #fff; }
@@ -1092,12 +1157,18 @@ a.skip-link:focus { transform: translateY(0); }
 .nexus-system { max-width: 92%; margin-top: 10px; color: var(--muted); font-size: 12px; }
 .nexus-evidence { margin: 6px 0 0 13px; color: var(--muted); font-size: 11px; }
 .nexus-action { display: inline-block; margin: 8px 0 0 13px; color: var(--accent); }
-.nexus-compose { padding: 16px 20px; border-top: 1px solid var(--line); }
-.nexus-compose form { display: flex; gap: 10px; align-items: flex-end; }
-.nexus-compose textarea { flex: 1; min-height: 58px; max-height: 150px; resize: vertical;
+.nexus-compose { position: sticky; bottom: 0; z-index: 2; padding: 10px 24px 14px; border-top: 1px solid var(--line); background: #fff; }
+.nexus-compose form.nexus-message-form { display: grid; gap: 7px; padding: 10px 12px; border: 1px solid #bcc8ff; border-radius: 12px; }
+.nexus-compose textarea { width: 100%; min-height: 43px; max-height: 130px; border: 0; padding: 3px; resize: vertical;
   font: inherit; }
-.nexus-compose button { min-width: 80px; }
-.nexus-compose #nexus-upload-form { margin-top: 12px; align-items: center; flex-wrap: wrap; }
+.nexus-compose-tools { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.nexus-attach, .nexus-tool, .nexus-upload-form button { display: inline-flex; padding: 6px 9px; border: 1px solid #dce2f0; border-radius: 18px; background: #fff; color: #2443b9; cursor: pointer; font-size: 11px; }
+.nexus-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.nexus-file-input:focus-visible + .nexus-tool { outline: 3px solid var(--focus); }
+.nexus-upload-form { display: flex; min-height: 0; gap: 8px; align-items: center; }
+.nexus-upload-form button { border-color: transparent; }
+.nexus-upload-form[hidden] { display: none; }
+.nexus-compose #nexus-upload-form { margin-top: 6px; align-items: center; flex-wrap: wrap; }
 .nexus-compose #nexus-upload-form label { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
 .nexus-request { display: grid; gap: 7px; margin: 7px 0; }
 .nexus-request label { display: grid; gap: 4px; font-size: 12px; }
@@ -1115,9 +1186,29 @@ a.skip-link:focus { transform: translateY(0); }
 .email-item-top { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
 .email-item-top h3 { margin: 0; }
 .email-body { white-space: pre-wrap; overflow-wrap: anywhere; }
-.nexus-side h2 { margin-top: 0; }
+.nexus-context { position: sticky; top: 96px; height: calc(100vh - 96px); box-sizing: border-box;
+  overflow-y: auto; padding: 18px 15px; background: #f8f9fc; }
+.nexus-context-section { padding: 4px 4px 14px; margin-bottom: 12px; border-bottom: 1px solid #dce2f0; }
+.nexus-context-section p { margin: 0; color: #606985; font-size: 12px; line-height: 1.5; }
+.nexus-context-section a { color: #1741cd; font-size: 11px; }
+.nexus-receipts { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.nexus-receipt { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: start; gap: 7px; padding: 9px;
+  border: 1px solid #dce2f0; border-radius: 8px; background: #fff; font-size: 11px; }
+.nexus-receipt > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.nexus-receipt small { display: block; margin-top: 3px; color: var(--muted); }
+.receipt-number { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); color: white; text-align: center; line-height: 18px; }
+.nexus-context-empty { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.nexus-context .nexus-waiting ul, .nexus-context-section > ul { list-style: none; margin: 0; padding: 0; }
+.nexus-context-section > ul > li { padding: 7px 0; border-top: 1px solid #e4e8f2; }
+.nexus-context .activity-row { padding: 7px 0; margin: 0; font-size: 11px; }
+.nexus-context .activity-row::before { display: none; }
+.nexus-context .activity-detail, .nexus-context .activity-meta { font-size: 10px; }
+.nexus-advanced { padding: 8px 4px; border-bottom: 1px solid #dce2f0; font-size: 11px; }
+.nexus-advanced summary { color: #2443b9; cursor: pointer; font-weight: 650; }
+.nexus-advanced > div { display: grid; gap: 7px; padding-top: 10px; }
 .nexus-prompt { width: 100%; text-align: left; margin: 0 0 8px; padding: 9px 11px; }
-.nexus-side .panel { margin-bottom: 12px; }
+.nexus-context .nexus-task-workspace { padding: 9px 4px; border-bottom: 1px solid #dce2f0; font-size: 11px; }
+.nexus-context .nexus-task-workspace > summary { color: #2443b9; cursor: pointer; font-weight: 650; }
 .nexus-task-workspace > form { display: grid; gap: 9px; }
 .nexus-task-workspace label { display: grid; gap: 5px; }
 .nexus-task-workspace textarea { min-height: 84px; resize: vertical; font: inherit; }
@@ -1512,21 +1603,36 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .bill-filter:nth-child(2) { border-right:0; }
   .bill-filter:nth-child(-n+2) { border-bottom:1px solid var(--line); }
   .entry-scroll { overflow-x: auto; }
-  .nexus { grid-template-columns: 1fr; }
-  .nexus-chat { min-height: 560px; }
+  .nexus-workspace { grid-template-columns: 190px minmax(0,1fr); }
+  .nexus-context { position: static; grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr));
+    gap: 10px; height: auto; max-height: 460px; border-top: 1px solid var(--line); }
+  .nexus-chat { min-height: 660px; }
   .nexus-thread { max-height: 55vh; }
-  .nexus-side { display: flex; gap: 10px; overflow-x: auto; }
-  .nexus-side .panel { flex: 0 0 230px; }
+  .nexus-rail { top: 96px; height: calc(100vh - 96px); }
+  .nexus-head { top: 96px; }
+  .nexus-context { top: 96px; }
 }
 @media (max-width: 560px) {
   .primary-header { gap: 8px; }
   .brand { font-size: 16px; }
   .top-actions .client-chip { max-width: 125px; padding: 5px 7px; font-size: 11px; }
   .top-actions .who button { padding: 5px 4px; font-size: 11px; }
-  .workspace > header.pagebar { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
+  .workspace > header.pagebar:not(.pagebar-nexus) { align-items: stretch; flex-direction: column; gap: 0; padding: 0 12px; }
   .secondary-nav { min-height: 45px; order: 1; padding-right: 94px; }
   .firm-nav { order: 2; max-width: 100%; min-height: 36px; margin: 0; padding: 0 0 7px; }
   .pagebar .ask-toggle { align-self: flex-end; position: absolute; top: 7px; right: 12px; }
+  .nexus-workspace { display: flex; flex-direction: column; min-height: 0; }
+  .nexus-rail { position: static; height: auto; max-height: 210px; overflow-y: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nexus-case-list { margin-top: 13px; }
+  .nexus-case-list ul { display: flex; gap: 6px; overflow-x: auto; }
+  .nexus-case-list li { min-width: 145px; }
+  .nexus-rail-links { display: flex; gap: 12px; padding-top: 9px; }
+  .nexus-chat { min-height: 68vh; border-right: 0; }
+  .nexus-head { position: static; flex-wrap: wrap; padding: 10px 14px; }
+  .nexus-thread { max-height: none; min-height: 260px; padding: 16px 14px; }
+  .nexus-compose { padding: 9px 12px; }
+  .nexus-context { display: block; max-height: none; padding: 14px; }
+  .nexus-context-section { margin-bottom: 7px; }
   .today-heading { flex-direction: column; }
   .inbox-heading { align-items: start; }
   .inbox-heading > div { flex-basis: 100%; }
@@ -1631,7 +1737,7 @@ export function renderShell(a: {
   </div>
 </div>
 <div class="workspace">
-<header class="pagebar">
+<header class="pagebar${a.active === 'nexus' ? ' pagebar-nexus' : ''}">
   <div class="page-context"><span class="client">${esc(a.session.clientName)}</span></div>
   ${activeGroup ? `<nav class="secondary-nav" aria-label="${esc(currentGroup.label)} navigation">
     ${currentGroup.links.filter(([href]) => href !== '/email-inbox' || canManageEmail).map(subLink).join('')}
@@ -1645,7 +1751,7 @@ export function renderShell(a: {
   <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
     aria-expanded="false">Ask Nexus</button>
 </header>
-<main id="main-content">${a.body}</main>
+<main id="main-content"${a.active === 'nexus' ? ' class="nexus-page"' : ''}>${a.body}</main>
 </div>
 </div>
 <div class="ask-shade" id="ask-shade" hidden></div>

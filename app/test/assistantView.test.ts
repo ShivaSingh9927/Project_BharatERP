@@ -152,7 +152,7 @@ describe('BharatERP redesign shell', () => {
         { id: 'msg-2', actor_type: 'nexus', body: 'Saved answer & evidence.', recorded_at: '2026-10-10' },
       ],
     });
-    expect(html).toContain('Recent conversations');
+    expect(html).toContain('Saved conversations');
     expect(html).toContain('&lt;Review &amp; follow up&gt;');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>alert(1)</script>');
@@ -160,6 +160,54 @@ describe('BharatERP redesign shell', () => {
     expect(html).not.toContain('<div class="nexus-question">You</div>');
     expect(html).not.toContain('<div class="nexus-question">Nexus</div>');
     expect(html).toContain('/nexus?case=case-1');
+  });
+
+  it('renders a fresh Nexus workspace with a conversation rail, evidence panel, and role label', () => {
+    const html = renderNexus('Acme', [], [], [], [], [], false, undefined, {
+      cases: [{ id: 'case-1', title: 'Open bills', state: 'open', created_at: '2026-10-10' }],
+      selectedCase: null, messages: [], newConversation: true, viewerLabel: 'Owner',
+    });
+    expect(html).toContain('class="nexus-workspace"');
+    expect(html).toContain('aria-label="Nexus conversations"');
+    expect(html).toContain('＋ New conversation');
+    expect(html).toContain('Saved conversations');
+    expect(html).toContain('What would you like to work on?');
+    expect(html).toContain('Viewing as <b>Owner</b>');
+    expect(html).toContain('Receipts for this answer');
+    expect(html).toContain('Evidence links appear here when Nexus answers with structured records.');
+    expect(html).toContain('id="nexus-upload-files"');
+    expect(html).toContain('id="nexus-upload-form"');
+    expect(html).toContain('id="nexus-bank-open"');
+    expect(html).toContain('Waiting on you · 0');
+    const shell = renderShell({ session: { clientName: 'Acme', role: 'owner', boundClientId: 'client-1' },
+      accounts: [], active: 'nexus', body: html });
+    expect(shell).toContain('grid-template-columns: 220px minmax(390px, 1fr) minmax(280px, 330px)');
+    expect(html).not.toContain('href="/email-inbox"');
+    expect(html).not.toContain('href="/firm"');
+    const caHtml = renderNexus('Acme', [], [], [], [], [], false, undefined, {
+      cases: [], selectedCase: null, messages: [], viewerLabel: 'CA staff',
+    });
+    expect(caHtml).toContain('href="/email-inbox"');
+    expect(caHtml).toContain('href="/firm"');
+    expect(caHtml).toContain('href="/tally"');
+  });
+
+  it('links evidence receipts only to valid scoped bank source identifiers', () => {
+    const blocks = { schema_version: 1, generated_at: '2026-10-10T00:00:00.000Z', blocks: [
+      { id: 'summary', type: 'paragraph', text: 'Checked a bank line.', provenance: {
+        as_of: '2026-10-10T00:00:00.000Z', sources: [{ kind: 'bank_transaction',
+          id: '123e4567-e89b-12d3-a456-426614174000', label: '<Imported line>' }],
+        coverage: { scope: 'Account · period', completeness: 'complete', limitations: [] },
+      } },
+    ] };
+    const html = renderNexus('Acme', [], [], [], [], [], false, undefined, {
+      cases: [], selectedCase: { id: 'case-1', title: 'Bank check', state: 'open' },
+      messages: [{ id: 'msg-1', actor_type: 'nexus', body: 'Checked a bank line.',
+        response_blocks: blocks as never, recorded_at: '2026-10-10' }],
+    });
+    expect(html).toContain('&lt;Imported line&gt;');
+    expect(html).toContain('/nexus/source/bank-transaction?id=123e4567-e89b-12d3-a456-426614174000');
+    expect(html).toContain('Receipts for this answer');
   });
 
   it('shows a read-only bank activity control and saved response blocks inside the chat', () => {
@@ -195,9 +243,9 @@ describe('BharatERP redesign shell', () => {
         receivedAt: '2026-10-01T00:00:00.000Z', linkedVoucherId: null, available: true,
         reviewNote: null, reviewUpdatedAt: null },
     ]);
-    expect(html).toContain('Needs founder input · 1');
+    expect(html).toContain('Waiting on you · 1');
     expect(html).toContain('Please send the missing page.');
-    expect(html).toContain('With the CA · 1');
+    expect(html).toContain('With your CA · 1');
     expect(html).toContain('/documents#doc-doc-1');
     expect(html).toContain('/documents#doc-doc-2');
   });
