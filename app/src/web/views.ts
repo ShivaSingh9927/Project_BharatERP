@@ -1249,6 +1249,78 @@ a.skip-link:focus { transform: translateY(0); }
   @keyframes ask-in { from { transform: translateX(18px); opacity: .7; } }
 }
 main { padding: 30px; max-width: 1520px; margin: 0 auto; }
+.today-page { max-width: none; padding: 0; }
+.today-home { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: calc(100vh - 60px); }
+.today-main-column { min-width: 0; padding: 28px clamp(20px, 3.6vw, 48px) 36px; display: flex; flex-direction: column; gap: 18px; }
+.today-hero { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+.today-hero h1 { max-width: 850px; font-size: clamp(24px, 2.4vw, 30px); line-height: 1.2; margin: 5px 0 0; }
+.today-hero h1 span { color: var(--accent); }
+.today-eyebrow { display: flex; gap: 12px; align-items: center; color: #555b80; font: 500 10px var(--mono); letter-spacing: .045em; }
+.today-period-picker { display: inline-flex; margin: 0; font: inherit; }
+.today-period-picker label { display: inline-flex; align-items: center; gap: 4px; }
+.today-period-picker select { width: auto; min-width: 90px; padding: 2px 5px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; }
+.today-viewer { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.today-viewer b { border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; color: var(--navy); background: var(--surface); }
+.today-ask { display: flex; align-items: center; gap: 10px; min-height: 52px; margin: 0; padding: 9px 13px; border: 1.5px solid var(--navy); border-radius: 12px; box-shadow: 0 6px 24px rgba(0,70,255,.08); }
+.today-ask > span:first-child { color: var(--accent); }
+.today-ask input { flex: 1; min-width: 0; padding: 5px 2px; border: 0; box-shadow: none; background: transparent; }
+.today-ask input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.today-ask button { padding: 6px 12px; border-radius: 7px; border: 0; background: var(--accent); color: #fff; font-size: 12px; }
+.today-ask button:hover { background: var(--navy); }
+.today-queue { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; }
+.today-queue > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 14px; background: var(--surface); }
+.today-queue > header div { display: flex; gap: 9px; align-items: baseline; flex-wrap: wrap; }
+.today-queue h2, .today-info-card h2, .today-section-heading h2 { margin: 0; font-size: 14px; }
+.today-queue > header span { color: var(--muted); font-size: 10px; }
+.today-queue > header > a, .today-info-card > a, .today-rail-section > a:last-child { font-size: 11px; white-space: nowrap; }
+.today-queue-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid #eef0f6; }
+.today-queue-row > div { min-width: 0; display: grid; gap: 2px; }
+.today-queue-row b { overflow: hidden; text-overflow: ellipsis; color: var(--navy); font-size: 12px; font-weight: 600; }
+.today-queue-row small { color: var(--muted); font-size: 10.5px; }
+.today-source { justify-self: start; padding: 2px 5px; border: 1px solid #c2d3ff; border-radius: 4px; background: #e8eeff; color: var(--accent); font: 600 9px var(--mono); }
+.today-queue-action { padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--navy); font-size: 10px; text-align: center; text-decoration: none; white-space: nowrap; }
+.today-queue-action.primary { background: var(--navy); color: #fff; }
+.today-clear { padding: 10px 14px; margin: 0; color: var(--muted); font-size: 12px; }
+.today-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.today-metric { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 12px 13px; border: 1px solid var(--line); border-radius: 11px; text-decoration: none; }
+.today-metric:hover { border-color: var(--accent); }
+.today-metric-label { color: var(--muted); font-size: 10.5px; }
+.today-metric b { overflow: hidden; text-overflow: ellipsis; color: var(--navy); font: 500 18px var(--mono); white-space: nowrap; }
+.today-metric b.warn, .today-gst-values .warn b { color: var(--bad); }
+.today-metric small { color: var(--muted); font-size: 9.5px; line-height: 1.4; }
+.today-lower-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.today-info-card { min-width: 0; padding: 14px 15px; border: 1px solid var(--line); border-radius: 11px; }
+.today-info-card p, .today-rail-section p { margin: 7px 0; color: var(--muted); font-size: 11px; }
+.today-info-card ul { margin: 8px 0; padding-left: 18px; font-size: 11px; }
+.today-alert-card { border-color: #ffc6a6; background: #fff5ef; }
+.today-gst-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 13px 0 8px; }
+.today-gst-values div { display: grid; gap: 2px; }
+.today-gst-values small { color: var(--muted); font-size: 9px; }
+.today-gst-values b { color: var(--navy); font: 500 14px var(--mono); }
+.today-recent { margin: 0; }
+.today-section-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 7px; }
+.today-section-heading > a { font-size: 10.5px; }
+.today-posted-list { border-top: 1px solid var(--line); }
+.today-posted-row { display: grid; grid-template-columns: minmax(90px, 1.1fr) minmax(100px, 2fr) minmax(70px, .7fr) minmax(85px, .8fr); gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid #eef0f6; color: var(--navy); font-size: 10.5px; text-decoration: none; }
+.today-posted-row time { color: var(--muted); }
+.today-posted-row > b { text-align: right; font: 500 10.5px var(--mono); }
+.today-rail { min-width: 0; padding: 22px 18px; border-left: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 16px; }
+.today-rail-card { padding: 13px 14px; background: #fff; border: 1px solid var(--line); border-radius: 11px; }
+.today-health { display: flex; gap: 11px; align-items: center; padding-bottom: 10px; }
+.today-health-mark { width: 46px; height: 46px; display: grid; place-items: center; flex: 0 0 auto; border: 4px solid var(--accent); border-radius: 50%; color: var(--navy); font: 600 17px var(--mono); }
+.today-health div { display: grid; gap: 2px; }
+.today-health small, .today-rail-section h2 { color: #555b80; font-size: 10px; letter-spacing: .04em; }
+.today-health b { font-size: 11.5px; }
+.today-health-items { display: grid; gap: 5px; padding: 8px 0; border-top: 1px solid #eef0f6; }
+.today-health-items small, .today-health-items a { font-size: 10px; }
+.today-health-items small { color: var(--muted); }
+.today-health-items a { color: var(--navy); text-decoration: none; }
+.today-rail-card > a, .today-rail-section > a:last-child { font-size: 10.5px; }
+.today-rail-section { display: flex; flex-direction: column; gap: 6px; }
+.today-rail-section h2 { margin: 0; }
+.today-rail-row, .today-activity-row { display: grid; gap: 2px; padding: 7px 0; border-bottom: 1px solid var(--line); color: var(--navy); text-decoration: none; }
+.today-rail-row b, .today-activity-row b { font-size: 10.5px; font-weight: 500; }
+.today-rail-row small, .today-activity-row small, .today-activity-row time { color: var(--muted); font-size: 9.5px; }
 .today-heading { display: flex; justify-content: space-between; gap: 18px; align-items: start; }
 .today-heading h1 { margin-bottom: 2px; }
 .today-heading .row { margin: 0; }
@@ -1594,6 +1666,11 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .balance-columns { grid-template-columns: 1fr; }
   .today-grid { grid-template-columns: 1fr; }
+  .today-home { grid-template-columns: minmax(0,1fr) 260px; }
+  .today-main-column { padding: 22px 18px; }
+  .today-rail { padding: 18px 13px; }
+  .today-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .today-viewer { display: none; }
   .inbox-layout { grid-template-columns: 1fr; }
   .inbox-list { max-height: 300px; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
@@ -1611,6 +1688,16 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .nexus-rail { top: 96px; height: calc(100vh - 96px); }
   .nexus-head { top: 96px; }
   .nexus-context { top: 96px; }
+}
+@media (max-width: 700px) {
+  .today-home { grid-template-columns: 1fr; }
+  .today-main-column { padding: 20px 14px; }
+  .today-rail { border-left: 0; border-top: 1px solid var(--line); padding: 16px 14px; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: start; }
+  .today-hero { display: block; }
+  .today-eyebrow { flex-wrap: wrap; }
+  .today-lower-grid { grid-template-columns: 1fr; }
+  .today-queue-row { grid-template-columns: 68px minmax(0,1fr); }
+  .today-queue-action { grid-column: 2; justify-self: start; }
 }
 @media (max-width: 560px) {
   .primary-header { gap: 8px; }
@@ -1737,7 +1824,7 @@ export function renderShell(a: {
   </div>
 </div>
 <div class="workspace">
-<header class="pagebar${a.active === 'nexus' ? ' pagebar-nexus' : ''}">
+${a.active === 'home' ? '' : `<header class="pagebar${a.active === 'nexus' ? ' pagebar-nexus' : ''}">
   <div class="page-context"><span class="client">${esc(a.session.clientName)}</span></div>
   ${activeGroup ? `<nav class="secondary-nav" aria-label="${esc(currentGroup.label)} navigation">
     ${currentGroup.links.filter(([href]) => href !== '/email-inbox' || canManageEmail).map(subLink).join('')}
@@ -1750,8 +1837,8 @@ export function renderShell(a: {
   </nav>` : ''}
   <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
     aria-expanded="false">Ask Nexus</button>
-</header>
-<main id="main-content"${a.active === 'nexus' ? ' class="nexus-page"' : ''}>${a.body}</main>
+</header>`}
+<main id="main-content"${a.active === 'nexus' ? ' class="nexus-page"' : a.active === 'home' ? ' class="today-page"' : ''}>${a.body}</main>
 </div>
 </div>
 <div class="ask-shade" id="ask-shade" hidden></div>
@@ -1783,13 +1870,16 @@ export function renderShell(a: {
   const shade = document.getElementById('ask-shade');
   const close = document.getElementById('ask-close');
   const form = document.getElementById('ask-form');
+  const todayAskForm = document.getElementById('today-ask-form');
+  const todayAskInput = document.getElementById('today-ask-input');
   const input = document.getElementById('ask-input');
   const send = document.getElementById('ask-send');
   const messages = document.getElementById('ask-messages');
   const setOpen = (open) => {
     drawer.hidden = !open; shade.hidden = !open;
-    toggle.setAttribute('aria-expanded', String(open));
-    if (open) input.focus(); else toggle.focus();
+    if (toggle) toggle.setAttribute('aria-expanded', String(open));
+    if (open) input.focus();
+    else (toggle || todayAskForm?.querySelector('button'))?.focus();
   };
   const add = (role, text, evidence, action) => {
     const box = document.createElement('div'); box.className = 'ask-msg ' + role;
@@ -1820,12 +1910,18 @@ export function renderShell(a: {
       add('bharat', String(error.message || error));
     } finally { send.disabled = false; input.focus(); }
   };
-  toggle.onclick = () => setOpen(true); close.onclick = () => setOpen(false);
+  if (toggle) toggle.onclick = () => setOpen(true);
+  close.onclick = () => setOpen(false);
   shade.onclick = () => setOpen(false);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !drawer.hidden) setOpen(false);
   });
   form.onsubmit = (event) => { event.preventDefault(); ask(input.value); };
+  if (todayAskForm) todayAskForm.onsubmit = (event) => {
+    event.preventDefault();
+    setOpen(true);
+    if (todayAskInput.value.trim()) ask(todayAskInput.value);
+  };
   document.querySelectorAll('[data-ask]').forEach((button) => {
     button.onclick = () => { setOpen(true); ask(button.dataset.ask); };
   });
@@ -3987,82 +4083,139 @@ interface DashboardV {
   recentBills: Array<{ number: string; party: string; date: string; total: string }>;
   registrationIssues: Array<{ party: string; gstin: string; status: string }>;
   hasRecon: boolean;
+  displayName?: string;
+  clientName?: string;
+  role?: string;
+  obligations?: ObligationTimelineItem[];
+  followUps?: FollowUpItem[];
+  founderRequests?: Array<{ id: string; documentId: string; question: string }>;
+  activity?: ActivityItem[];
+  setup?: { pan: string | null; gstin: string | null; bankAccounts: number; teamMembers: number };
 }
 
 export function renderDashboard(a: DashboardV): string {
-  const picker = `
-    <form method="get" action="/" class="row">
-      <label>Period
+  const periodLabel = (period: string): string => new Intl.DateTimeFormat('en-IN', {
+    month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata',
+  }).format(new Date(`${period}-01T00:00:00+05:30`));
+  const picker = a.periods.length ? `
+    <form method="get" action="/" class="today-period-picker">
+      <label><span class="sr-only">Books for</span>
         <select name="period" onchange="this.form.submit()">
           ${a.periods.map((p) =>
-            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+            `<option value="${esc(p)}" ${p === a.period ? 'selected' : ''}>${esc(periodLabel(p))}</option>`).join('')}
         </select>
       </label>
-    </form>`;
+    </form>` : '';
 
-  const tile = (value: string, label: string, cls = '', href = ''): string => {
-    const inner = `<b class="${cls}">${esc(value)}</b><span>${esc(label)}</span>`;
-    return href
-      ? `<a class="tile" href="${href}">${inner}</a>`
-      : `<div class="tile">${inner}</div>`;
-  };
-
-  const issues = a.registrationIssues.length === 0 ? '' : `
-    <div class="msg bad"><b>${a.registrationIssues.length} supplier(s) with a
-    registration that is not active.</b> Credit on their invoices needs a look.
-    <ul class="warns">${a.registrationIssues.map((r) =>
-      `<li>${esc(r.party)} — ${esc(r.gstin)} — <b>${esc(r.status)}</b></li>`).join('')}</ul>
-    </div>`;
-
-  const recent = a.recentBills.length === 0
-    ? '<p class="empty">No bills posted yet. <a href="/bills">Upload some invoices.</a></p>'
-    : `<div class="panel" style="padding:0"><table>
-        <tr><th>Invoice</th><th>Supplier</th><th>Date</th><th class="num">Total</th></tr>
-        ${a.recentBills.map((b) => `<tr>
-          <td class="mono">${esc(b.number)}</td><td>${esc(b.party)}</td>
-          <td>${esc(b.date)}</td><td class="num">${inr(b.total)}</td></tr>`).join('')}
-      </table></div>`;
-
-  const needs = [
+  const followUps = a.followUps ?? [];
+  const founderRequests = a.founderRequests ?? [];
+  const obligations = (a.obligations ?? []).filter((item) =>
+    ['observed', 'open', 'blocked', 'needs_human_review', 'prepared',
+      'submitted_unverified', 'paid_unverified'].includes(item.workflowState));
+  const activity = (a.activity ?? []).slice(0, 4);
+  const month = new Intl.DateTimeFormat('en-IN', { month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' })
+    .format(new Date(`${a.period}-01T00:00:00+05:30`));
+  const dateLabel = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })
+    .format(new Date());
+  const localHour = Number(new Intl.DateTimeFormat('en-IN', { hour: 'numeric', hour12: false, timeZone: 'Asia/Kolkata' }).format(new Date()));
+  const greeting = localHour < 12 ? 'morning' : localHour < 17 ? 'afternoon' : 'evening';
+  const displayFirstName = a.displayName?.trim().split(/\s+/)[0] ?? '';
+  const greetingName = /^(ca|owner|user|auditor|admin)$/i.test(displayFirstName) ? 'there' : displayFirstName || 'there';
+  const amount = (value: string): string => `₹${inr(value)}`;
+  const needs: Array<{ source: string; title: string; detail: string; href: string; action: string; primary?: boolean }> = [
     ...(a.creditAtRisk === null
-      ? [`<a class="today-action" href="/gstr2b"><b>Compare supplier filings</b><span>Run the 2B reconciliation to see which recorded credit is supported.</span></a>`]
+      ? [{ source: 'GST', title: 'Compare supplier filings', detail: 'Run the 2B reconciliation to check which recorded credit is supported.', href: '/gstr2b', action: 'Review' }]
       : a.creditAtRisk !== '0.00'
-        ? [`<a class="today-action" href="/gstr2b"><b>${inr(a.creditAtRisk)} credit needs a supplier filing</b><span>Review the unmatched GSTR-2B items.</span></a>`] : []),
+        ? [{ source: 'GST', title: `${amount(a.creditAtRisk)} credit is not yet supported`, detail: 'Review the unmatched GSTR-2B items before relying on this credit.', href: '/gstr2b', action: 'Review' }] : []),
     ...(a.openReconItems > 0
-      ? [`<a class="today-action" href="/gstr2b"><b>${a.openReconItems} GST match(es) need review</b><span>Resolve the remaining supplier statement differences.</span></a>`] : []),
+      ? [{ source: 'GST', title: `${a.openReconItems} GSTR-2B match${a.openReconItems === 1 ? '' : 'es'} need review`, detail: 'Resolve the remaining supplier statement differences.', href: '/gstr2b', action: 'Open GSTR-2B' }] : []),
     ...(a.overdueCount > 0
-      ? [`<a class="today-action" href="/payables"><b>${a.overdueCount} overdue bill(s)</b><span>${inr(a.overduePayable)} is overdue for review.</span></a>`] : []),
+      ? [{ source: 'BILLS', title: `${a.overdueCount} overdue supplier bill${a.overdueCount === 1 ? '' : 's'}`, detail: `${amount(a.overduePayable)} outstanding is past its recorded due date.`, href: '/payables', action: 'Review payables' }] : []),
     ...(a.registrationIssues.length > 0
-      ? [`<a class="today-action" href="/suppliers"><b>${a.registrationIssues.length} supplier registration issue(s)</b><span>Check the GST status before relying on input credit.</span></a>`] : []),
+      ? [{ source: 'SUPPLIERS', title: `${a.registrationIssues.length} supplier GST registration issue${a.registrationIssues.length === 1 ? '' : 's'}`, detail: 'Check the recorded GST status before relying on input credit.', href: '/suppliers', action: 'View suppliers' }] : []),
+    ...followUps.filter((item) => item.status === 'open').slice(0, 3).map((item) => ({
+      source: 'REVIEW DESK', title: item.title,
+      detail: `${item.priority} priority · ${item.assigneeName ? `with ${item.assigneeName}` : 'unassigned'}${item.dueDate ? ` · due ${item.dueDate}` : ''}`,
+      href: `/follow-ups#followup-${encodeURIComponent(item.id)}`, action: 'Open item',
+    })),
+    ...founderRequests.slice(0, 3).map((item) => ({
+      source: 'INBOX', title: 'Your CA asked for information', detail: item.question,
+      href: `/documents?document=${encodeURIComponent(item.documentId)}`, action: 'Reply', primary: true,
+    })),
   ];
+  const reviewCount = needs.length;
 
-  return `<div class="today-heading"><div><h1>Today</h1>
-  <p class="sub">The latest recorded position for this client. Open an item to review its source and decide what to do.</p></div>
-  ${picker}</div>
-  <div class="today-grid">
-    <section class="panel today-needs"><div class="today-section-head"><div><h2>Needs attention</h2>
-      <p class="sub">${needs.length ? `${needs.length} item(s) need review` : 'No immediate review items from these checks.'}</p></div>
-      <a href="/nexus">Ask Nexus</a></div>
-      ${needs.length ? `<div class="today-actions">${needs.join('')}</div>` : '<p class="today-clear">These checks are clear. New documents and statements will appear in their review queues.</p>'}
-      ${issues}
-    </section>
-    <section class="panel today-position"><h2>Money and activity</h2>
-      <div class="tiles">
-        ${tile(a.creditAtRisk === null ? '—' : inr(a.creditAtRisk),
-          a.creditAtRisk === null ? 'run a 2B reconciliation' : 'credit booked, not yet filed',
-          a.creditAtRisk === null ? 'muted' : a.creditAtRisk === '0.00' ? 'good' : 'bad', '/gstr2b')}
-        ${tile(a.creditSupported !== null ? inr(a.creditSupported) : inr(a.creditClaimed),
-          a.creditSupported !== null ? 'credit 2B supports' : 'input credit claimed', 'good')}
-        ${tile(String(a.openReconItems), 'reconciliation items open', a.openReconItems ? 'warn' : '', '/gstr2b')}
-        ${tile(String(a.billsPosted), 'bills posted this period', '', '/bills')}
-        ${tile(inr(a.purchaseValue), 'purchase value', '')}
-        ${tile(inr(a.totalPayable), 'owed to suppliers', '', '/payables')}
-        ${tile(inr(a.overduePayable), a.overdueCount ? a.overdueCount + ' bill(s) overdue' : 'nothing overdue',
-          a.overduePayable === '0.00' ? 'good' : 'bad', '/payables')}
+  const compactMetric = (label: string, value: string, note: string, href = '', tone = ''): string => {
+    const content = `<span class="today-metric-label">${esc(label)}</span><b class="${tone}">${esc(value)}</b><small>${esc(note)}</small>`;
+    return href ? `<a class="today-metric" href="${href}">${content}</a>` : `<div class="today-metric">${content}</div>`;
+  };
+  const statusLabels: Record<string, string> = {
+    observed: 'Observed · status not established', open: 'Open · work remains', blocked: 'Blocked',
+    needs_human_review: 'Needs human review', prepared: 'Prepared · not filed',
+    submitted_unverified: 'Submitted · unverified', paid_unverified: 'Payment reported · unverified',
+  };
+  const setup = a.setup;
+  const setupIncomplete = setup ? [!setup.pan, !setup.gstin, setup.bankAccounts === 0, setup.teamMembers < 2].filter(Boolean).length : null;
+
+  return `<div class="today-home">
+    <div class="today-main-column">
+      <div class="today-hero">
+        <div><div class="today-eyebrow">${esc(dateLabel)} · BOOKS FOR ${picker}</div>
+          <h1>Good ${greeting}, ${esc(greetingName)}. <span>${reviewCount} ${reviewCount === 1 ? 'thing needs' : 'things need'} your attention.</span></h1>
+        </div><span class="today-viewer">Viewing as <b>${esc(a.role ?? 'User')}</b></span>
       </div>
-    </section>
-  </div>
-  <section class="today-recent"><h2>Recently posted</h2>${recent}</section>`;
+      <form class="today-ask" id="today-ask-form"><span aria-hidden="true">✦</span><input id="today-ask-input" maxlength="500" autocomplete="off" placeholder="Ask anything about ${esc((a.clientName ?? 'this client') + (a.clientName ? "'s" : '’s'))} money…" aria-label="Ask Nexus about this client"><button type="submit">Ask Nexus</button></form>
+      <section class="today-queue" aria-labelledby="today-needs-heading">
+        <header><div><h2 id="today-needs-heading">Needs you · ${needs.length}</h2><span>Collected from this client’s records · accounting changes still need your approval</span></div><a href="/attention">All attention →</a></header>
+        ${needs.length ? needs.map((item) => `<article class="today-queue-row">
+          <span class="today-source">${esc(item.source)}</span><div><b>${esc(item.title)}</b><small>${esc(item.detail)}</small></div>
+          <a class="today-queue-action ${item.primary ? 'primary' : ''}" href="${esc(item.href)}">${esc(item.action)}</a>
+        </article>`).join('') : '<p class="today-clear">No open items in the checks shown here. New documents and statements still need review in their own queues.</p>'}
+      </section>
+      <section class="today-metrics" aria-label="Current financial position">
+        ${compactMetric('Supplier payables', amount(a.totalPayable), a.overdueCount ? `${a.overdueCount} overdue · ${amount(a.overduePayable)}` : 'Nothing overdue', '/payables')}
+        ${compactMetric('Purchases · ' + month, amount(a.purchaseValue), `${a.billsPosted} bill${a.billsPosted === 1 ? '' : 's'} recorded`, '/bills')}
+        ${compactMetric(a.creditAtRisk === null ? 'Input credit claimed' : 'Credit not yet supported', amount(a.creditAtRisk ?? a.creditClaimed), a.creditAtRisk === null ? 'No 2B check recorded for this period' : a.hasRecon ? `${amount(a.creditSupported ?? '0.00')} supported by this 2B check` : 'No supplier filing match recorded', '/gstr2b', a.creditAtRisk && a.creditAtRisk !== '0.00' ? 'warn' : '')}
+        ${compactMetric('GSTR-2B items', String(a.openReconItems), 'Unresolved matches for this period', '/gstr2b', a.openReconItems ? 'warn' : '')}
+      </section>
+      <div class="today-lower-grid">
+        <section class="today-info-card"><h2>GST credit · ${esc(month)}</h2>
+          <div class="today-gst-values"><div><small>Claimed on bills</small><b>${amount(a.creditClaimed)}</b></div>
+            <div><small>Supported by 2B</small><b>${a.creditSupported === null ? 'Not checked' : amount(a.creditSupported)}</b></div>
+            <div class="${a.creditAtRisk && a.creditAtRisk !== '0.00' ? 'warn' : ''}"><small>Not yet supported</small><b>${a.creditAtRisk === null ? 'Not checked' : amount(a.creditAtRisk)}</b></div></div>
+          <a href="/gstr2b">${a.hasRecon ? 'Review supplier matches →' : 'Run GSTR-2B comparison →'}</a>
+        </section>
+        <section class="today-info-card ${a.registrationIssues.length ? 'today-alert-card' : ''}"><h2>Supplier registration</h2>
+          ${a.registrationIssues.length ? `<b>${a.registrationIssues.length} supplier registration issue${a.registrationIssues.length === 1 ? '' : 's'}</b><ul>${a.registrationIssues.slice(0, 3).map((r) => `<li>${esc(r.party)} · ${esc(r.status)}</li>`).join('')}</ul><a href="/suppliers">Review supplier records →</a>` : '<p>No inactive supplier registrations are recorded in the registry check.</p><a href="/suppliers">View suppliers →</a>'}
+        </section>
+      </div>
+      <section class="today-recent"><div class="today-section-heading"><h2>Recently posted</h2><a href="/bills">All bills →</a></div>
+        ${a.recentBills.length ? `<div class="today-posted-list">${a.recentBills.slice(0, 5).map((b) => `<a href="/bills" class="today-posted-row"><span class="mono">${esc(b.number)}</span><span>${esc(b.party)}</span><time>${esc(b.date)}</time><b>${amount(b.total)}</b></a>`).join('')}</div>` : '<p class="today-clear">No bills have been posted yet. <a href="/bills">Review a bill</a> when one is ready.</p>'}
+      </section>
+    </div>
+    <aside class="today-rail" aria-label="Client work summary">
+      <section class="today-rail-card"><div class="today-health"><span class="today-health-mark">${reviewCount ? '!' : '✓'}</span><div><small>RECORDED CHECKS</small><b>${reviewCount ? 'Review items are open' : 'No review items found'}</b></div></div>
+        <div class="today-health-items"><small>Based on the checks shown</small>
+          <a href="/gstr2b">${a.openReconItems} GSTR-2B item${a.openReconItems === 1 ? '' : 's'} open</a>
+          <a href="/payables">${a.overdueCount} overdue supplier bill${a.overdueCount === 1 ? '' : 's'}</a>
+          <a href="/suppliers">${a.registrationIssues.length} supplier status issue${a.registrationIssues.length === 1 ? '' : 's'}</a>
+        </div><a href="/nexus">Ask Nexus about the open items →</a></section>
+      <section class="today-rail-section"><h2>Recorded compliance work</h2>
+        ${obligations.length ? obligations.slice(0, 4).map((item) => `<a class="today-rail-row" href="/attention#attention-obligation-${encodeURIComponent(item.id)}"><b>${esc(item.kind)} · ${esc(item.periodKey)}</b><small>${esc(statusLabels[item.workflowState] ?? item.workflowState)} · deadline not recorded here</small></a>`).join('') : '<p>No compliance timeline items have been recorded for this client.</p>'}
+        <a href="/attention">Open attention →</a></section>
+      <section class="today-rail-section"><h2>With your CA · ${followUps.filter((item) => item.status === 'open' && item.assigneeName).length}</h2>
+        ${followUps.filter((item) => item.status === 'open' && item.assigneeName).slice(0, 3).map((item) => `<a class="today-rail-row" href="/follow-ups#followup-${encodeURIComponent(item.id)}"><b>${esc(item.title)}</b><small>${esc(item.assigneeName!)}${item.dueDate ? ` · due ${esc(item.dueDate)}` : ''}</small></a>`).join('') || '<p>No open follow-ups assigned to a CA.</p>'}
+        <a href="/follow-ups">Open review desk →</a></section>
+      <section class="today-rail-section"><h2>Setup</h2>
+        ${setup ? `<p>${setupIncomplete === 0 ? 'Core client details are recorded.' : `${setupIncomplete} setup detail${setupIncomplete === 1 ? '' : 's'} may still need attention.`}</p><small>${setup.pan ? 'PAN recorded' : 'PAN not recorded'} · ${setup.gstin ? 'GST registration recorded' : 'GST registration not recorded'} · ${setup.bankAccounts} bank account${setup.bankAccounts === 1 ? '' : 's'}</small>` : '<p>Setup status is unavailable.</p>'}
+        <a href="/setup">Review setup →</a></section>
+      ${['CA partner', 'CA staff', 'Auditor'].includes(a.role ?? '') ? `<section class="today-rail-section"><h2>Firm workspace</h2>
+        <a href="/firm">Firm cockpit →</a>${a.role !== 'Auditor' ? '<a href="/email-inbox">Firm email →</a>' : ''}<a href="/tally">Tally import →</a></section>` : ''}
+      <section class="today-rail-section"><div class="today-section-heading"><h2>Recent activity</h2><a href="/activity">All →</a></div>
+        ${activity.length ? activity.map((item) => `<a class="today-activity-row" href="${esc(item.href)}"><b>${esc(item.title)}</b><small>${esc(item.detail.slice(0, 100))}${item.detail.length > 100 ? '…' : ''}</small><time>${esc(new Date(item.occurredAt).toLocaleDateString('en-IN'))}</time></a>`).join('') : '<p>No client activity recorded yet.</p>'}
+      </section>
+    </aside>
+  </div>`;
 }
 
 export function renderProfitAndLoss(a: {

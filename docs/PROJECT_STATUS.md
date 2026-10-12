@@ -29,8 +29,16 @@
   reachable on narrow screens, added a keyboard skip link and focus treatment,
   removed the duplicated page title, and applied the handoff's IBM Plex font
   and color tokens. Fonts are bundled with their SIL OFL 1.1 license.
-- Reorganized Today around attention items and existing client-scoped money
-  summaries. Added a customer list route using the current sales read model and
+- Rebuilt Today to follow the owner-home handoff: a cross-workflow review queue,
+  client-scoped financial summaries, GST and supplier status cards, recent
+  bills, and a side rail for recorded compliance work, CA follow-ups, setup,
+  and activity. The view uses existing read models and links to their current
+  review actions; it does not invent a books score or statutory deadlines.
+  The inline Ask Nexus prompt sends questions into the existing read-only chat
+  drawer. Typecheck, focused Today/navigation tests (36), and the full app
+  suite (70 files, 1,013 tests) pass; the signed-in localhost view was reviewed
+  in the browser.
+  Added a customer list route using the current sales read model and
   customer statement links. Added client-scoped Profit & Loss, Balance Sheet,
   and Close Month pages using existing reports and period-close domain logic.
   Closing is a CA-partner-only server-rendered form; no database migration or

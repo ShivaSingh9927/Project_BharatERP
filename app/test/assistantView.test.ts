@@ -311,7 +311,7 @@ describe('BharatERP redesign shell', () => {
   it('keeps every existing workspace destination reachable through contextual navigation', () => {
     const session = { clientName: 'ABC Traders', role: 'owner', boundClientId: 'client-1' };
     const destinations: Array<[string, string[]]> = [
-      ['home', ['/setup', '/activity', '/attention', '/follow-ups']],
+      ['home', ['/']],
       ['nexus', ['/nexus', '/assistant-runs']],
       ['documents', ['/documents']],
       ['bills', ['/bills', '/payables', '/suppliers', '/returns']],
@@ -324,6 +324,8 @@ describe('BharatERP redesign shell', () => {
       const html = renderShell({ session, accounts: [], active, body: '' });
       for (const href of links) expect(html, `${active} navigation should expose ${href}`).toContain(`href="${href}`);
     }
+    const todayShell = renderShell({ session, accounts: [], active: 'home', body: '' });
+    expect(todayShell).not.toContain('aria-label="Today navigation"');
 
     const firmShell = renderShell({ session: { clientName: 'Firm', role: 'ca_partner', boundClientId: null },
       accounts: [], active: 'firm', body: '' });

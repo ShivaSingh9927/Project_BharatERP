@@ -68,7 +68,7 @@ must never be used as application data.
 
 | Route | Mockup / destination | Existing behavior to preserve | State |
 |---|---|---|---|
-| `/` | Today 12a | Dashboard totals, attention, alerts, obligations, setup, follow-ups | Restyled; dashboard and full-suite tests pass |
+| `/` | Today 12a | Dashboard totals, attention, alerts, obligations, setup, follow-ups | Reworked to the owner-home composition; dashboard/navigation tests, full suite, and browser review pass |
 | `/firm` | Today 12b | CA firm cockpit, client attention and period filter | Restyled; cockpit and full-suite tests pass |
 | `/setup` | Restyle in shared shell | Client setup progress | Retained; full-suite tests pass |
 | `/activity` | Restyle in shared shell | Client activity history | Retained; full-suite tests pass |

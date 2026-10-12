@@ -802,10 +802,24 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/') {
-    const dash = await loadDashboard(session.firmId, session.clientId,
-      url.searchParams.get('period') ?? undefined);
+    const [dash, obligations, followUps, activity, setup, founderRequests] = await Promise.all([
+      loadDashboard(session.firmId, session.clientId, url.searchParams.get('period') ?? undefined),
+      listObligationTimeline(session.firmId, session.clientId),
+      listFollowUps(session.firmId, session.clientId),
+      recentActivity(session.firmId, session.clientId, 4),
+      clientSetupProgress(session.firmId, session.clientId),
+      session.role === 'owner'
+        ? listOpenDocumentRequests(session.firmId, session.clientId)
+        : Promise.resolve([]),
+    ]);
     return html(res, 200, renderShell({
-      session, accounts, active: 'home', body: renderDashboard(dash),
+      session, accounts, active: 'home', body: renderDashboard({
+        ...dash,
+        displayName: session.displayName,
+        clientName: session.clientName,
+        role: ({ owner: 'Owner', ca_partner: 'CA partner', ca_staff: 'CA staff', auditor: 'Auditor' } as Record<string, string>)[session.role] ?? 'User',
+        obligations, followUps, activity, setup, founderRequests,
+      }),
     }));
   }
 
