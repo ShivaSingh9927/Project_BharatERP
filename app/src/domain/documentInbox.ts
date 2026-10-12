@@ -10,6 +10,8 @@ export interface InboxDocument {
   size: number;
   hash: string;
   status: string;
+  channel?: string;
+  sender?: string | null;
   receivedAt: string;
   linkedVoucherId: string | null;
   available: boolean;
@@ -134,10 +136,12 @@ const rowView = (r: {
   class_confidence?: number | null; class_rationale?: string | null;
   class_evidence?: string[] | null; class_provider?: string | null; class_model?: string | null;
   confirmed_document_class?: string | null; class_confirmed_at?: Date | string | null;
+  channel?: string; sender?: string | null;
 }, firmId: string, clientId: string): InboxDocument => ({
   id: r.id, originalName: r.original_name ?? 'document',
   mimeType: r.mime_type ?? 'application/octet-stream',
   size: Number(r.file_size ?? 0), hash: r.sha256, status: r.status,
+  channel: r.channel ?? 'upload', sender: r.sender ?? null,
   receivedAt: new Date(r.received_at).toISOString(),
   linkedVoucherId: r.linked_voucher_id,
   available: r.original_blob_uri === documentUri(firmId, clientId, r.sha256),
@@ -287,6 +291,7 @@ export async function listDocuments(
   return withFirm(firmId, async (c) => {
     const r = await c.query(
       `SELECT d.id, d.original_name, d.mime_type, d.file_size, d.sha256, d.status,
+              d.channel, d.sender,
               d.received_at, d.linked_voucher_id, d.original_blob_uri,
               d.review_note, d.review_updated_at,
               cls.document_class AS class_document_class, cls.subtype AS class_subtype,

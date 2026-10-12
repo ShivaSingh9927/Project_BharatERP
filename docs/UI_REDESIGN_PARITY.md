@@ -21,9 +21,14 @@ must never be used as application data.
 - The shared navigation, Today/Nexus entry, firm cockpit, reports, close-month,
   and customer-list integration are in the pushed first slice described in
   PROJECT_STATUS.md.
-- The current follow-on slice updates /documents with selectable client
-  documents and status/type filters, and /bills with review-state filters
-  and an explicit next-step cue. /sales and /customers now use the same
+- The /documents Inbox now follows Inbox 10a's list, honest preview state,
+  and compact Nexus review-panel layout. It keeps source channel/sender data,
+  the original download, class confirmation/correction, consent disclosure,
+  review history, and current CA actions. Open CA information requests are
+  answerable by the client owner with an optional client-scoped attachment.
+  The UI clearly says when a stored file cannot be previewed; no mockup file,
+  routing threshold, or automatic move is implied. /bills retains its
+  review-state filters and explicit next-step cue. /sales and /customers now use the same
   page heading and orientation pattern. These additions keep using the current
   server-rendered, client-scoped data and existing write endpoints.
 - Bank reconciliation, statement import, BRS, cash, GSTR-1/2B/3B, TDS, fixed
@@ -72,7 +77,7 @@ must never be used as application data.
 | `/firm` | Today 12b | CA firm cockpit, client attention and period filter | Restyled; cockpit and full-suite tests pass |
 | `/setup` | Restyle in shared shell | Client setup progress | Retained; full-suite tests pass |
 | `/activity` | Restyle in shared shell | Client activity history | Retained; full-suite tests pass |
-| `/documents` | Inbox 10a | Upload/email documents, classification suggestion and human confirmation, review/request info/dismiss/restore, source download | Redesigned; inbox view/workflow tests pass |
+| `/documents` | Inbox 10a | Upload/email documents, classification suggestion and human confirmation, review/request info/dismiss/restore, source download, client answer to CA request | Redesigned to list/preview/review layout; view, email-intake, and role-gated response workflow tests pass |
 | `/email-inbox` | Inbox 10c | Firm email intake, assignment, trusted sender behavior | Restyled; email intake and role navigation tests pass |
 | `/nexus` | Ask Nexus 11a/11c | Durable cases, saved response blocks/evidence, read-only bank activity, bounded long-running review tasks and consent | Redesigned; Nexus view tests pass; signed-in responsive visual checks remain |
 | `/attention` | Restyle in shared shell | Alerts, obligation attention and source links | Retained; attention view/domain tests pass |
@@ -108,7 +113,7 @@ the redesign must not call around them or create parallel write paths.
 | Area | Existing actions to keep reachable | State |
 |---|---|---|
 | Authentication | `POST /logout`; password change page and submit | Existing handlers retained; auth suite passes |
-| Inbox | upload/download, classifier consent, confirm class, in-review, request information, dismiss/restore; firm email sample and assignment/trust actions | Existing handlers retained; inbox/email suites pass |
+| Inbox | upload/download, classifier consent, confirm class, in-review, request information, dismiss/restore, founder answers with attachments; firm email sample and assignment/trust actions | Existing handlers retained; inbox/email suites pass |
 | Nexus | ask question, read-only bank activity, task consent/create/run; follow-up list/create/update/history | Existing handlers retained; assistant/Nexus/follow-up suites pass |
 | Sales | create customer and invoice; invoice print/share; receipts, TDS withheld, write-off | Existing handlers retained; sales/invoice/receivable suites pass |
 | Bills | classifier consent, preview/fill/post, supplier creation, reverse-charge rate, supplier payment, returns and credit notes | Existing handlers retained; bill/purchase-return suites pass |

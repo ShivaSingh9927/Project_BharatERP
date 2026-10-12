@@ -65,6 +65,7 @@ export function renderDocumentInbox(
   documents: InboxDocument[], canReview = false, requestHistory: DocumentRequestAnswer[] = [],
   classifier: { enabled: boolean; available: boolean } = { enabled: false, available: false },
   canConfirmClass = true, selectedDocumentId?: string, statusFilter = 'all', classFilter = 'all',
+  openRequests: DocumentInformationRequest[] = [], canAnswerRequests = false,
 ): string {
   const statusLabel = (status: string): string => ({
     received: 'Received · waiting for CA',
@@ -93,49 +94,63 @@ export function renderDocumentInbox(
   });
   const selectedDocument = filteredDocuments.find((document) => document.id === selectedDocumentId)
     ?? filteredDocuments[0] ?? null;
-  const rows = (selectedDocument ? [selectedDocument] : []).map((d) => `<tr id="doc-${esc(d.id)}">
-    <td>${d.available ? `<a href="/api/documents/${esc(d.id)}/download">${esc(d.originalName)}</a>
-      <div class="doc-class-suggestion"><b>${d.classSuggestion ? 'Nexus suggestion' : 'Document class review'}</b>
-        ${d.classSuggestion ? `<span>${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}${d.classSuggestion.subtype ? ` · ${esc(d.classSuggestion.subtype)}` : ''} · ${d.classSuggestion.confidence}% confidence</span>
-        <div class="why">${esc(d.classSuggestion.rationale)}</div>
-        ${d.classSuggestion.evidence.length ? `<details><summary>Evidence and explanation</summary><p class="why">${d.classSuggestion.evidence.map(esc).join(' · ')}</p></details>` : ''}` : '<span class="why">No AI suggestion yet. You can classify it manually.</span>'}
-        ${d.status !== 'dismissed' && canConfirmClass ? `<label>Confirm or correct class
-          <select class="document-class-choice" data-id="${esc(d.id)}">${documentClasses.map((value) => `<option value="${value}" ${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value ? 'selected' : ''}>${esc(classLabels[value]!)}</option>`).join('')}</select></label>
-          <button type="button" class="confirm-document-class" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm class'}</button>
-          ${d.classConfirmation ? `<span class="tag good">Confirmed · ${esc(classLabels[d.classConfirmation.documentClass] ?? d.classConfirmation.documentClass)} · ${esc(new Date(d.classConfirmation.confirmedAt).toLocaleString('en-IN'))}</span>` : '<span class="why">Confirming class does not import or post anything.</span>'}` : ''}
-        ${d.classConfirmation ? (d.classConfirmation.documentClass === 'bank_statement'
-          ? `<a class="doc-route" href="/import?document=${encodeURIComponent(d.id)}">Continue to statement preview →</a>`
-          : d.classConfirmation.documentClass === 'purchase_bill'
-            ? `<button type="button" class="review-document" data-id="${esc(d.id)}">Continue to bill review →</button>`
-            : d.classConfirmation.documentClass === 'sales_invoice' ? '<a class="doc-route" href="/sales">Open sales invoices →</a>'
-              : d.classConfirmation.documentClass === 'tds_document' ? '<a class="doc-route" href="/tds">Open TDS review →</a>'
-                : d.classConfirmation.documentClass === 'gst_document' ? '<a class="doc-route" href="/gstr3b">Open GST review →</a>'
-                  : '<span class="why">Class confirmed. Keep this file for the relevant reviewer.</span>') : ''}
-        ${!d.classSuggestion && classifier.enabled && classifier.available && d.status !== 'dismissed' ? `<button type="button" class="classify-document" data-id="${esc(d.id)}">Ask Nexus for a suggestion</button>` : ''}
-      </div>`
-      : `<span>${esc(d.originalName)}</span><div class="why">Original file is unavailable</div>`}</td>
-    <td>${esc(new Date(d.receivedAt).toLocaleString('en-IN'))}</td>
-    <td>${esc(d.available ? statusLabel(d.status) : 'Original unavailable')}
-      ${d.reviewNote ? `<div class="msg">CA note: ${esc(d.reviewNote)}</div>` : ''}
-      ${requestHistory.filter((item) => item.documentId === d.id && item.status === 'answered')
-        .map((item) => `<details><summary>Founder answer · ${esc(new Date(item.answeredAt!).toLocaleString('en-IN'))}</summary>
-          <div class="msg"><b>Asked:</b> ${esc(item.question)}</div>
-          ${item.answer ? `<div class="msg"><b>Answered:</b> ${esc(item.answer)}</div>` : ''}
-          ${item.attachmentIds.map((id) => {
-            const attachment = documents.find((doc) => doc.id === id);
-            return `<div><a href="/documents#doc-${esc(id)}">${esc(attachment?.originalName ?? 'Attached document')}</a></div>`;
-          }).join('')}</details>`).join('')}
-      ${d.reviewUpdatedAt ? `<div class="why">Updated ${esc(new Date(d.reviewUpdatedAt).toLocaleString('en-IN'))}</div>` : ''}</td>
-    <td class="num">${esc((d.size / 1024).toFixed(1))} KB</td>
-    <td>${canReview && d.available && d.status !== 'processed' ? `<div class="doc-review-actions">
-      <button type="button" class="mark-in-review" data-id="${esc(d.id)}">${d.status === 'dismissed' ? 'Restore for review' : 'Mark in review'}</button>
-      ${d.status !== 'dismissed' ? `
-      <textarea class="review-note" maxlength="1000" aria-label="Information needed for ${esc(d.originalName)}" placeholder="What should the founder provide?"></textarea>
-      <button type="button" class="request-info" data-id="${esc(d.id)}">Request information</button>
-      <textarea class="dismiss-reason" maxlength="1000" aria-label="Reason to dismiss ${esc(d.originalName)}" placeholder="Why is this file irrelevant or incorrect?"></textarea>
-      <button type="button" class="dismiss-document" data-id="${esc(d.id)}">Dismiss as irrelevant</button>` : ''}
-    </div>` : ''}</td>
-  </tr>`).join('');
+  const d = selectedDocument;
+  const selectedRequests = d ? requestHistory.filter((item) => item.documentId === d.id) : [];
+  const history = d ? [
+    `<li><b>Received</b><span>${esc(new Date(d.receivedAt).toLocaleString('en-IN'))}</span></li>`,
+    ...(d.classSuggestion ? [`<li><b>Nexus suggested ${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}</b><span>${d.classSuggestion.confidence}% confidence</span></li>`] : []),
+    ...(d.classConfirmation ? [`<li><b>Class confirmed</b><span>${esc(new Date(d.classConfirmation.confirmedAt).toLocaleString('en-IN'))}</span></li>`] : []),
+    ...selectedRequests.map((item) => `<li><b>${item.status === 'answered' ? 'Founder answered' : 'Information requested'}</b><span>${esc(new Date(item.status === 'answered' && item.answeredAt ? item.answeredAt : item.requestedAt).toLocaleString('en-IN'))}</span></li>`),
+    ...(d.reviewUpdatedAt ? [`<li><b>Status updated</b><span>${esc(new Date(d.reviewUpdatedAt).toLocaleString('en-IN'))}</span></li>`] : []),
+  ].join('') : '';
+  const requestCards = canAnswerRequests && openRequests.length ? `<section class="panel inbox-requests" aria-label="Questions from your CA">
+    <h2>Your CA asked · ${openRequests.length}</h2>${openRequests.map((request) => {
+      const requestedDocument = documents.find((item) => item.id === request.documentId);
+      return `<form class="inbox-answer-request" data-request-id="${esc(request.id)}">
+        <p><b>${esc(requestedDocument?.originalName ?? 'Document')}</b><span>${esc(new Date(request.requestedAt).toLocaleDateString('en-IN'))}</span></p>
+        <div>${esc(request.question)}</div><textarea aria-label="Your answer" maxlength="2000" placeholder="Write a reply…"></textarea>
+        <label class="inbox-attach">＋ Attach a file<input type="file" name="files" multiple></label>
+        <button class="primary" type="submit">Send reply</button><span class="inbox-request-result" role="status"></span>
+      </form>`;
+    }).join('')}</section>` : '';
+  const selectedPanel = d ? `<div class="inbox-review-grid">
+    <section class="inbox-preview" aria-label="Document preview">
+      <div class="inbox-preview-canvas">${d.available
+        ? `<div><b>${esc(d.mimeType)}</b><span>Preview is not available in this workspace yet.</span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`
+        : '<div><b>Original unavailable</b><span>The source file is not stored here.</span></div>'}</div>
+      <p class="why">${d.available ? `Original retained · ${esc((d.size / 1024).toFixed(1))} KB · SHA-256 ${esc(d.hash.slice(0, 12))}…` : 'Source file unavailable'}</p>
+    </section>
+    <section class="inbox-review" aria-label="Nexus classification and review">
+      <div class="inbox-file-head"><h2>${esc(d.originalName)}</h2><span class="inbox-document-status">${esc(statusLabel(d.available ? d.status : 'unavailable'))}</span>
+        <small>Received ${esc(new Date(d.receivedAt).toLocaleString('en-IN'))}</small></div>
+      <article class="inbox-suggestion"><div class="inbox-suggestion-title"><b>✦ Nexus suggestion</b>${d.classSuggestion ? `<span>${d.classSuggestion.confidence}% confidence</span>` : ''}</div>
+        ${d.classSuggestion ? `<strong>${esc(classLabels[d.classSuggestion.documentClass] ?? d.classSuggestion.documentClass)}${d.classSuggestion.subtype ? ` · ${esc(d.classSuggestion.subtype)}` : ''}</strong>
+          <p>${esc(d.classSuggestion.rationale)}</p>${d.classSuggestion.evidence.length ? `<details><summary>Evidence and explanation</summary><p>${d.classSuggestion.evidence.map(esc).join(' · ')}</p></details>` : ''}
+          <details><summary>What information is shared?</summary><p>For this suggestion, Nexus received text from the document after configured redaction. The file name and remaining text can still identify people or businesses. Nothing is imported or posted automatically.</p></details>`
+          : `<p>${classifier.enabled && classifier.available && d.status !== 'dismissed' ? 'No suggestion yet. Ask Nexus to review this file.' : 'No suggestion is available. You can still classify it manually.'}</p>`}
+        ${!d.classSuggestion && classifier.enabled && classifier.available && d.status !== 'dismissed' ? `<button type="button" class="classify-document" data-id="${esc(d.id)}">Ask Nexus</button>` : ''}
+      </article>
+      ${d.status !== 'dismissed' && canConfirmClass && d.available ? `<section class="inbox-class-review"><h3>Confirm or correct type</h3>
+        <div class="inbox-class-choices">${documentClasses.map((value) => `<button type="button" class="document-class-choice ${((d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value) ? 'selected' : ''}" data-id="${esc(d.id)}" data-class="${value}" aria-pressed="${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value}">${esc(classLabels[value]!)}</button>`).join('')}</div>
+        <button type="button" class="confirm-document-class primary" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm type'}</button>
+        <p class="why">Confirming a type does not import, reconcile, or post anything.</p></section>` : ''}
+      ${d.classConfirmation ? `<div class="inbox-next-step"><b>Next step</b>${d.classConfirmation.documentClass === 'bank_statement'
+        ? `<a href="/import?document=${encodeURIComponent(d.id)}">Continue to statement preview →</a>`
+        : d.classConfirmation.documentClass === 'purchase_bill'
+          ? `<button type="button" class="review-document" data-id="${esc(d.id)}">Continue to bill review →</button>`
+          : d.classConfirmation.documentClass === 'sales_invoice' ? '<a href="/sales">Open sales invoices →</a>'
+            : d.classConfirmation.documentClass === 'tds_document' ? '<a href="/tds">Open TDS review →</a>'
+              : d.classConfirmation.documentClass === 'gst_document' ? '<a href="/gstr3b">Open GST review →</a>'
+                : '<span>Class confirmed. The file remains available for review.</span>'}</div>` : ''}
+      <details class="inbox-history"><summary>History</summary><ol>${history}</ol></details>
+      ${canReview && d.available && d.status !== 'processed' ? `<details class="inbox-ca-actions"><summary>CA review actions</summary><div class="doc-review-actions">
+        <button type="button" class="mark-in-review" data-id="${esc(d.id)}">${d.status === 'dismissed' ? 'Restore for review' : 'Mark in review'}</button>
+        ${d.status !== 'dismissed' ? `<label>Ask founder for information<textarea class="review-note" maxlength="1000" placeholder="What should the founder provide?"></textarea></label><button type="button" class="request-info" data-id="${esc(d.id)}">Request information</button>
+        <label>Set aside with reason<textarea class="dismiss-reason" maxlength="1000" placeholder="Why is this file irrelevant or incorrect?"></textarea></label><button type="button" class="dismiss-document" data-id="${esc(d.id)}">Set aside</button>` : ''}
+      </div></details>` : ''}
+      ${d.reviewNote ? `<p class="msg">CA note: ${esc(d.reviewNote)}</p>` : ''}
+      ${selectedRequests.filter((item) => item.status === 'answered').map((item) => `<details><summary>Founder answer · ${esc(new Date(item.answeredAt!).toLocaleString('en-IN'))}</summary><p><b>Asked:</b> ${esc(item.question)}</p>${item.answer ? `<p><b>Answered:</b> ${esc(item.answer)}</p>` : ''}${item.attachmentIds.map((id) => `<a href="/documents?document=${encodeURIComponent(id)}">${esc(documents.find((doc) => doc.id === id)?.originalName ?? 'Attached document')}</a>`).join('')}</details>`).join('')}
+    </section></div>` : `<div class="inbox-empty-detail"><h2>${documents.length ? 'No document in this view' : 'Your inbox is ready'}</h2><p>${documents.length ? 'Choose another filter or file to continue.' : 'Upload a file to start a review. Received documents stay here until a person confirms the next step.'}</p></div>`;
   const query = (documentId?: string): string => {
     const params = new URLSearchParams();
     if (documentId) params.set('document', documentId);
@@ -170,16 +185,17 @@ export function renderDocumentInbox(
     return `<a class="inbox-document ${document.id === selectedDocument?.id ? 'selected' : ''}" href="${esc(query(document.id))}">
       <span><b>${esc(document.originalName)}</b><small>${esc(new Date(document.receivedAt).toLocaleString('en-IN'))}</small></span>
       <span class="inbox-document-status">${esc(statusLabel(document.available ? document.status : 'unavailable'))}</span>
-      <small>${esc(classLabels[docClass] ?? docClass)}${destination ? ` · Now in ${esc(destination)}` : ''}</small>
+      <small>${esc(document.channel === 'email' ? `Email${document.sender ? ` · ${document.sender}` : ''}` : document.channel === 'upload' ? 'Upload' : 'Received file')} · ${esc(classLabels[docClass] ?? docClass)}${destination ? ` · Now in ${esc(destination)}` : ''}</small>
     </a>`;
   }).join('') : '<p class="empty">No documents match these filters.</p>';
   return `<div class="inbox-heading"><div><h1>Inbox</h1>
-    <p class="sub">Files from email or upload. Confirm the type before a document moves into a work area.</p></div>
+    <p class="sub">Send files here by upload or email. Review the type before moving them into a work area.</p></div>
     <label class="inbox-upload">＋ Upload files<input id="document-files" type="file" multiple aria-label="Choose documents"></label>
     <button class="primary" type="button" id="document-upload">Upload</button>
   </div>
   <p class="why inbox-limit">Up to 5 MB per file. Uploading stores the original; it does not import or post anything.</p>
   <div id="document-upload-result" role="status" aria-live="polite"></div>
+  ${requestCards}
   <details class="panel inbox-ai"><summary><b>Nexus document suggestions</b>
     <span class="tag ${classifier.enabled ? 'good' : ''}">${classifier.enabled ? 'On' : 'Off for this firm'}</span></summary>
     <p class="why">Suggestions need your confirmation. If enabled, Nexus sends text from the first two PDF pages or supported text files after redacting some sensitive identifiers and amounts. Filenames and document text may still identify people or businesses.</p>
@@ -197,13 +213,7 @@ export function renderDocumentInbox(
     <nav class="panel inbox-list" aria-label="Received documents">
       <h2>Received · ${filteredDocuments.length}</h2>${docList}
     </nav>
-    <section class="panel inbox-detail" id="inbox-detail" aria-label="Selected document review">
-      ${selectedDocument ? `<h2>${esc(selectedDocument.originalName)}</h2>
-        <p class="why">${esc(statusLabel(selectedDocument.available ? selectedDocument.status : 'unavailable'))} · Received ${esc(new Date(selectedDocument.receivedAt).toLocaleString('en-IN'))} · ${esc((selectedDocument.size / 1024).toFixed(1))} KB</p>
-        ${selectedDocument.available ? `<a class="primary-link" href="/api/documents/${esc(selectedDocument.id)}/download">Download original</a>` : '<p class="why">The original file is unavailable.</p>'}
-        <div class="inbox-detail-table"><table><thead><tr><th>Classification and source</th><th>Received</th><th>Status / history</th><th>Size</th><th>CA actions</th></tr></thead><tbody>${rows}</tbody></table></div>`
-        : documents.length ? '<p class="empty">No document matches these filters.</p>' : '<p class="empty">No documents have been received yet. Email or upload a file to start the review.</p>'}
-    </section>
+    <section class="panel inbox-detail" id="inbox-detail" aria-label="Selected document review">${selectedPanel}</section>
   </div>
 <script>(() => {
   const files = document.getElementById('document-files');
@@ -229,12 +239,13 @@ export function renderDocumentInbox(
     } catch (error) { result.textContent = String(error.message || error); classify.disabled = false; }
   });
   document.querySelectorAll('.confirm-document-class').forEach((confirmClass) => confirmClass.onclick = async () => {
-    const choice = document.querySelector('.document-class-choice[data-id="' + confirmClass.dataset.id + '"]');
+    const choice = document.querySelector('.document-class-choice[data-id="' + confirmClass.dataset.id + '"].selected');
+    if (!choice) { result.textContent = 'Choose a document type first.'; return; }
     confirmClass.disabled = true; result.textContent = 'Saving the confirmed document class…';
     try {
       const response = await fetch('/api/documents/' + encodeURIComponent(confirmClass.dataset.id) + '/classification-review', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ documentClass: choice.value }),
+        body: JSON.stringify({ documentClass: choice.dataset.class }),
       });
       const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not confirm class');
       location.reload();
@@ -249,7 +260,7 @@ export function renderDocumentInbox(
     } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
   });
   document.querySelectorAll('.request-info').forEach((button) => button.onclick = async () => {
-    const note = button.parentElement.querySelector('.review-note').value.trim();
+    const note = button.closest('.doc-review-actions').querySelector('.review-note').value.trim();
     if (!note) { result.textContent = 'Write what information is missing first.'; return; }
     button.disabled = true;
     try {
@@ -261,7 +272,7 @@ export function renderDocumentInbox(
     } catch (error) { result.textContent = String(error.message || error); button.disabled = false; }
   });
   document.querySelectorAll('.dismiss-document').forEach((button) => button.onclick = async () => {
-    const reason = button.parentElement.querySelector('.dismiss-reason').value.trim();
+    const reason = button.closest('.doc-review-actions').querySelector('.dismiss-reason').value.trim();
     if (!reason) { result.textContent = 'Write why this file is irrelevant first.'; return; }
     button.disabled = true;
     try {
@@ -285,6 +296,35 @@ export function renderDocumentInbox(
         location.href = '/bills?new=1';
       } catch (error) { result.textContent = String(error.message || error); review.disabled = false; }
     };
+  });
+  document.querySelectorAll('.document-class-choice').forEach((choice) => choice.onclick = () => {
+    document.querySelectorAll('.document-class-choice[data-id="' + choice.dataset.id + '"]').forEach((item) => {
+      const selected = item === choice; item.classList.toggle('selected', selected);
+      item.setAttribute('aria-pressed', String(selected));
+    });
+  });
+  const encodeFile = async (file) => {
+    if (file.size > 5 * 1024 * 1024) throw new Error(file.name + ': exceeds 5 MB');
+    const bytes = new Uint8Array(await file.arrayBuffer()); let binary = '';
+    for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    const response = await fetch('/api/documents', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: file.name, mimeType: file.type, data: btoa(binary) }) });
+    const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not upload ' + file.name);
+    return data.document.id;
+  };
+  document.querySelectorAll('.inbox-answer-request').forEach((form) => form.onsubmit = async (event) => {
+    event.preventDefault(); const submit = form.querySelector('button[type="submit"]');
+    const output = form.querySelector('.inbox-request-result'); submit.disabled = true; output.textContent = 'Sending…';
+    try {
+      const files = [...form.querySelector('input[name="files"]').files]; if (files.length > 5) throw new Error('Attach up to five files.');
+      const attachmentIds = []; for (const file of files) attachmentIds.push(await encodeFile(file));
+      const response = await fetch('/api/document-requests/' + encodeURIComponent(form.dataset.requestId) + '/answer', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ answer: form.querySelector('textarea').value, attachmentIds }),
+      });
+      const data = await response.json(); if (!data.ok) throw new Error(data.error || 'could not send reply');
+      output.textContent = 'Reply sent to your CA.'; location.reload();
+    } catch (error) { output.textContent = String(error.message || error); submit.disabled = false; }
   });
   button.onclick = async () => {
     if (!files.files.length) { result.textContent = 'Choose at least one file.'; return; }
@@ -1382,8 +1422,9 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-type-filter { flex: 0 0 auto; margin-left: auto; }
 .inbox-type-filter label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .inbox-type-filter select { padding: 5px 8px; }
-.inbox-layout { display: grid; grid-template-columns: minmax(240px, 310px) minmax(0, 1fr); gap: 12px; align-items: start; }
-.inbox-list { max-height: 70vh; overflow-y: auto; padding: 0; }
+.inbox-layout { display: grid; grid-template-columns: minmax(260px, 33%) minmax(0, 1fr); gap: 0; align-items: stretch; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #f6f7fb; }
+.inbox-layout > .panel { margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+.inbox-list { max-height: 76vh; overflow-y: auto; padding: 0; border-right: 1px solid var(--line) !important; background: #fff; }
 .inbox-list h2 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 12px 13px; background: #fff; border-bottom: 1px solid var(--line); }
 .inbox-document { display: grid; gap: 5px; padding: 11px 13px; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
 .inbox-document:hover, .inbox-document.selected { background: var(--sel); }
@@ -1392,8 +1433,45 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-document b { overflow-wrap: anywhere; }
 .inbox-document small { color: var(--muted); font-size: 11px; }
 .inbox-document-status { color: var(--accent); font-size: 11px; }
-.inbox-detail { min-width: 0; }
-.inbox-detail > h2 { margin: 0 0 3px; overflow-wrap: anywhere; }
+.inbox-detail { min-width: 0; padding: 16px !important; }
+.inbox-review-grid { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(270px, .88fr); gap: 18px; align-items: start; }
+.inbox-preview { min-width: 0; position: sticky; top: 16px; }
+.inbox-preview-canvas { display: grid; place-items: center; min-height: 440px; border: 1px solid #dce1eb; border-radius: 8px; background: repeating-linear-gradient(135deg,#fff,#fff 12px,#f3f5fa 12px,#f3f5fa 24px); text-align: center; padding: 20px; }
+.inbox-preview-canvas > div { display: grid; gap: 12px; max-width: 270px; }
+.inbox-preview-canvas b { color: var(--navy); overflow-wrap: anywhere; }
+.inbox-preview-canvas span, .inbox-preview > .why { color: var(--muted); font-size: 12px; }
+.inbox-preview-canvas a { display: inline-flex; justify-content: center; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--navy); text-decoration: none; }
+.inbox-file-head { display: grid; gap: 5px; margin-bottom: 12px; }
+.inbox-file-head h2 { margin: 0; overflow-wrap: anywhere; }
+.inbox-file-head small { color: var(--muted); }
+.inbox-suggestion, .inbox-class-review, .inbox-next-step, .inbox-history, .inbox-ca-actions { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-bottom: 10px; }
+.inbox-suggestion-title { display: flex; justify-content: space-between; gap: 8px; color: var(--navy); font-size: 12px; }
+.inbox-suggestion-title span { color: var(--muted); }
+.inbox-suggestion > strong { display: block; color: var(--navy); margin-top: 4px; }
+.inbox-suggestion p, .inbox-suggestion details p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.inbox-suggestion details summary, .inbox-history summary, .inbox-ca-actions summary { color: var(--navy); cursor: pointer; font-size: 12px; font-weight: 600; }
+.inbox-class-review h3 { margin: 0 0 9px; color: var(--navy); font-size: 13px; }
+.inbox-class-choices { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; margin-bottom: 9px; }
+.inbox-class-choices button { padding: 7px 8px; text-align: left; font-size: 11px; }
+.inbox-class-choices button.selected { border-color: var(--accent); background: var(--sel); color: var(--navy); box-shadow: inset 0 0 0 1px var(--accent); }
+.inbox-next-step { display: grid; gap: 7px; font-size: 12px; }
+.inbox-history ol { list-style: none; padding: 0; margin: 10px 0 0; }
+.inbox-history li { display: grid; gap: 2px; border-left: 2px solid var(--accent); padding: 0 0 11px 12px; font-size: 12px; }
+.inbox-history li span { color: var(--muted); }
+.doc-review-actions { display: grid; gap: 7px; margin-top: 10px; }
+.doc-review-actions label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
+.doc-review-actions textarea { min-height: 54px; width: 100%; resize: vertical; }
+.inbox-requests { border-color: #ffd2bb; background: #fff8f3; }
+.inbox-requests h2 { margin: 0 0 10px; color: #a84115; }
+.inbox-answer-request { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid #f0d9cc; }
+.inbox-answer-request > p { grid-column: 1 / -1; display: flex; justify-content: space-between; margin: 0; color: var(--navy); font-size: 12px; }
+.inbox-answer-request > div { color: var(--ink); font-size: 13px; }
+.inbox-answer-request textarea { grid-column: 1 / -1; min-height: 54px; }
+.inbox-attach { color: var(--navy); font-size: 12px; cursor: pointer; }
+.inbox-attach input { display: block; max-width: 210px; font-size: 11px; }
+.inbox-request-result { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.inbox-empty-detail { padding: 24px; color: var(--muted); }
+.inbox-empty-detail h2 { margin-top: 0; color: var(--navy); }
 .inbox-detail-table { overflow-x: auto; margin-top: 12px; }
 .inbox-detail-table table { min-width: 780px; }
 .inbox-detail-table td:first-child { min-width: 250px; }
@@ -1673,6 +1751,9 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .today-viewer { display: none; }
   .inbox-layout { grid-template-columns: 1fr; }
   .inbox-list { max-height: 300px; }
+  .inbox-review-grid { grid-template-columns: 1fr; }
+  .inbox-preview { position: static; }
+  .inbox-preview-canvas { min-height: 260px; }
   .invoice-meta { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
   .customer-form { grid-template-columns: 1fr 1fr; }
   .ledger-proof { position: static; }
@@ -1725,6 +1806,11 @@ tr.hot td { background: color-mix(in srgb, var(--bad) 7%, transparent); }
   .inbox-heading > div { flex-basis: 100%; }
   .inbox-upload { width: 100%; justify-content: space-between; }
   .inbox-type-filter { margin-left: 0; }
+  .inbox-answer-request { grid-template-columns: 1fr; }
+  .inbox-answer-request > p, .inbox-answer-request textarea, .inbox-request-result { grid-column: 1; }
+  .inbox-attach input { max-width: 100%; }
+  .inbox-detail { padding: 12px !important; }
+  .inbox-class-choices { grid-template-columns: 1fr 1fr; }
   .page-intro { align-items:start; flex-direction:column; }
 }
 @media print {

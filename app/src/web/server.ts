@@ -467,10 +467,11 @@ async function handle(
   }
 
   if (req.method === 'GET' && path === '/documents') {
-    const [documents, requestHistory, classifierEnabled] = await Promise.all([
+    const [documents, requestHistory, classifierEnabled, openRequests] = await Promise.all([
       listDocuments(session.firmId, session.clientId),
       listDocumentRequestHistory(session.firmId, session.clientId),
       documentClassifierEnabled(session.firmId),
+      listOpenDocumentRequests(session.firmId, session.clientId),
     ]);
     return html(res, 200, renderShell({
       session, accounts, active: 'documents',
@@ -483,7 +484,8 @@ async function handle(
           ? url.searchParams.get('status')! : 'all',
         ['bank_statement','purchase_bill','sales_invoice','expense_receipt','tds_document',
           'gst_document','payroll','contract_legal','other','uncertain'].includes(url.searchParams.get('type') ?? '')
-          ? url.searchParams.get('type')! : 'all'),
+          ? url.searchParams.get('type')! : 'all',
+        openRequests, session.role === 'owner'),
     }));
   }
 

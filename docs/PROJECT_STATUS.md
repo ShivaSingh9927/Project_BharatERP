@@ -52,11 +52,16 @@
 
 ### Rebranding follow-on — Inbox, Bills, Sales orientation (2026-10-12)
 
-- /documents now presents a selectable client-scoped list with status and
-  document-class filters, source download, class confirmation, request history,
-  and the existing CA review actions together. Filter and selection state is
-  read from the existing GET route; classification and review continue through
-  the current endpoints.
+- /documents now follows the Inbox 10a list, preview, and review-panel layout.
+  It shows the real source channel/sender, tells the user when preview is not
+  available, and keeps original download, status/type filters, Nexus class
+  suggestions and disclosure, human class confirmation/correction, history,
+  and existing CA review actions. Client owners can answer open CA requests and
+  attach client-scoped files through the established request workflow.
+- Inbox view tests (28), email intake integration tests (6), and Node 22
+  typecheck pass. Browser review confirms the three-pane desktop composition;
+  the available seed document has no original file, so a real PDF preview was
+  not visually validated. No route, database schema, or accounting API changed.
 - /bills now groups pending items by existing ready / needs-answer / blocked
   states and explains the review sequence. Filters only hide/show loaded cards;
   CA approval remains required and no new posting route was added.

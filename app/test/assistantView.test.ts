@@ -13,7 +13,7 @@ describe('document class review UI', () => {
   it('does not offer a workflow action until a human confirms or corrects the suggestion', () => {
     const pending = renderDocumentInbox([document], false, [], { enabled: true, available: true });
     expect(pending).toContain('Nexus suggestion');
-    expect(pending).toContain('Confirm class');
+    expect(pending).toContain('Confirm type');
     expect(pending).not.toContain('/import?document=doc-1');
 
     const confirmed = renderDocumentInbox([{ ...document,
@@ -35,6 +35,27 @@ describe('document class review UI', () => {
     expect(html).not.toContain('statement.pdf');
     expect(html).toContain('Now in Bills');
     expect(html).toContain('aria-label="Filter received documents"');
+  });
+
+  it('renders the handoff review workspace with real source metadata and founder replies gated by role', () => {
+    const receivedByEmail = { ...document, channel: 'email', sender: 'accounts@example.test' };
+    const request = { id: 'request-1', documentId: document.id,
+      question: 'Please provide the missing invoice.', requestedAt: '2026-10-02T00:00:00.000Z' };
+    const owner = renderDocumentInbox([receivedByEmail], false, [],
+      { enabled: true, available: true }, true, document.id, 'all', 'all', [request], true);
+    expect(owner).toContain('inbox-review-grid');
+    expect(owner).toContain('Preview is not available in this workspace yet.');
+    expect(owner).toContain('Email · accounts@example.test');
+    expect(owner).toContain('Confirm or correct type');
+    expect(owner).toContain('data-class="bank_statement"');
+    expect(owner).toContain('Your CA asked · 1');
+    expect(owner).toContain('/api/document-requests/');
+    expect(owner).not.toContain('deepseek');
+
+    const ca = renderDocumentInbox([receivedByEmail], true, [],
+      { enabled: true, available: true }, true, document.id, 'all', 'all', [request], false);
+    expect(ca).toContain('CA review actions');
+    expect(ca).not.toContain('Your CA asked · 1');
   });
 });
 
