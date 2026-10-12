@@ -241,7 +241,7 @@ const html = (res: ServerResponse, code: number, body: string): void => {
     // and the browser reports only "TypeError: Failed to fetch". curl ignores
     // CSP, so this was invisible until the UI was driven from a browser.
     'content-security-policy':
-      "default-src 'none'; connect-src 'self'; font-src 'self'; style-src 'unsafe-inline'; " +
+      "default-src 'none'; connect-src 'self'; font-src 'self'; img-src 'self' blob: data:; style-src 'unsafe-inline'; " +
       "script-src 'unsafe-inline'; form-action 'self'",
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',

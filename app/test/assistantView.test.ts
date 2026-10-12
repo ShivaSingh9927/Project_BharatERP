@@ -21,6 +21,9 @@ describe('document class review UI', () => {
     }], false, [], { enabled: true, available: true });
     expect(confirmed).toContain('Continue to statement review');
     expect(confirmed).toContain('id="inbox-statement-password"');
+    expect(confirmed).toContain('aria-label="Show statement password"');
+    expect(confirmed).toContain('data-password-target="inbox-statement-password"');
+    expect(confirmed).toContain("input.type = showing ? 'text' : 'password'");
     expect(confirmed).toContain('id="statement-preview"');
     expect(confirmed).toContain('Step <span id="statement-step-number">1</span> of 3');
     expect(confirmed).toContain('id="pdf-page-prev"');
@@ -92,6 +95,17 @@ describe('document class review UI', () => {
     expect(html).toContain('HDFC ··4961 · password saved');
     expect(html).toContain('id="inbox-remember-password" type="checkbox" checked');
     expect(html).toContain('nothing imports until you confirm');
+  });
+
+  it('opens a selected image in the viewer and keeps each received document linked to its own detail view', () => {
+    const image = { ...document, id: 'image-1', originalName: 'Vehicle_Pass.jpeg', mimeType: 'image/jpeg' };
+    const statement = { ...document, id: 'statement-2', originalName: 'statement.pdf' };
+    const html = renderDocumentInbox([image, statement], false, [],
+      { enabled: true, available: true }, true, image.id);
+    expect(html).toContain('class="inbox-image-view" src="/api/documents/image-1/view"');
+    expect(html).toContain('alt="Preview of uploaded image"');
+    expect(html).toContain('href="/documents?document=statement-2#inbox-detail"');
+    expect(html).toContain('if (false && document.getElementById(\'document-table-preview\'))');
   });
 });
 

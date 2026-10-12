@@ -126,7 +126,7 @@ export function renderDocumentInbox(
           <div class="inbox-step-actions"><button type="button" id="statement-back">↑ View file</button><button type="button" class="primary" id="statement-next" disabled>Next →</button></div></div>
         <div class="inbox-step-view" data-step="1">
           ${bankAccounts.length ? `<label>Bank account<select id="inbox-bank-account" required><option value="" selected disabled>Choose the account shown on this statement</option>${bankAccounts.map((account) => `<option value="${esc(account.id)}" data-saved="${account.passwordSaved}">${esc(account.bankName)} ··${esc(account.last4)}${account.passwordSaved ? ' · password saved' : ''}</option>`).join('')}</select></label>` : '<p class="why">No bank account is connected. <a href="/accounts">Add a bank account</a> before reviewing this statement.</p>'}
-          <label>Statement password <input id="inbox-statement-password" type="password" autocomplete="current-password" placeholder="Leave blank if this file is not protected" maxlength="256"></label>
+          <label>Statement password <span class="inbox-password-field"><input id="inbox-statement-password" type="password" autocomplete="current-password" placeholder="Leave blank if this file is not protected" maxlength="256"><button type="button" class="password-visibility" data-password-target="inbox-statement-password" aria-label="Show statement password" title="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
           <label class="inbox-remember"><input id="inbox-remember-password" type="checkbox" checked ${canRememberPasswords ? '' : 'disabled'}> Remember securely for this account</label>
           ${canRememberPasswords ? '' : '<p class="why">Only a CA partner or staff member can save a statement password for future use.</p>'}
           <button type="button" class="primary" id="statement-preview" ${bankAccounts.length ? '' : 'disabled'}>Open statement and extract rows</button>
@@ -137,7 +137,7 @@ export function renderDocumentInbox(
       </section>` : '';
   const previewMarkup = !d?.available ? '<div><b>Original unavailable</b><span>The source file is not stored here.</span></div>'
     : pdfFile ? `<div class="inbox-pdf-view"><div id="document-pdf-status" role="status">Loading page preview…</div><img id="document-pdf-image" alt="PDF page preview" hidden></div>`
-      : imageFile ? `<div class="inbox-image-stack"><img class="inbox-image-view" src="/api/documents/${esc(d.id)}/view" alt="Preview of uploaded image" loading="lazy"><span class="inbox-image-status" role="status"></span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`
+      : imageFile ? `<div class="inbox-image-stack"><img class="inbox-image-view" src="/api/documents/${esc(d.id)}/view" alt="Preview of uploaded image"><span class="inbox-image-status" role="status"></span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`
         : tableFile ? `<div class="inbox-table-wrap">${/\.xlsx?$/i.test(d.originalName) ? '<label class="table-password">Spreadsheet password <input id="document-table-password" type="password" autocomplete="current-password" maxlength="256"></label><button type="button" id="document-table-open">Open spreadsheet</button>' : ''}<div id="document-table-status" role="status">Loading table preview…</div><table id="document-table-preview" hidden></table></div>`
           : `<div><b>${esc(d.mimeType || 'Document')}</b><span>Preview is not available for this file type.</span><a href="/api/documents/${esc(d.id)}/download">Download original ↓</a></div>`;
   const selectedPanel = d ? `<div class="inbox-review-grid">
@@ -337,6 +337,14 @@ export function renderDocumentInbox(
   const pdfImage = document.getElementById('document-pdf-image');
   const pdfStatus = document.getElementById('document-pdf-status');
   const passwordInput = document.getElementById('inbox-statement-password');
+  document.querySelectorAll('.password-visibility').forEach((toggle) => toggle.addEventListener('click', () => {
+    const input = document.getElementById(toggle.dataset.passwordTarget);
+    if (!input) return;
+    const showing = input.type === 'password';
+    input.type = showing ? 'text' : 'password';
+    toggle.setAttribute('aria-label', (showing ? 'Hide' : 'Show') + ' statement password');
+    toggle.title = (showing ? 'Hide' : 'Show') + ' password';
+  }));
   let pdfPage = 1, pdfPageCount = 0, previewRows = [], previewData = null, pdfObjectUrl = null;
   const pdfButtons = () => {
     const prev = document.getElementById('pdf-page-prev'), next = document.getElementById('pdf-page-next');
@@ -370,7 +378,7 @@ export function renderDocumentInbox(
   if (pdfImage) loadPdfPage();
   document.querySelectorAll('.inbox-image-view').forEach((image) => image.addEventListener('error', () => {
     image.hidden = true;
-    image.parentElement.querySelector('.inbox-image-status').textContent = 'This image format cannot be previewed in the browser. Download the original to view it.';
+    image.parentElement.querySelector('.inbox-image-status').textContent = 'The saved image could not be rendered. Download the original to view it.';
   }));
   passwordInput?.addEventListener('change', () => { pdfPage = 1; loadPdfPage(); });
   document.getElementById('pdf-page-prev')?.addEventListener('click', () => { if (pdfPage > 1) { pdfPage--; loadPdfPage(); } });
@@ -453,7 +461,7 @@ export function renderDocumentInbox(
       submit.hidden = true;
     } catch (error) { status.textContent = String(error.message || error); submit.disabled = false; }
   });
-  if (tableFile && document.getElementById('document-table-preview')) {
+  if (${tableFile ? 'true' : 'false'} && document.getElementById('document-table-preview')) {
     const table = document.getElementById('document-table-preview'), status = document.getElementById('document-table-status');
     const openTable = async () => {
       status.textContent = 'Opening spreadsheet…';
@@ -1613,6 +1621,7 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-pdf-view img { display: block; max-width: 100%; max-height: 72vh; object-fit: contain; box-shadow: 0 2px 12px #1c2c5624; background: #fff; }
 .inbox-pdf-view [role="status"] { color: var(--muted); font-size: 12px; }
 .inbox-image-view { display: block; max-width: 100%; max-height: 72vh; object-fit: contain; }
+.inbox-image-view[hidden] { display: none !important; }
 .inbox-image-stack { display: grid; justify-items: center; gap: 8px; width: 100%; }
 .inbox-image-status { color: var(--muted); font-size: 12px; }
 .inbox-image-stack a { display: inline-flex; justify-content: center; padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--navy); text-decoration: none; }
@@ -1649,6 +1658,12 @@ h2 { color: #142354; font-size: 15px; margin: 24px 0 9px; }
 .inbox-step-view { display: grid; grid-template-columns: minmax(0,1fr); align-items: end; gap: 10px; max-width: 620px; }
 .inbox-step-view > label:not(.inbox-remember) { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .inbox-step-view select, .inbox-step-view input[type="password"] { width: 100%; }
+.inbox-password-field { display: flex; align-items: stretch; width: 100%; }
+.inbox-password-field input { flex: 1; min-width: 0; }
+.inbox-password-field .password-visibility { display: grid; place-items: center; width: 40px; min-width: 40px; padding: 6px; border: 1px solid var(--line); border-left: 0; border-radius: 0 7px 7px 0; background: #fff; color: var(--navy); cursor: pointer; }
+.inbox-password-field input { border-radius: 7px 0 0 7px; }
+.password-visibility svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.password-visibility:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .inbox-step-view .inbox-remember { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; }
 .inbox-step-view #statement-preview, .inbox-step-view #statement-preview-status { grid-column: 1 / -1; }
 .inbox-step-view #statement-preview-status, .inbox-statement [role="status"] { color: var(--muted); font-size: 12px; }
