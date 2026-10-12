@@ -1581,9 +1581,10 @@ export function renderShell(a: {
       ['/reports/profit-loss', 'profit-loss', 'Profit & loss'], ['/reports/balance-sheet', 'balance-sheet', 'Balance sheet'],
       ['/reports/close-month', 'close-month', 'Close month'], ['/assets', 'assets', 'Fixed assets']] },
   ];
-  const currentGroup = groups.find((group) => group.keys.includes(a.active)) ?? groups[0]!;
+  const activeGroup = groups.find((group) => group.keys.includes(a.active));
+  const currentGroup = activeGroup ?? groups[0]!;
   const primaryLink = (group: typeof groups[number]): string =>
-    `<a href="${esc(group.href)}" class="${group === currentGroup ? 'on' : ''}"${group === currentGroup ? ' aria-current="page"' : ''}>${esc(group.label)}</a>`;
+    `<a href="${esc(group.href)}" class="${group === activeGroup ? 'on' : ''}"${group === activeGroup ? ' aria-current="page"' : ''}>${esc(group.label)}</a>`;
   const subLink = ([href, key, label]: [string, string, string]): string =>
     `<a href="${esc(href)}" class="${a.active === key ? 'on' : ''}"${a.active === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
   const prompts: Record<string, string[]> = {
@@ -1632,14 +1633,14 @@ export function renderShell(a: {
 <div class="workspace">
 <header class="pagebar">
   <div class="page-context"><span class="client">${esc(a.session.clientName)}</span></div>
-  <nav class="secondary-nav" aria-label="${esc(currentGroup.label)} navigation">
+  ${activeGroup ? `<nav class="secondary-nav" aria-label="${esc(currentGroup.label)} navigation">
     ${currentGroup.links.filter(([href]) => href !== '/email-inbox' || canManageEmail).map(subLink).join('')}
-  </nav>
+  </nav>` : ''}
   ${canSeeFirm ? `<nav class="firm-nav" aria-label="Firm workspace">
-    <a href="/firm" class="${a.active === 'firm' ? 'on' : ''}">Firm</a>
-    ${canManageEmail ? `<a href="/email-inbox" class="${a.active === 'email-inbox' ? 'on' : ''}">Email</a>` : ''}
-    <a href="/follow-ups" class="${a.active === 'follow-ups' ? 'on' : ''}">Review desk</a>
-    <a href="/tally" class="${a.active === 'tally' ? 'on' : ''}">Tally</a>
+    <a href="/firm" class="${a.active === 'firm' ? 'on' : ''}"${a.active === 'firm' ? ' aria-current="page"' : ''}>Firm</a>
+    ${canManageEmail && !activeGroup?.keys.includes('email-inbox') ? `<a href="/email-inbox" class="${a.active === 'email-inbox' ? 'on' : ''}"${a.active === 'email-inbox' ? ' aria-current="page"' : ''}>Email</a>` : ''}
+    ${!activeGroup?.keys.includes('follow-ups') ? `<a href="/follow-ups" class="${a.active === 'follow-ups' ? 'on' : ''}"${a.active === 'follow-ups' ? ' aria-current="page"' : ''}>Review desk</a>` : ''}
+    ${!activeGroup?.keys.includes('tally') ? `<a href="/tally" class="${a.active === 'tally' ? 'on' : ''}"${a.active === 'tally' ? ' aria-current="page"' : ''}>Tally</a>` : ''}
   </nav>` : ''}
   <button type="button" class="ask-toggle" id="ask-toggle" aria-controls="ask-drawer"
     aria-expanded="false">Ask Nexus</button>

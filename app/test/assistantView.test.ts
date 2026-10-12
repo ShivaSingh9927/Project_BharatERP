@@ -260,6 +260,45 @@ describe('BharatERP redesign shell', () => {
     expect(html).not.toContain('WORKFLOW');
   });
 
+  it('keeps every existing workspace destination reachable through contextual navigation', () => {
+    const session = { clientName: 'ABC Traders', role: 'owner', boundClientId: 'client-1' };
+    const destinations: Array<[string, string[]]> = [
+      ['home', ['/setup', '/activity', '/attention', '/follow-ups']],
+      ['nexus', ['/nexus', '/assistant-runs']],
+      ['documents', ['/documents']],
+      ['bills', ['/bills', '/payables', '/suppliers', '/returns']],
+      ['sales', ['/sales', '/receivables', '/customers']],
+      ['reconcile', ['/reconcile', '/import', '/brs', '/cash', '/accounts']],
+      ['gstr2b', ['/gstr2b', '/gstr1', '/gstr3b', '/tds']],
+      ['profit-loss', ['/reports/profit-loss', '/reports/balance-sheet', '/reports/close-month', '/assets']],
+    ];
+    for (const [active, links] of destinations) {
+      const html = renderShell({ session, accounts: [], active, body: '' });
+      for (const href of links) expect(html, `${active} navigation should expose ${href}`).toContain(`href="${href}`);
+    }
+
+    const firmShell = renderShell({ session: { clientName: 'Firm', role: 'ca_partner', boundClientId: null },
+      accounts: [], active: 'firm', body: '' });
+    expect(firmShell).toContain('href="/firm"');
+    expect(firmShell).toContain('href="/email-inbox"');
+    expect(firmShell).toContain('href="/tally"');
+    expect(firmShell).toContain('aria-label="Sign out"');
+    expect(firmShell).not.toContain('aria-label="Today navigation"');
+    const tallyShell = renderShell({ session: { clientName: 'Firm', role: 'ca_partner', boundClientId: null },
+      accounts: [], active: 'tally', body: '' });
+    expect(tallyShell).not.toContain('aria-label="Today navigation"');
+    expect(tallyShell).toContain('href="/tally" class="on" aria-current="page">Tally</a>');
+    const followUpsShell = renderShell({ session: { clientName: 'Firm', role: 'ca_partner', boundClientId: null },
+      accounts: [], active: 'follow-ups', body: '' });
+    expect(followUpsShell.match(/>Review desk<\/a>/g)).toHaveLength(1);
+    const firmInbox = renderShell({ session: { clientName: 'Firm', role: 'ca_staff', boundClientId: null },
+      accounts: [], active: 'documents', body: '' });
+    expect(firmInbox).toContain('href="/email-inbox"');
+    expect(firmInbox.match(/href="\/email-inbox"/g)).toHaveLength(1);
+    const ownerInbox = renderShell({ session, accounts: [], active: 'documents', body: '' });
+    expect(ownerInbox).not.toContain('href="/email-inbox"');
+  });
+
   it('renders exact client report values with date filters and an expandable trial balance', () => {
     const profit = renderProfitAndLoss({ from: '2026-10-01', to: '2026-10-31', report: {
       revenue: '12345678901234567890.12', cogs: '1.00', grossProfit: '12345678901234567889.12',
