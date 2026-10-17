@@ -39,11 +39,10 @@ const t = await seedTenant({
   clientName: 'Shree Ram Trading Company',
   userEmail: 'ca@sharma-associates.test',
   startYear: 2026,
+  pan: 'AAPFS1234K',
 });
 
-await ownerPool.query(
-  'UPDATE clients SET gstin = $2, pan = $3, state_code = $4 WHERE id = $1',
-  [t.clientId, gstin('27', 'AAPFS1234K'), 'AAPFS1234K', '27']);
+await registerGstin(t.firmId, t.clientId, gstin('27', 'AAPFS1234K'));
 
 await seedGstRates().catch(() => 0);   // idempotent enough for a demo
 await seedTdsSections();

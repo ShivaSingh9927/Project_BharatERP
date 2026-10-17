@@ -115,6 +115,42 @@ kbd {
 dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
   color: var(--ink); max-width: 420px; padding: 18px; }
 dialog::backdrop { background: rgba(0,0,0,.4); }
+.nx-wrap { max-width: 1160px; margin: 16px auto 48px; }
+.nx-eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.nx-title { font-size: clamp(27px, 4vw, 38px); letter-spacing: -.04em; margin: 5px 0; }
+.nx-lede { color: var(--muted); margin: 0; }
+.nx-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(250px, .8fr); gap: 20px; margin-top: 24px; align-items: start; }
+.nx-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.nx-card-head { padding: 18px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 11px; }
+.nx-orb { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 12px; color: white; font-weight: 700; background: linear-gradient(140deg,#536dfe,#915cf4); }
+.nx-card-head strong { display: block; }
+.nx-card-head small { color: var(--muted); }
+.nx-thread { min-height: 180px; padding: 22px; background: linear-gradient(180deg, color-mix(in srgb,var(--sel) 40%,var(--panel)),var(--panel) 46%); }
+.nx-message { max-width: 510px; background: var(--panel); border: 1px solid var(--line); padding: 14px 16px; border-radius: 4px 14px 14px 14px; box-shadow: 0 3px 14px #1018280b; }
+.nx-message p { margin: 0; }
+.nx-message .why { display: block; margin-top: 7px; line-height: 1.55; }
+.nx-suggestions { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-top: 20px; }
+.nx-prompt { text-align: left; padding: 13px; min-height: 83px; border-radius: 11px; background: var(--panel); }
+.nx-prompt:hover { border-color: var(--accent); transform: translateY(-1px); }
+.nx-prompt span { display: block; font-size: 19px; margin-bottom: 6px; }
+.nx-prompt b { font-size: 12px; }
+.nx-compose { border-top: 1px solid var(--line); padding: 14px; }
+.nx-compose-box { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--panel); box-shadow: 0 5px 20px #1018280a; }
+.nx-compose textarea { border: 0; padding: 4px; resize: vertical; min-height: 64px; font: inherit; font-size: 14px; box-shadow: none; outline: none; }
+.nx-compose-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.nx-attach { color: var(--muted); }
+.nx-send { min-width: 82px; }
+.nx-note { color: var(--muted); font-size: 11px; margin: 9px 3px 0; }
+.nx-side { display: grid; gap: 14px; }
+.nx-side .panel { border-radius: 14px; padding: 18px; margin: 0; }
+.nx-side h2 { margin: 0 0 12px; }
+.nx-task { display: flex; gap: 11px; padding: 12px 0; border-top: 1px solid var(--line); text-decoration: none; color: var(--ink); }
+.nx-task:hover strong { color: var(--accent); }
+.nx-task-icon { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; background: var(--sel); border-radius: 10px; }
+.nx-task small { display: block; color: var(--muted); margin-top: 2px; }
+.nx-status { font-size: 12px; color: var(--muted); line-height: 1.55; padding: 12px; border-radius: 10px; background: var(--bg); }
+.nx-result { margin-top: 14px; display: none; }
+@media (max-width: 760px) { .nx-layout { grid-template-columns: 1fr; } .nx-suggestions { grid-template-columns: 1fr; } .nx-prompt { min-height: 0; } .nx-wrap { margin-top: 8px; } }
 `;
 
 // ---------------------------------------------------------------------------
@@ -140,6 +176,7 @@ export function renderShell(a: {
   <b>BharatERP</b>
   <span class="client">${esc(a.session.clientName)}</span>
   <nav>
+    ${link('/', 'nexus', 'Nexus')}
     ${link('/accounts', 'accounts', 'Accounts')}
     ${link('/import', 'import', 'Import')}
     ${link(`/reconcile${q}`, 'reconcile', 'Reconcile')}
@@ -149,6 +186,94 @@ export function renderShell(a: {
 </header>
 <main>${a.body}</main>
 </body></html>`;
+}
+
+export function renderNexus(): string {
+  return `<section class="nx-wrap">
+  <div class="nx-eyebrow">Your finance workspace</div>
+  <h1 class="nx-title">Your next finance task starts here.</h1>
+  <p class="nx-lede">What would you like to take care of today?</p>
+
+  <div class="nx-layout">
+    <section class="nx-card" aria-label="Nexus conversation">
+      <div class="nx-card-head"><div class="nx-orb" aria-hidden="true">N</div>
+        <div><strong>Nexus</strong><small>Your workspace assistant</small></div>
+      </div>
+      <div class="nx-thread" id="thread" aria-live="polite">
+        <div class="nx-message"><p>Hello. I can help you move through your books.</p>
+          <span class="why">Upload a bank statement to review and import it, or tell me what you want to work on. You’ll review every change before it reaches the ledger.</span>
+        </div>
+        <div class="nx-suggestions">
+          <button class="nx-prompt" data-prompt="Help me reconcile a bank statement"><span aria-hidden="true">↔</span><b>Reconcile a statement</b></button>
+          <button class="nx-prompt" data-prompt="I want to upload a document"><span aria-hidden="true">↑</span><b>Upload documents</b></button>
+          <button class="nx-prompt" data-prompt="Help me file my GST return"><span aria-hidden="true">₹</span><b>Prepare a GST return</b></button>
+        </div>
+        <div class="nx-result" id="result"></div>
+      </div>
+      <div class="nx-compose">
+        <div class="nx-compose-box">
+          <textarea id="message" aria-label="Message Nexus" placeholder="Ask Nexus about your books…" rows="2"></textarea>
+          <div class="nx-compose-actions">
+            <div><input type="file" id="attachment" accept=".csv,.tsv,.txt" hidden>
+              <button type="button" class="nx-attach" id="attach">＋ Attach statement</button></div>
+            <button type="button" class="primary nx-send" id="send">Send&nbsp; ↑</button>
+          </div>
+        </div>
+        <div class="nx-note">Bank statement files stay in this browser until you preview them. Nexus won’t send them to an AI service.</div>
+      </div>
+    </section>
+
+    <aside class="nx-side">
+      <div class="panel"><h2>Jump back in</h2>
+        <a class="nx-task" href="/reconcile"><span class="nx-task-icon">↔</span><span><strong>Bank reconciliation</strong><small>Review matches and open items</small></span></a>
+        <a class="nx-task" href="/import"><span class="nx-task-icon">↑</span><span><strong>Import a statement</strong><small>CSV, TSV or text export</small></span></a>
+        <a class="nx-task" href="/accounts"><span class="nx-task-icon">▤</span><span><strong>Accounts</strong><small>View your connected books</small></span></a>
+      </div>
+      <div class="panel"><h2>GST filing</h2>
+        <div class="nx-status">GST return preparation and filing aren’t connected in this build yet. Nexus can’t submit returns. You can review the current ledger while that workflow is being built.</div>
+        <p style="margin:12px 0 0"><a href="/accounts">Review accounts →</a></p>
+      </div>
+    </aside>
+  </div>
+</section>
+<script>
+const message = document.getElementById('message');
+const result = document.getElementById('result');
+const thread = document.getElementById('thread');
+const attachment = document.getElementById('attachment');
+function showReply(text, href, label) {
+  const card = document.createElement('div'); card.className = 'nx-message'; card.style.marginTop = '14px';
+  const p = document.createElement('p'); p.textContent = text; card.append(p);
+  if (href) { const a = document.createElement('a'); a.href = href; a.textContent = label; a.className = 'primary'; a.style.cssText = 'display:inline-block;margin-top:12px;padding:7px 11px;border-radius:6px;color:white;text-decoration:none'; card.append(a); }
+  result.replaceChildren(card); result.style.display = 'block';
+}
+function ask(text) {
+  const q = text.trim(); if (!q) return;
+  const lower = q.toLowerCase(); message.value = q;
+  if (/gst|gstr|tax return/.test(lower)) {
+    showReply('GST return preparation and filing are not available in this build yet. I can’t submit a return. You can review your accounts while that workflow is developed.', '/accounts', 'Review accounts →');
+  } else if (/reconcil|match|bank statement/.test(lower)) {
+    showReply('I’ll take you to the reconciliation queue, where you can review proposed matches and confirm them.', '/reconcile', 'Open reconciliation →');
+  } else if (/upload|attach|document|statement/.test(lower)) {
+    showReply('You can import bank statements in CSV, TSV or TXT format. Other document types are not processed by this workspace yet.', '/import', 'Open statement import →');
+  } else {
+    showReply('I can guide you to bank statement import and reconciliation. GST filing and general AI questions are not connected yet.');
+  }
+  result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+document.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => ask(button.dataset.prompt)));
+document.getElementById('send').addEventListener('click', () => ask(message.value));
+message.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); ask(message.value); } });
+document.getElementById('attach').addEventListener('click', () => attachment.click());
+attachment.addEventListener('change', async () => {
+  const file = attachment.files[0]; if (!file) return;
+  if (file.size > 8 * 1024 * 1024) { showReply('This file is over the 8 MB limit. Choose a smaller bank statement.'); return; }
+  try {
+    sessionStorage.setItem('nexus:statement', JSON.stringify({ name: file.name, text: await file.text() }));
+    location.href = '/import';
+  } catch { showReply('This browser could not stage the file. Open statement import and paste the CSV or TSV text instead.', '/import', 'Open statement import →'); }
+});
+</script>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +401,18 @@ $('commit').onclick = async () => {
         + '"><button class="primary">Go to reconciliation →</button></a></p>' : '');
   $('commit').disabled = !r.ok;
 };
+
+// A statement staged from Nexus returns here for the normal preview-and-confirm flow.
+try {
+  const staged = sessionStorage.getItem('nexus:statement');
+  if (staged) {
+    const file = JSON.parse(staged);
+    sessionStorage.removeItem('nexus:statement');
+    $('text').value = file.text;
+    $('hint').textContent = file.name + ' · ready to preview';
+    $('preview').click();
+  }
+} catch { sessionStorage.removeItem('nexus:statement'); }
 
 function stat(v, label) {
   return '<div class="stat"><b>' + esc(v) + '</b><span>' + esc(label) + '</span></div>';

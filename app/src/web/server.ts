@@ -21,7 +21,7 @@ import { parseStatementFile } from '../parse/statementFile.ts';
 import { settleInvoiceFromBankLine, postBankCharge, postInterestCredit } from '../domain/banking.ts';
 import { bankReconciliationStatement } from '../domain/brs.ts';
 import { TEMPLATES } from '../parse/bankTemplates.ts';
-import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts,
+import { renderShell, renderQueue, renderImport, renderBrs, renderAccounts, renderNexus,
          renderCashRegister } from './views.ts';
 import { cashRegisterCheck } from '../reports/cashRegister.ts';
 
@@ -117,7 +117,13 @@ async function handle(
 
   // ---- pages --------------------------------------------------------------
 
-  if (req.method === 'GET' && (path === '/' || path === '/accounts')) {
+  if (req.method === 'GET' && path === '/') {
+    return html(res, 200, renderShell({
+      session, accounts, active: 'nexus', body: renderNexus(),
+    }));
+  }
+
+  if (req.method === 'GET' && path === '/accounts') {
     return html(res, 200, renderShell({
       session, accounts, active: 'accounts',
       body: renderAccounts(accounts),
