@@ -65,6 +65,8 @@ import { tableCurrency, toRupees, timeOfSupply } from '../parse/importOfService.
 import { readInvoiceTableFromDocling } from '../parse/doclingTable.ts';
 import { readSummaryInvoice } from '../parse/summaryInvoice.ts';
 import { readChargeBlock } from '../parse/chargeBlock.ts';
+import { readUtilityBill, currentBillAmounts, sameParty, type UtilityBill }
+  from '../parse/utilityBill.ts';
 import { gradeCandidates, type ParserClient, type CandidateTable }
   from '../parse/candidateTables.ts';
 import type { GlmOcrClient } from '../parse/glmOcr.ts';
@@ -137,7 +139,7 @@ export interface BillProposal {
    * that wrote its charges out in words instead of ruling them into a table.
    */
   readBy: 'coordinates' | 'candidates' | 'docling' | 'llm' | 'summary'
-         | 'charges' | 'entered';
+         | 'charges' | 'utility' | 'entered';
   llmProvenance?: { provider: string; model: string };
   /**
    * Whether a second, independent reader confirmed these figures.
@@ -153,6 +155,18 @@ export interface BillProposal {
   /** The date read off the document, and how it was settled (PR-7). */
   billDate?: string;
   billDateBasis?: string;
+  /**
+   * Set when the document declared itself a utility bill (see
+   * `utilityBill.ts`). Its period, due date and payable amount are context
+   * for the reviewer; only `amount` reaches a posted figure.
+   */
+  utility?: UtilityBill | null;
+  /**
+   * True when the one thing missing is a supplier on file. Lets the review
+   * screen offer to save the supplier instead of a dead end; creating one is
+   * still a human's click, never a side effect of reading.
+   */
+  needsSupplier?: boolean;
 }
 
 /**
@@ -704,6 +718,22 @@ function isPdf(file: Buffer): boolean {
 }
 
 /**
+ * Electricity bills print their account's charge summary in a ruled,
+ * multi-column layout. The payable amount is on a separate row from its
+ * heading, so `labelledTotalsInText` can miss it and pick up an unrelated
+ * footer such as `Total 0.00` instead. On this explicitly labelled document
+ * type, the provider's `Current Bill Amount` is the charge to book; the
+ * payable amount can include prior balances, rebates, or rupee rounding.
+ */
+function labelledTotalsForDocument(text: string): string[] {
+  if (/\belectricity\s+bill\b/i.test(text)) {
+    const currentAmounts = currentBillAmounts(text);
+    if (currentAmounts.length === 1) return currentAmounts;
+  }
+  return labelledTotalsInText(text);
+}
+
+/**
  * A photographed invoice — the WhatsApp channel, and the one an SMB actually
  * uses.
  *
@@ -716,21 +746,71 @@ function isPdf(file: Buffer): boolean {
  * the arithmetic is the only thing standing between a misread digit and the
  * ledger — which is exactly the arrangement every other reader is under.
  */
-async function readPhotograph(
+async function readWithPaddle(
   input: ProposeInput,
 ): Promise<PaddleBillResult> {
   if (!input.paddle) {
     throw new ValidationError(
-      'this file is an image, not a PDF, and local PaddleOCR is not configured. ' +
-      'Configure PaddleOCR, or send the invoice as a PDF.', 'BR-3');
+      'local PaddleOCR is not configured for this document.', 'BR-3');
   }
-  const r = await input.paddle.read(input.file);
+  const r = await input.paddle.read(input.file, { password: input.password });
   if (r.text.trim() === '') {
     throw new ValidationError(
-      'no text could be read from this image at all. It may be too small, too ' +
-      'dark, or not an invoice.', 'BR-3');
+      'PaddleOCR found no text in this document. It may be too low-resolution, ' +
+      'dark, or not a readable invoice.', 'BR-3');
   }
   return { text: r.text, tables: r.tables, warnings: r.warnings };
+}
+
+async function readWithOcrFallback(
+  firmId: string,
+  input: ProposeInput,
+  pdfReadError?: Error,
+): Promise<{ result: PaddleBillResult; glmReplacedFailedPaddle: boolean }> {
+  let paddleError: unknown;
+  try {
+    return {
+      result: await readWithPaddle(input),
+      glmReplacedFailedPaddle: false,
+    };
+  } catch (error) {
+    paddleError = error;
+  }
+
+  // A supplied password, or Poppler explicitly reporting encryption, keeps the
+  // original document local. Neither the password nor a protected PDF reaches
+  // GLM-OCR.
+  const protectedPdf = Boolean(input.password)
+    || /password|encrypted/i.test(pdfReadError?.message ?? '');
+  const consented = !protectedPdf && input.glmOcr
+    && (await llmSettings(firmId)).extraction;
+  if (consented) {
+    try {
+      const cloud = await input.glmOcr!.readDocument(input.file);
+      if (!cloud.text.trim()) throw new Error('GLM-OCR returned no text');
+      return {
+        result: { text: cloud.text, tables: cloud.tables, warnings: [] },
+        glmReplacedFailedPaddle: true,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'reader failed';
+      if (pdfReadError) {
+        throw new ValidationError(
+          `PDF text extraction and PaddleOCR both failed; GLM-OCR also could not read the document (${reason}).`,
+          'PB-6');
+      }
+      throw new ValidationError(
+        `PaddleOCR and GLM-OCR could not read the image (${reason}).`, 'BR-3');
+    }
+  }
+
+  if (pdfReadError) {
+    const localReason = paddleError instanceof Error ? paddleError.message : 'local OCR failed';
+    throw new ValidationError(
+      `PDF text extraction failed and local PaddleOCR could not read the document (${localReason}). GLM-OCR requires a configured key and the firm's extraction consent.`,
+      'PB-6');
+  }
+  throw paddleError;
 }
 
 /** Reads a file and proposes one bill per document it contains. */
@@ -739,32 +819,34 @@ export async function proposeBills(
 ): Promise<BillProposal[]> {
   const fileHash = contentHash(input.file);
   let glmReplacedFailedPaddle = false;
-  let photo: PaddleBillResult | null = null;
-  if (!isPdf(input.file)) {
+  const pdf = isPdf(input.file);
+  let ocrRead: PaddleBillResult | null = null;
+  let paddleTried = !pdf;
+  let allowCloudFallback = !input.password;
+  let pages: WordPage[] = [];
+  let text = '';
+
+  if (pdf) {
     try {
-      photo = await readPhotograph(input);
-    } catch (localError) {
-      const consented = input.glmOcr && (await llmSettings(firmId)).extraction;
-      if (!consented) throw localError;
-      try {
-        const cloud = await input.glmOcr!.readDocument(input.file);
-        if (cloud.text.trim() === '') throw localError;
-        photo = { text: cloud.text, tables: cloud.tables, warnings: [] };
-        glmReplacedFailedPaddle = true;
-      } catch {
-        throw localError;
-      }
+      pages = extractPdfWords(input.file, input.password);
+      text = extractPdfText(input.file, input.password);
+    } catch (error) {
+      const pdfReadError = error instanceof Error ? error : new Error(String(error));
+      allowCloudFallback = !input.password
+        && !/password|encrypted/i.test(pdfReadError.message);
+      paddleTried = true;
+      const fallback = await readWithOcrFallback(firmId, input, pdfReadError);
+      ocrRead = fallback.result;
+      glmReplacedFailedPaddle = fallback.glmReplacedFailedPaddle;
+      text = ocrRead.text;
     }
+  } else {
+    const fallback = await readWithOcrFallback(firmId, input);
+    ocrRead = fallback.result;
+    glmReplacedFailedPaddle = fallback.glmReplacedFailedPaddle;
+    text = ocrRead.text;
   }
 
-  /*
-   * A photograph has no word geometry of the kind `extractPdfWords` returns,
-   * so the coordinate reader is handed nothing and declines — and the
-   * candidate search, which is where the OCR rows arrive, takes over. That is
-   * the ordinary fallback working, not a special case.
-   */
-  const pages = photo ? [] : extractPdfWords(input.file, input.password);
-  const text = photo ? photo.text : extractPdfText(input.file, input.password);
   const segments = splitDocuments(text);
 
   /*
@@ -774,53 +856,67 @@ export async function proposeBills(
    * reach the sidecar is not fatal: the pipeline falls through to the model,
    * exactly as before Docling existed.
    */
-  let candidateTables: CandidateTable[] | undefined = photo?.tables;
-  if (photo === null && input.parser) {
+  let candidateTables: CandidateTable[] | undefined = ocrRead?.tables;
+  if (ocrRead === null && input.parser) {
     try { candidateTables = (await input.parser.read(input.file)).tables; }
     catch { candidateTables = undefined; }
   }
 
   let doclingTables: DoclingTable[] | undefined;
-  if (photo === null && input.docling) {
+  if (ocrRead === null && input.docling) {
     try { doclingTables = await input.docling.read(input.file); }
     catch { doclingTables = undefined; }
   }
 
-  const out: BillProposal[] = [];
-  for (const seg of segments) {
-    const proposal = await proposeFromDocument(
-      firmId, { ...input, doclingTables, candidateTables }, seg, pages, fileHash, text);
-    if (photo) proposal.warnings.push(...photo.warnings);
-    if (glmReplacedFailedPaddle) proposal.warnings.push(
-      'local PaddleOCR could not read this image, so GLM-OCR was used with ' +
-      'the firm\'s consent and the document was sent to a third party.');
-    out.push(proposal);
+  const buildProposals = async (tables = candidateTables): Promise<BillProposal[]> => {
+    const proposals: BillProposal[] = [];
+    for (const seg of segments) {
+      const proposal = await proposeFromDocument(
+        firmId, { ...input, doclingTables, candidateTables: tables },
+        seg, pages, fileHash, text);
+      if (ocrRead) proposal.warnings.push(...ocrRead.warnings);
+      if (glmReplacedFailedPaddle) proposal.warnings.push(
+        'local PaddleOCR could not read this document, so GLM-OCR was used with ' +
+        'the firm\'s consent and the document was sent to a third party.');
+      proposals.push(proposal);
+    }
+    return proposals;
+  };
+
+  let out = await buildProposals();
+
+  // If Poppler extracted text but the invoice table still could not pass its
+  // checks, retry the table with local OCR before considering hosted OCR.
+  if (pdf && !paddleTried && out.some((p) => !p.table.readable)) {
+    paddleTried = true;
+    try {
+      const local = await readWithPaddle(input);
+      ocrRead = local;
+      candidateTables = [...(candidateTables ?? []), ...local.tables];
+      out = await buildProposals(candidateTables);
+    } catch {
+      // Keep the Poppler proposal; the consent-gated GLM fallback below may
+      // still produce a second candidate reading.
+    }
   }
 
-  /*
-   * GLM-OCR is a true fallback for photographs. It is contacted only when
-   * Paddle's candidate failed the arithmetic/readability gates, and only with
-   * the firm's existing extraction consent. A configured key alone is never
-   * permission to export a client's bill.
-   */
-  if (photo !== null && out.some((p) => !p.table.readable)
+  // GLM-OCR follows Paddle only when its candidates fail the same arithmetic
+  // and readability checks. Firm consent is required, and protected documents
+  // remain local. A key alone is never permission to export a client's bill.
+  if (paddleTried && !glmReplacedFailedPaddle && allowCloudFallback
+      && out.some((p) => !p.table.readable)
       && input.glmOcr && (await llmSettings(firmId)).extraction) {
     try {
       const extra = await input.glmOcr.read(input.file);
       if (extra.length > 0) {
-        const retried: BillProposal[] = [];
         const fallbackTables = [...(candidateTables ?? []), ...extra];
-        for (const seg of segments) {
-          const proposal = await proposeFromDocument(
-            firmId, { ...input, doclingTables, candidateTables: fallbackTables },
-            seg, pages, fileHash, text);
-          proposal.warnings.push(...photo.warnings);
+        const retried = await buildProposals(fallbackTables);
+        for (const proposal of retried) {
           if (proposal.warnings.some((w) => /glm-ocr strategy/.test(w))) {
             proposal.warnings.push(
-              'PaddleOCR could not produce a usable table, so GLM-OCR was ' +
+              'PDF text or PaddleOCR could not produce a usable table, so GLM-OCR was ' +
               'used with the firm\'s consent and the document was sent to a third party.');
           }
-          retried.push(proposal);
         }
         return retried;
       }
@@ -857,7 +953,7 @@ export async function proposeFromDocument(
   const segPages = pages.filter((p) => seg.pages.includes(p.number));
   let llmProvenance: { provider: string; model: string } | undefined;
   let crossChecked: BillProposal['crossChecked'] = 'off';
-  const labelledTotals = labelledTotalsInText(seg.text);
+  const labelledTotals = labelledTotalsForDocument(seg.text);
   const expenseOnly = input.manual?.expenseOnly === true
     && !table.readable && labelledTotals.length === 1;
 
@@ -959,6 +1055,72 @@ export async function proposeFromDocument(
     if (summary !== null) {
       table = summary.table;
       readBy = 'summary';
+    }
+  }
+
+  /*
+   * A utility bill, by its own declaration — an electricity bill states one
+   * current bill amount and charges no GST, because the supply is exempt.
+   * There is no invoice table to find, and refusing it for lacking one blamed
+   * a table that was never printed.
+   *
+   * Booked exactly as a reviewer's expense-only choice is: one line, the
+   * stated amount, no tax and no credit. Not applied if the document says it
+   * charged GST — then it is something else and the ordinary readers decide.
+   */
+  const utility = readUtilityBill(seg.text);
+  if (!table.readable && utility !== null && profile.charged !== 'yes') {
+    const period = utility.period
+      ? ` ${utility.period.from} to ${utility.period.to}` : '';
+    const description = `Electricity charges${period}`;
+    const row: TableRow = {
+      cells: [description, utility.amount, utility.amount],
+      by: { description, taxable: utility.amount, total: utility.amount },
+    };
+    table = {
+      readable: true,
+      roles: ['description', 'taxable', 'total'],
+      header: ['Description', 'Amount', 'Total'],
+      rows: [row], totals: null,
+      sums: { taxable: utility.amount, total: utility.amount },
+    };
+    readBy = 'utility';
+    warnings.push(
+      `this is an electricity bill. Supply of electricity is exempt from GST, ` +
+      `so its current bill amount of ${utility.amount} is booked as one ` +
+      'expense line with no GST and no input credit.' +
+      (utility.payable !== null && utility.payable !== utility.amount
+        ? ` The provider asks for ${utility.payable}; the difference is an ` +
+          'earlier balance, a rebate or rounding, and is settled at payment.'
+        : ''));
+
+    /*
+     * Is this the business's bill at all? A residential connection, or one in
+     * someone else's name, is often the owner's home. It can still be a
+     * business expense — a home office the business pays for — but that is the
+     * owner's and the CA's call, and booking a personal bill would overstate
+     * the business's costs. So it is asked, and nothing posts until answered.
+     */
+    const clientName = await withFirm(firmId, async (c) => (await c.query<{ name: string }>(
+      'SELECT name FROM clients WHERE id = $1', [input.clientId])).rows[0]?.name ?? null);
+    const reasons: string[] = [];
+    if (utility.connection === 'residential') {
+      reasons.push('a residential (domestic) connection');
+    }
+    if (utility.consumerName !== null && clientName !== null
+        && !sameParty(utility.consumerName, clientName)) {
+      reasons.push(`in the name of ${utility.consumerName}, not ${clientName}`);
+    }
+    if (reasons.length > 0) {
+      confirmations.push({
+        field: 'business_use',
+        chose: 'business expense',
+        instead: 'personal, do not book',
+        question:
+          `This electricity bill is for ${reasons.join(', ')}. Is it a business ` +
+          'expense — for example, a home office the business pays for? A ' +
+          "personal bill should not be booked in the business's books.",
+      });
     }
   }
 
@@ -1146,6 +1308,7 @@ export async function proposeFromDocument(
   // --- supplier ------------------------------------------------------------
   let partyId: string | null = null;
   let partyName: string | null = null;
+  let needsSupplier = false;
 
   /**
    * A supplier the reviewer picked, when matching failed.
@@ -1256,7 +1419,14 @@ export async function proposeFromDocument(
       warnings.push(
         `this document names no supplier this software recognises; a reviewer ` +
         `attached it to ${namedParty.name}. No GST is posted on it.`);
+    } else if (found === 'none' && readBy === 'utility') {
+      needsSupplier = true;
+      blockers.push(
+        'no supplier on file is named on this electricity bill. Save the ' +
+        'provider as a supplier to continue; later bills that name them will ' +
+        'then match automatically.');
     } else if (found === 'none') {
+      needsSupplier = true;
       blockers.push(
         'no supplier GSTIN appears on this document and no supplier on file ' +
         'is named on it. Add the vendor first — as ' +
@@ -1352,7 +1522,9 @@ export async function proposeFromDocument(
             'genuinely undecided. Close the range that no longer applies.');
         }
 
-        warnings.push(
+        // A utility bill has already said why no GST arises; the s.9(4)
+        // explanation is about a different kind of supplier.
+        if (readBy !== 'utility') warnings.push(
           `${found.name} is on file as an unregistered Indian supplier, so no ` +
           'GST arises on this bill and there is no input credit to claim — ' +
           'reverse charge on purchases from unregistered persons (s.9(4)) has ' +
@@ -1434,6 +1606,7 @@ export async function proposeFromDocument(
           'the party on file do not agree, so GSTR-2B will not match it ' +
           'automatically.');
       } else {
+        needsSupplier = true;
         blockers.push(
           `no supplier is on file with GSTIN ${seg.supplierGstin}. Add the ` +
           'vendor first — a party carries a state and a ledger account, and ' +
@@ -1972,6 +2145,8 @@ export async function proposeFromDocument(
     partyId, partyName, registration,
     blockers, warnings, confirmations, readBy, llmProvenance, crossChecked, tds,
     billDate: dateRead.date, billDateBasis: dateRead.basis,
+    utility: readBy === 'utility' ? utility : null,
+    needsSupplier,
     input: ready ? {
       clientId: input.clientId,
       partyId: partyId!,
@@ -2083,6 +2258,18 @@ export async function postProposal(
         'a different edit, and belongs on the bill rather than here.', 'PB-8');
     }
   }
+  /*
+   * Answered "personal": the reviewer has said this is not the business's
+   * expense, so there is nothing to post. Refused with the way forward rather
+   * than posted on the strength of a default.
+   */
+  const businessUse = proposal.confirmations.find((c) => c.field === 'business_use');
+  if (businessUse !== undefined && answers['business_use'] === businessUse.instead) {
+    throw new ValidationError(
+      'this bill was marked as personal, so it is not booked. Set the document ' +
+      'aside in Inbox if it does not belong in the business\'s books.', 'PB-8');
+  }
+
   /*
    * The TDS answer becomes the posting decision (BE-36).
    *

@@ -22,6 +22,7 @@ import { proposeBills, postProposal, type ProposeInput, type BillProposal,
          type ManualEntry }
   from './billProposal.ts';
 import type { CreatedBill } from './bills.ts';
+import { paise, money } from './tax.ts';
 import { llmClientFromEnv } from '../parse/llmTable.ts';
 import { doclingClientFromEnv } from '../parse/doclingTable.ts';
 import { parserClientFromEnv } from '../parse/candidateTables.ts';
@@ -309,18 +310,40 @@ export interface ProposalView {
   /** What to ask for, when the bill was refused — empty on one that posts. */
   form?: BillFormView;
   confirmations: BillProposal['confirmations'];
+  /** A utility bill's own details, for the card. Display-only. */
+  utility: {
+    kind: 'electricity'; issuer: string | null;
+    period: { from: string; to: string } | null;
+    dueDate: string | null; payable: string | null;
+  } | null;
+  /**
+   * Present when saving the supplier is the only step left. The suggested
+   * name was read from the document and is shown for the reviewer to check
+   * and edit; nothing is created until they click.
+   */
+  supplierToConfirm: { suggestedName: string | null } | null;
 }
 
 /** Reduces a proposal to what the screen needs. */
 export function proposalView(p: BillProposal): ProposalView {
+  /*
+   * Only offered for a utility bill today: its supplier name is read from the
+   * head of a document that declared what it is. On an ordinary invoice the
+   * largest name on the page is as often the buyer or a brand, so the reviewer
+   * still adds the vendor through the existing routes.
+   */
+  const supplierToConfirm = p.needsSupplier === true && p.utility
+      && p.blockers.length === 1 && p.table.readable
+    ? { suggestedName: p.utility.issuer }
+    : null;
+  // One click on this card clears it, so it is a question, not a dead end.
   const status: ProposalView['status'] =
-    p.blockers.length > 0 ? 'blocked'
-    : p.confirmations.length > 0 ? 'needs_answer'
+    p.blockers.length > 0 && supplierToConfirm === null ? 'blocked'
+    : p.blockers.length > 0 || p.confirmations.length > 0 ? 'needs_answer'
     : 'ready';
   const tax = p.table.readable
-    ? String(
-        (Number(p.table.sums.cgst ?? '0') + Number(p.table.sums.sgst ?? '0')
-         + Number(p.table.sums.igst ?? '0')).toFixed(2))
+    ? money(paise(p.table.sums.cgst ?? '0') + paise(p.table.sums.sgst ?? '0')
+            + paise(p.table.sums.igst ?? '0'))
     : null;
   const total = p.table.readable
     ? p.table.sums.total ?? null
@@ -349,5 +372,10 @@ export function proposalView(p: BillProposal): ProposalView {
     },
     // What to ask for, when it was refused. Empty on a bill that posts.
     form: formFor(p),
+    utility: p.utility ? {
+      kind: p.utility.kind, issuer: p.utility.issuer, period: p.utility.period,
+      dueDate: p.utility.dueDate, payable: p.utility.payable,
+    } : null,
+    supplierToConfirm,
   };
 }

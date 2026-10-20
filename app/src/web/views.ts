@@ -79,11 +79,22 @@ export function renderDocumentInbox(
   }[status] ?? status);
   const classLabels: Record<string, string> = {
     bank_statement: 'Bank statement', purchase_bill: 'Purchase bill',
-    sales_invoice: 'Sales invoice', expense_receipt: 'Expense receipt',
+    utility_bill: 'Utility bill', sales_invoice: 'Sales invoice', expense_receipt: 'Expense receipt',
     tds_document: 'TDS document', gst_document: 'GST document', payroll: 'Payroll',
     contract_legal: 'Contract / legal', other: 'Other', uncertain: 'Uncertain',
   };
   const documentClasses = Object.keys(classLabels);
+  /*
+   * The class pre-selected for the human to confirm. Suggestions made before
+   * the Utility bill class existed say "other" with a utility subtype; offer
+   * the specific class for those. It is still only a pre-selection.
+   */
+  const proposedClass = (doc: typeof documents[number]): string =>
+    doc.classConfirmation?.documentClass
+      ?? (doc.classSuggestion?.documentClass === 'other'
+          && /utility|electric/i.test(doc.classSuggestion.subtype ?? '')
+        ? 'utility_bill' : doc.classSuggestion?.documentClass)
+      ?? 'uncertain';
   const filteredDocuments = documents.filter((document) => {
     const statusMatches = statusFilter === 'all' ||
       (statusFilter === 'needs-review' && ['received', 'needs_information'].includes(document.status)) ||
@@ -158,12 +169,12 @@ export function renderDocumentInbox(
         ${!d.classSuggestion && classifier.enabled && classifier.available && d.status !== 'dismissed' ? `<button type="button" class="classify-document" data-id="${esc(d.id)}">Ask Nexus</button>` : ''}
       </article>
       ${d.status !== 'dismissed' && canConfirmClass && d.available ? `<section class="inbox-class-review"><h3>Confirm or correct type</h3>
-        <div class="inbox-class-choices">${documentClasses.map((value) => `<button type="button" class="document-class-choice ${((d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value) ? 'selected' : ''}" data-id="${esc(d.id)}" data-class="${value}" aria-pressed="${(d.classConfirmation?.documentClass ?? d.classSuggestion?.documentClass ?? 'uncertain') === value}">${esc(classLabels[value]!)}</button>`).join('')}</div>
+        <div class="inbox-class-choices">${documentClasses.map((value) => `<button type="button" class="document-class-choice ${proposedClass(d) === value ? 'selected' : ''}" data-id="${esc(d.id)}" data-class="${value}" aria-pressed="${proposedClass(d) === value}">${esc(classLabels[value]!)}</button>`).join('')}</div>
         <button type="button" class="confirm-document-class primary" data-id="${esc(d.id)}">${d.classConfirmation ? 'Save class correction' : 'Confirm type'}</button>
         <p class="why">Confirming a type does not import, reconcile, or post anything. Confirm Bank statement to open the password and statement review here.</p></section>` : ''}
       ${d.classConfirmation ? `<div class="inbox-next-step"><b>Next step</b>${d.classConfirmation.documentClass === 'bank_statement'
       ? `<a href="#inbox-detail" data-open-statement>Continue to statement review →</a>`
-        : d.classConfirmation.documentClass === 'purchase_bill'
+        : d.classConfirmation.documentClass === 'purchase_bill' || d.classConfirmation.documentClass === 'utility_bill'
           ? `<button type="button" class="review-document" data-id="${esc(d.id)}">Continue to bill review →</button>`
           : d.classConfirmation.documentClass === 'sales_invoice' ? '<a href="/sales">Open sales invoices →</a>'
             : d.classConfirmation.documentClass === 'tds_document' ? '<a href="/tds">Open TDS review →</a>'
@@ -205,7 +216,8 @@ export function renderDocumentInbox(
   const docList = filteredDocuments.length ? filteredDocuments.map((document) => {
     const docClass = document.classConfirmation?.documentClass ?? document.classSuggestion?.documentClass ?? 'uncertain';
     const destination = document.classConfirmation?.documentClass === 'bank_statement' ? 'Bank statements'
-      : document.classConfirmation?.documentClass === 'purchase_bill' ? 'Bills'
+      : document.classConfirmation?.documentClass === 'purchase_bill'
+        || document.classConfirmation?.documentClass === 'utility_bill' ? 'Bills'
       : document.classConfirmation?.documentClass === 'sales_invoice' ? 'Sales'
       : document.classConfirmation?.documentClass === 'tds_document' ? 'TDS'
       : document.classConfirmation?.documentClass === 'gst_document' ? 'GST review' : '';
@@ -1869,19 +1881,24 @@ tr.done { opacity: .5; }
 .fillfigs { display: flex; gap: 6px; flex-wrap: wrap; }
 .fillfigs input { min-width: 0; width: 108px; text-align: right;
                   font-variant-numeric: tabular-nums; }
-.expenseonly { margin-top: 12px; padding: 14px; border-radius: 8px;
+.expenseonly, .supplierconfirm { margin-top: 12px; padding: 14px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
   background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
-.expenseonly h3 { margin: 0 0 4px; font-size: 16px; }
-.expenseonly .expensegrid { display: grid;
+.expenseonly h3, .supplierconfirm h3 { margin: 0 0 4px; font-size: 16px; }
+.expenseonly .expensegrid, .supplierconfirm .expensegrid { display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr) auto;
   gap: 10px; align-items: end; margin-top: 12px; }
-.expenseonly label { display: flex; flex-direction: column; gap: 4px;
+.expenseonly label, .supplierconfirm label { display: flex; flex-direction: column; gap: 4px;
   color: var(--muted); font-size: 12px; }
-.expenseonly input, .expenseonly select { width: 100%; background: var(--panel); }
+.expenseonly input, .expenseonly select,
+.supplierconfirm input, .supplierconfirm select { width: 100%; background: var(--panel); }
+.fig b.figtext { font-family: inherit; font-size: 15px; }
+.billdetails { margin-top: 12px; color: var(--muted); }
+.billdetails summary { cursor: pointer; font-size: 13px; }
 .manualalternative { margin-top: 10px; color: var(--muted); }
 .manualalternative summary { cursor: pointer; font-size: 13px; }
-@media (max-width: 720px) { .expenseonly .expensegrid { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .expenseonly .expensegrid,
+  .supplierconfirm .expensegrid { grid-template-columns: 1fr; } }
 .small { font-size: 12px; }
 .billctl { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
   margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -3727,6 +3744,14 @@ interface ProposalViewV {
     fields: Array<{ field: string; ask: string; because: string }>;
     unfixable: string[];
   };
+  /** A utility bill's own details. Display-only. */
+  utility?: {
+    kind: 'electricity'; issuer: string | null;
+    period: { from: string; to: string } | null;
+    dueDate: string | null; payable: string | null;
+  } | null;
+  /** Saving the supplier is the one step left; the name is a suggestion. */
+  supplierToConfirm?: { suggestedName: string | null } | null;
   token?: string;
 }
 
@@ -3734,8 +3759,81 @@ const READ_BY_LABEL: Record<string, string> = {
   coordinates: 'read on-page', candidates: 'read from the page structure',
   docling: 'read by Docling', llm: 'read by a model',
   summary: 'read from stated totals', charges: 'read from charges in words',
-  entered: 'entered by a reviewer',
+  utility: 'read as an electricity bill', entered: 'entered by a reviewer',
 };
+
+/**
+ * The bill's notes in the reviewer's words.
+ *
+ * The domain's blockers and warnings are written for the record — precise,
+ * with the rule and the reason — and a CA may want them. A founder needs to
+ * know what to do next. So each known message gets a plain sentence, the
+ * originals stay one click away under "Details for your CA", and anything not
+ * recognised here is shown as written rather than dropped. `null` means the
+ * note is useful only in the details (for example, which reader was used).
+ */
+const PLAIN_NOTES: Array<[RegExp, string | null | ((m: RegExpMatchArray) => string)]> = [
+  [/^no supplier GSTIN appears on this document and no supplier on file/i,
+    'This supplier is not on file yet and the bill shows no GSTIN. Add them as a supplier to continue.'],
+  [/^no supplier on file is named on this electricity bill/i,
+    'The electricity provider is not saved as a supplier yet.'],
+  [/^no supplier is on file with GSTIN (\S+)\./i,
+    (m) => `New supplier (GSTIN ${m[1]}). Add them as a supplier to continue.`],
+  [/^the line-item table could not be read/i,
+    'Nexus could not read the item table on this bill. Enter its totals below, or record it as an expense.'],
+  [/^the invoice date could not be read/i, 'The bill date could not be read. Enter it below.'],
+  [/^no invoice number could be read/i, 'The bill number could not be read. Enter it below.'],
+  [/^the supplier GSTIN read from this document, "([^"]+)", is not valid/i,
+    (m) => `The supplier GSTIN on this bill (${m[1]}) fails its check. It may be misprinted or misread; check the document.`],
+  [/^two independent readings of document .* disagree/i,
+    'Two readings of this bill gave different figures. Check the document and enter the figures by hand.'],
+  [/^no single GST rate explains this document/i,
+    'The tax on this bill does not match a single GST rate. Enter the lines by hand.'],
+  [/^the document does not say whether it is a tax invoice or a bill of supply/i,
+    'The bill does not say whether GST was charged. Check it before claiming input credit.'],
+  [/^more than one supplier on file is named on this document/i,
+    'More than one supplier on file is named on this bill. Post it by hand.'],
+  [/^the figures entered do not hold together/i,
+    'The figures entered do not add up. Check them against the bill.'],
+  [/^this is an electricity bill\./i,
+    'Electricity is exempt from GST, so this is booked as an expense with no input credit.'],
+  [/is on file as an unregistered Indian supplier, so no GST arises/i,
+    'This supplier is not GST-registered, so there is no GST or input credit on this bill.'],
+  [/A reviewer chose to record the full amount as expense/i,
+    'Recorded as an expense with no GST credit, as chosen.'],
+  [/^the figures on document .* were read by .*, not by this software/i,
+    'The figures were read with help from an outside AI service, with your firm\'s consent. Check them against the bill.'],
+  [/GLM-OCR was used with the firm's consent/i,
+    'This bill was read with an outside OCR service, with your firm\'s consent.'],
+  [/^the supplier's GST registration could not be checked/i, null],
+  [/^the figures were read by the .* strategy after the coordinate reader/i, null],
+];
+
+function plainNote(message: string): string | null {
+  for (const [re, plain] of PLAIN_NOTES) {
+    const m = message.match(re);
+    if (m) return typeof plain === 'function' ? plain(m) : plain;
+  }
+  return message.charAt(0).toUpperCase() + message.slice(1);
+}
+
+/** 2026-08-16 → 16 Aug 2026. */
+function shortDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+    'Oct', 'Nov', 'Dec'][Number(m[2]) - 1];
+  return month ? `${Number(m[3])} ${month} ${m[1]}` : iso;
+}
+
+/** The account an electricity bill most plausibly posts to, if the chart has one. */
+function utilityAccountId(
+  accounts: Array<{ id: string; name: string }>,
+): string | null {
+  return accounts.find((a) => /^utilit(?:y|ies)\b/i.test(a.name))?.id
+    ?? accounts.find((a) => /\b(?:electricity|power)\b/i.test(a.name))?.id
+    ?? null;
+}
 
 /**
  * The form a refused bill offers instead of a wall.
@@ -3803,7 +3901,7 @@ function expenseOnlyForm(
   ).join('');
   const supplier = p.partyId === null
     ? `<label>New supplier name
-         <input class="expense-supplier" placeholder="e.g. Campus E-Shop" autocomplete="organization">
+         <input class="expense-supplier" placeholder="Name as printed on the bill" autocomplete="organization">
        </label>`
     : `<div><span class="muted small">Supplier</span><br><b>${esc(p.partyName ?? 'Supplier on file')}</b></div>`;
   return `<div class="expenseonly" data-index="${p.index}" data-token="${esc(token)}"
@@ -3821,6 +3919,47 @@ function expenseOnlyForm(
       </button>
     </div>
     <div class="expense-result small" aria-live="polite"></div>
+  </div>`;
+}
+
+/**
+ * The one step left on a utility bill: save its provider as a supplier.
+ *
+ * The name is pre-filled from the head of the bill so the reviewer checks
+ * rather than types, and it stays editable. Nothing is created until they
+ * click — a supplier is master data that every later bill from them will use.
+ */
+function supplierConfirmForm(
+  p: ProposalViewV, token: string,
+  accounts: Array<{ id: string; name: string; itc: string | null }>,
+  defaultAccountId: string | null,
+): string {
+  if (!p.supplierToConfirm) return '';
+  const preferred = utilityAccountId(accounts) ?? defaultAccountId;
+  const accountOptions = accounts.map((a) =>
+    `<option value="${esc(a.id)}" ${a.id === preferred ? 'selected' : ''}>${esc(a.name)}</option>`
+  ).join('');
+  const suggested = p.supplierToConfirm.suggestedName;
+  return `<div class="supplierconfirm" data-index="${p.index}" data-token="${esc(token)}"
+      data-party="" data-prepared="0">
+    <h3>One step left: save the provider as a supplier</h3>
+    <div class="muted small">${suggested
+      ? 'Nexus read this name from the top of the bill. Check it, then save.'
+      : 'Nexus could not read the provider\'s name. Type it as printed on the bill.'}
+      Later bills that name them will match automatically.</div>
+    <div class="expensegrid">
+      <label>Supplier name
+        <input class="confirm-supplier" value="${esc(suggested ?? '')}"
+          placeholder="Name as printed on the bill" autocomplete="organization">
+      </label>
+      <label>Expense account
+        <select class="grossaccount">${accountOptions}</select>
+      </label>
+      <button class="save-supplier" ${accounts.length === 0 ? 'disabled' : ''}>
+        Save supplier &amp; prepare
+      </button>
+    </div>
+    <div class="supplier-result small" aria-live="polite"></div>
   </div>`;
 }
 
@@ -3893,13 +4032,25 @@ function proposalCard(
   const badge = p.status === 'ready'
     ? `<span class="tag good">${canApprove ? 'Ready to post' : 'Ready for CA review'}</span>`
     : p.status === 'needs_answer'
-      ? '<span class="tag warn">Needs your answer</span>'
+      ? '<span class="tag warn">Needs your input</span>'
       : '<span class="tag bad">Blocked</span>';
 
   const money = (label: string, v: string | null): string =>
     v !== null ? `<span class="fig"><b>${inr(v)}</b><span>${label}</span></span>` : '';
 
-  const confirms = p.confirmations.map((c) => `
+  const confirms = p.confirmations.map((c) => c.field === 'business_use'
+    // A judgement about the business, not a reading of the paper: nothing is
+    // pre-selected, so it cannot be approved past without an answer.
+    ? `
+    <div class="confirm" data-field="business_use" data-token="${esc(token)}">
+      <p>${esc(c.question)}</p>
+      <label class="pick"><input type="radio" name="c_${p.index}_business_use"
+        value="${esc(c.chose)}"> Yes, it is a business expense</label>
+      <label class="pick"><input type="radio" name="c_${p.index}_business_use"
+        value="${esc(c.instead)}" data-personal="1"> No, it is personal — do not book it</label>
+      <div class="business-use-result small" aria-live="polite"></div>
+    </div>`
+    : `
     <div class="confirm" data-field="${esc(c.field)}">
       <p>${esc(c.question)}</p>
       <label class="pick"><input type="radio" name="c_${p.index}_${esc(c.field)}"
@@ -3912,9 +4063,13 @@ function proposalCard(
     items.length === 0 ? ''
       : `<ul class="${cls}">${items.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`;
 
-  const canPost = p.status !== 'blocked';
-  const fill = fillForm(p, token);
+  // A bill whose one missing step is its supplier is answered on the card,
+  // not posted from it: the post button appears once the supplier is saved.
+  const confirmSupplier = supplierConfirmForm(p, token, accounts, defaultAccountId);
+  const canPost = p.status !== 'blocked' && confirmSupplier === '';
+  const fill = confirmSupplier === '' ? fillForm(p, token) : '';
   const expenseOnly = expenseOnlyForm(p, token, accounts, defaultAccountId);
+  const utilityAccount = p.utility ? utilityAccountId(accounts) : null;
   const fillChoice = p.canRecordExpenseOnly && fill !== ''
     ? `<details class="manualalternative"><summary>Enter the GST breakup instead</summary>${fill}</details>`
     : fill;
@@ -3929,7 +4084,10 @@ function proposalCard(
       ac.itc && ac.itc !== 'eligible' ? ` — ITC ${esc(ac.itc)}` : ''}</option>`).join('');
 
   const lineRows = p.lines.map((l, i) => {
-    const chosen = l.suggestedAccountId ?? l.aiSuggestion?.accountId ?? defaultAccountId ?? '';
+    const chosen = l.suggestedAccountId ?? l.aiSuggestion?.accountId
+      ?? utilityAccount ?? defaultAccountId ?? '';
+    const ruleSuggested = !l.suggestedAccountId && !l.aiSuggestion?.accountId
+      && utilityAccount !== null;
     return `
     <tr>
       <td>${esc(l.description || 'Line ' + (i + 1))}${
@@ -3943,6 +4101,8 @@ function proposalCard(
              <span class="why" title="${esc(l.aiSuggestion.reason)}">${esc(l.aiSuggestion.reason)}</span>` : ''}
         ${!l.suggestedAccountId && l.aiSuggestion && !l.aiSuggestion.accountId
           ? `<span class="why" title="Nexus could not confidently choose an account">AI unsure · ${l.aiSuggestion.confidence}%</span>` : ''}
+        ${ruleSuggested
+          ? '<span class="learned" title="Suggested because this is an electricity bill; review before posting">suggested for electricity</span>' : ''}
       </td>
     </tr>`;
   }).join('');
@@ -3958,30 +4118,55 @@ function proposalCard(
       <label class="chk"><input type="checkbox" class="noitc"> Do not claim input credit</label>
     </div>`;
 
+  // Who the bill is from leads the card; the bill number is a reference.
+  const supplier = p.partyName ?? p.utility?.issuer ?? p.supplierGstin
+    ?? 'Supplier not identified yet';
+  const figures = p.utility
+    ? `${money('to book as expense', p.total)}
+       ${p.utility.payable !== null
+         ? money(p.utility.dueDate ? `to pay by ${shortDate(p.utility.dueDate)}` : 'to pay',
+                 p.utility.payable) : ''}
+       ${p.utility.period !== null
+         ? `<span class="fig"><b class="figtext">${esc(shortDate(p.utility.period.from))} – ${esc(shortDate(p.utility.period.to))}</b><span>billing period</span></span>`
+         : ''}`
+    : `${money('taxable', p.taxable)} ${money('tax', p.tax)}
+       ${money(p.totalIsUnverified ? 'total on the bill, not yet checked' : 'total', p.total)}`;
+
+  // Plain sentences up front; the originals, for a CA, one click away. A
+  // bill waiting only on its supplier says so in the box below instead.
+  const plainBlocks = confirmSupplier === ''
+    ? p.blockers.map(plainNote).filter((n): n is string => n !== null) : [];
+  const plainWarns = p.warnings.map(plainNote).filter((n): n is string => n !== null);
+  const details = p.warnings.length + p.blockers.length === 0 ? '' : `
+    <details class="billdetails"><summary>Details for your CA</summary>
+      <div class="small muted">How it was read: ${esc(READ_BY_LABEL[p.readBy] ?? p.readBy)}${
+        p.registrationStatus ? ` · GSTIN ${esc(p.registrationStatus)}` : ''}</div>
+      ${notes('blocks', p.blockers)}
+      ${notes('warns', p.warnings)}
+    </details>`;
+
   return `<div class="billcard ${p.status}" data-index="${p.index}">
     <div class="billhead">
       <div>
-        <b class="mono">${esc(p.documentNumber ?? '(no number)')}</b>
+        <b>${esc(supplier)}</b>
+        ${p.utility ? '<span class="tag">Electricity bill</span>' : ''}
         ${badge}
-        <span class="tag">${READ_BY_LABEL[p.readBy] ?? p.readBy}</span>
       </div>
-      <div class="muted">${esc(p.partyName ?? p.supplierGstin ?? 'supplier not identified')}
-        ${p.billDate ? ` · ${esc(p.billDate)}` : ''}
-        ${p.registrationStatus ? ` · GSTIN ${esc(p.registrationStatus)}` : ''}</div>
+      <div class="muted"><span class="mono">${esc(p.documentNumber ?? 'No bill number')}</span>
+        ${p.billDate ? ` · ${esc(shortDate(p.billDate))}` : ''}</div>
     </div>
 
-    <div class="figs">
-      ${money('taxable', p.taxable)} ${money('tax', p.tax)}
-      ${money(p.totalIsUnverified ? 'total seen — check it' : 'total', p.total)}
-    </div>
+    <div class="figs">${figures}</div>
 
     ${confirms}
-    ${notes('warns', p.warnings)}
-    ${notes('blocks', p.blockers)}
+    ${notes('blocks', plainBlocks)}
+    ${notes('warns', plainWarns)}
+    ${confirmSupplier}
     ${partyRcmForm(p, token)}
     ${expenseOnly}
     ${fillChoice}
     ${controls}
+    ${details}
 
     <div class="billactions">
       ${canPost && canApprove
@@ -3989,6 +4174,10 @@ function proposalCard(
              ${p.status === 'needs_answer' ? 'Confirm & post' : 'Approve & post'}</button>`
         : canPost
           ? '<span class="muted">Your review is ready. A CA partner must approve it before it is posted to the books.</span>'
+        : confirmSupplier !== ''
+          ? `<span class="muted">${p.confirmations.length > 0
+              ? 'Answer the question and save the supplier above' : 'Save the supplier above'}${canApprove
+              ? ', then approve.' : '. A CA partner then approves it.'}</span>`
         : (p.form && p.form.fields.length > 0 && p.form.unfixable.length === 0
             ? '<span class="muted">Fill the fields above, check them, then post.</span>'
             : p.blockers.some((b) => NEEDS_PARTY_RCM.test(b)) && p.partyId !== null
@@ -4169,6 +4358,8 @@ function readFill(card) {
   if (figures.taxable !== undefined && figures.total !== undefined) {
     manual.figures = figures;
   }
+  const saved = card.querySelector('.supplierconfirm[data-prepared="1"]');
+  if (saved && saved.dataset.party) manual.partyId = saved.dataset.party;
   const expense = card.querySelector('.expenseonly[data-prepared="1"]');
   if (expense) {
     manual.expenseOnly = true;
@@ -4209,6 +4400,56 @@ document.querySelectorAll('button.prepare-expense').forEach((btn) => {
         actions.innerHTML = '<button class="primary post" data-index="' + box.dataset.index +
           '" data-token="' + box.dataset.token + '">Approve ₹' + box.dataset.total +
           ' expense</button>';
+        wirePost(actions.querySelector('button.post'));
+      } else {
+        actions.textContent = 'Prepared. A CA partner must approve before it is posted.';
+      }
+    } catch (error) {
+      out.innerHTML = '<span class="bad">' + String(error.message || error).replace(/</g, '&lt;') + '</span>';
+      btn.disabled = false;
+    }
+  };
+});
+
+document.querySelectorAll('button.save-supplier').forEach((btn) => {
+  btn.onclick = async () => {
+    const box = btn.closest('.supplierconfirm');
+    const card = btn.closest('.billcard');
+    const out = box.querySelector('.supplier-result');
+    const nameInput = box.querySelector('.confirm-supplier');
+    const name = nameInput.value.trim();
+    if (!name) { out.textContent = 'Enter the supplier name as printed on the bill.'; return; }
+    btn.disabled = true; out.textContent = 'Saving…';
+    try {
+      if (!box.dataset.party) {
+        const made = await post('/api/suppliers', { name });
+        if (!made.ok) throw new Error(made.error || 'could not save the supplier');
+        box.dataset.party = made.id;
+        nameInput.readOnly = true;
+      }
+      box.dataset.prepared = '1';
+      // Re-read with the supplier named, so the same checks run on the bill
+      // that will be approved.
+      const r = await post('/api/bills/fill', {
+        token: box.dataset.token, index: Number(box.dataset.index),
+        manual: readFill(card), lineAccounts: readLineAccounts(card),
+      });
+      if (!r.ok) throw new Error(r.error || 'could not re-read the bill');
+      if (!r.ready) {
+        box.dataset.prepared = '0';
+        throw new Error((r.blockers || []).join(' ') || 'the bill is still not ready');
+      }
+      const actions = card.querySelector(':scope > .billactions');
+      for (const c of (r.confirmations || [])) {
+        if (!card.querySelector('.confirm[data-field="' + c.field + '"]')) {
+          card.insertBefore(tdsBlock(c), actions);
+        }
+      }
+      out.innerHTML = '<span class="good">Supplier saved. Ready for approval.</span>';
+      card.classList.remove('needs_answer'); card.classList.add('ready');
+      if (canApprove) {
+        actions.innerHTML = '<button class="primary post" data-index="' + box.dataset.index +
+          '" data-token="' + box.dataset.token + '">Approve & post</button>';
         wirePost(actions.querySelector('button.post'));
       } else {
         actions.textContent = 'Prepared. A CA partner must approve before it is posted.';
@@ -4334,9 +4575,39 @@ document.querySelectorAll('button.check').forEach((btn) => {
   };
 });
 
+/*
+ * Personal, not business: there is nothing to post. The approval is switched
+ * off on the card (the server refuses it too) and the reviewer is pointed at
+ * setting the document aside, which keeps the original and its history.
+ */
+document.querySelectorAll('.confirm[data-field="business_use"] input[type=radio]').forEach((radio) => {
+  radio.onchange = () => {
+    const box = radio.closest('.confirm');
+    const card = radio.closest('.billcard');
+    const personal = radio.dataset.personal === '1';
+    const out = box.querySelector('.business-use-result');
+    card.querySelectorAll('button.post').forEach((b) => { b.disabled = personal; });
+    out.innerHTML = personal
+      ? 'Not booked. <a href="/documents?document=' + encodeURIComponent(box.dataset.token) +
+        '#inbox-detail">Set this document aside in Inbox</a> so it leaves the review queue.'
+      : '';
+  };
+});
+
 function wirePost(btn) {
   btn.onclick = async () => {
     const card = btn.closest('.billcard');
+    const open = [...card.querySelectorAll('.confirm')]
+      .filter((c) => !c.querySelector('input[type=radio]:checked'));
+    if (open.length > 0) {
+      say(false, 'Answer the question on this bill before approving it.');
+      open[0].scrollIntoView({ block: 'center' });
+      return;
+    }
+    if (card.querySelector('.confirm[data-field="business_use"] input[data-personal="1"]:checked')) {
+      say(false, 'This bill is marked personal, so it is not booked.');
+      return;
+    }
     const confirm = {};
     card.querySelectorAll('.confirm').forEach((c) => {
       const field = c.dataset.field;
@@ -4347,6 +4618,9 @@ function wirePost(btn) {
     card.querySelectorAll('.lineacct').forEach((s) => {
       lineAccounts[Number(s.dataset.line)] = s.value;
     });
+    // A one-line bill prepared in a box carries its account there instead.
+    const gross = card.querySelector('.grossaccount');
+    if (lineAccounts.length === 0 && gross) lineAccounts.push(gross.value);
     const noitc = card.querySelector('.noitc');
     btn.disabled = true; btn.textContent = 'Posting…';
     const r = await post('/api/bills/post', {

@@ -131,6 +131,138 @@ describe('bill review navigation', () => {
   });
 });
 
+describe('electricity bill review card', () => {
+  const accounts = [
+    { id: 'acc-purchases', name: 'Purchases', itc: null },
+    { id: 'acc-utility', name: 'Utility Expenses', itc: null },
+  ];
+  const electricity = {
+    index: 0, status: 'needs_answer' as const, documentNumber: '900-111-222-333',
+    partyName: null, supplierGstin: null, billDate: '2026-08-09', readBy: 'utility',
+    taxable: '1264.61', tax: '0.00', total: '1264.61', totalIsUnverified: false,
+    canRecordExpenseOnly: false, registrationStatus: null, partyId: null, lines: [],
+    warnings: ['this is an electricity bill. Supply of electricity is exempt from GST, so its current bill amount of 1264.61 is booked as one expense line with no GST and no input credit.'],
+    blockers: ['no supplier on file is named on this electricity bill. Save the provider as a supplier to continue; later bills that name them will then match automatically.'],
+    confirmations: [], tds: null,
+    form: { fields: [{ field: 'partyId', ask: 'Which supplier', because: 'x' }], unfixable: [] },
+    utility: { kind: 'electricity' as const, issuer: 'Sample Vidyut Nigam Ltd.',
+      period: { from: '2026-07-06', to: '2026-08-09' }, dueDate: '2026-08-16', payable: '1264.00' },
+    supplierToConfirm: { suggestedName: 'Sample Vidyut Nigam Ltd.' },
+  };
+  const render = (bill: Record<string, unknown>, canApprove = true) => renderBillReview({
+    proposals: [bill as never], token: 'doc-1', posted: [], hasExpenseAccount: true,
+    accounts, defaultAccountId: 'acc-purchases', canApprove,
+  });
+
+  it('leads with the provider and what to pay, and asks for one step', () => {
+    const html = render(electricity);
+    const card = html.split('<script>')[0]!;
+    expect(card).toContain('<b>Sample Vidyut Nigam Ltd.</b>');
+    expect(card).toContain('Electricity bill');
+    expect(card).toContain('Needs your input');
+    expect(card).toContain('to pay by 16 Aug 2026');
+    expect(card).toContain('6 Jul 2026 – 9 Aug 2026');
+    expect(card).toContain('class="confirm-supplier" value="Sample Vidyut Nigam Ltd."');
+    // The utility account is pre-selected as a suggestion; the reviewer can change it.
+    expect(card).toContain('<option value="acc-utility" selected>Utility Expenses</option>');
+    expect(card).toContain('Save supplier &amp; prepare');
+    // Saving the supplier comes before any post button.
+    expect(card).not.toContain('class="primary post"');
+    // No form asking for a party ID, and no dead-end blocked state.
+    expect(card).not.toContain('data-fill="partyId"');
+    expect(card).not.toContain('tag bad');
+  });
+
+  it('puts plain sentences up front and keeps the original wording for the CA', () => {
+    const card = render(electricity).split('<script>')[0]!;
+    const [main, details] = card.split('Details for your CA');
+    expect(main).toContain('Electricity is exempt from GST, so this is booked as an expense with no input credit.');
+    expect(main).not.toContain('Supply of electricity is exempt');
+    expect(details).toContain('Supply of electricity is exempt from GST');
+    expect(details).toContain('read as an electricity bill');
+  });
+
+  it('rewrites the generic missing-supplier refusal without internal codes', () => {
+    const blocked = {
+      ...electricity, status: 'blocked' as const, readBy: 'coordinates', utility: null,
+      supplierToConfirm: null, partyName: null, total: '500.00',
+      warnings: [],
+      blockers: ["no supplier GSTIN appears on this document and no supplier on file is named on it. Add the vendor first — as gst_category 'unregistered' if they are an Indian supplier below the registration threshold, or 'overseas' if they are outside India, which decides whether any tax arises at all."],
+    };
+    const [main] = render(blocked).split('<script>')[0]!.split('Details for your CA');
+    expect(main).toContain('This supplier is not on file yet and the bill shows no GSTIN.');
+    expect(main).not.toContain('gst_category');
+    expect(main).toContain('Supplier not identified yet');
+  });
+
+  it('sends the account chosen in a one-line box with the approval', () => {
+    // wirePost previously collected only per-line selects, so the account
+    // picked for an expense-only or supplier-confirmed bill never reached it.
+    const script = render(electricity).split('<script>')[1]!;
+    expect(script).toContain("const gross = card.querySelector('.grossaccount');");
+    expect(script).toContain('if (lineAccounts.length === 0 && gross) lineAccounts.push(gross.value);');
+    expect(script).toContain("const saved = card.querySelector('.supplierconfirm[data-prepared=\"1\"]');");
+  });
+});
+
+describe('business or personal question on a utility bill', () => {
+  it('pre-selects neither answer and blocks approval until it is answered', () => {
+    const bill = {
+      index: 0, status: 'needs_answer' as const, documentNumber: '900-1', partyName: 'Sample Vidyut Nigam Ltd.',
+      supplierGstin: null, billDate: '2026-08-09', readBy: 'utility',
+      taxable: '1264.61', tax: '0.00', total: '1264.61', totalIsUnverified: false,
+      canRecordExpenseOnly: false, registrationStatus: null, partyId: 'party-1',
+      lines: [{ description: 'Electricity charges', amount: '1264.61', hsn: null }],
+      warnings: [], blockers: [], tds: null,
+      confirmations: [{ field: 'business_use', chose: 'business expense', instead: 'personal, do not book',
+        question: 'This electricity bill is for a residential (domestic) connection. Is it a business expense?' }],
+      utility: { kind: 'electricity' as const, issuer: 'Sample Vidyut Nigam Ltd.', period: null, dueDate: null, payable: null },
+      supplierToConfirm: null,
+    };
+    const html = renderBillReview({
+      proposals: [bill as never], token: 'doc-9', posted: [], hasExpenseAccount: true,
+      accounts: [{ id: 'acc-utility', name: 'Utility Expenses', itc: null }],
+      defaultAccountId: 'acc-utility', canApprove: true,
+    });
+    const [card, script] = html.split('<script>');
+    expect(card).toContain('Yes, it is a business expense');
+    expect(card).toContain('No, it is personal — do not book it');
+    expect(card).not.toMatch(/name="c_0_business_use"[^>]*checked/);
+    expect(card).toContain('suggested for electricity');
+    expect(script).toContain('Answer the question on this bill before approving it.');
+    expect(script).toContain('Set this document aside in Inbox');
+  });
+});
+
+describe('utility bill document class', () => {
+  const base = {
+    id: 'doc-u', originalName: 'bill.pdf', mimeType: 'application/pdf', size: 1024,
+    hash: 'b'.repeat(64), status: 'received', receivedAt: '2026-10-01T00:00:00.000Z',
+    linkedVoucherId: null, available: true, reviewNote: null, reviewUpdatedAt: null,
+    classConfirmation: null,
+  };
+  const suggestion = (documentClass: string, subtype: string | null) => ({
+    documentClass, subtype, confidence: 92, rationale: 'Electricity bill heading.',
+    evidence: [], provider: 'deepseek', model: 'deepseek-chat' });
+
+  it('pre-selects Utility bill for an older "other · utility" suggestion, without confirming it', () => {
+    const html = renderDocumentInbox([{ ...base, classSuggestion: suggestion('other', 'utility_bill') } as never],
+      true, [], { enabled: true, available: true }, true, 'doc-u');
+    expect(html).toMatch(/class="document-class-choice selected"[^>]*data-class="utility_bill"/);
+    expect(html).toContain('Confirm type');
+    expect(html).not.toContain('Continue to bill review');
+  });
+
+  it('sends a confirmed utility bill to bill review', () => {
+    const html = renderDocumentInbox([{ ...base, classSuggestion: suggestion('utility_bill', null),
+      classConfirmation: { documentClass: 'utility_bill', confirmedAt: '2026-10-01T00:01:00.000Z' } } as never],
+      true, [], { enabled: true, available: true }, true, 'doc-u');
+    expect(html).toContain('Utility bill');
+    expect(html).toContain('Continue to bill review');
+    expect(html).toContain('Now in Bills');
+  });
+});
+
 describe('firm workspace orientation', () => {
   it('labels firm cockpit and Tally tools while preserving review-first guidance', () => {
     const cockpit = renderCockpit({

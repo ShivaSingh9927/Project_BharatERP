@@ -88,6 +88,10 @@ describe('shared email intake', () => {
     await expect(confirmDocumentClass(firmId, clientA, document!.id, caId, 'made_up'))
       .rejects.toThrow('choose a valid document class');
     expect(await confirmDocumentClass(firmId, clientB, document!.id, caId, 'bank_statement')).toBe(false);
+    // A correction to Utility bill is appended, not overwritten (migration 071).
+    expect(await confirmDocumentClass(firmId, clientC, document!.id, caId, 'utility_bill')).toBe(true);
+    const corrected = (await listDocuments(firmId, clientC)).find((item) => item.id === document!.id);
+    expect(corrected?.classConfirmation?.documentClass).toBe('utility_bill');
   });
   it('holds ambiguous or conflicting routing evidence', () => {
     const token = 'a'.repeat(20);

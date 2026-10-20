@@ -39,6 +39,7 @@
  */
 
 import type { CandidateTable } from './candidateTables.ts';
+import { readFileSync } from 'node:fs';
 
 /** One page's dimensions, as the service reports them. */
 interface PageInfo { width: number; height: number }
@@ -143,8 +144,9 @@ export function tablesFromLayout(body: LayoutResponse): CandidateTable[] {
 
 /** Running text for header fields when local OCR could not run at all. */
 export function textFromLayout(body: LayoutResponse): string {
-  const lines: string[] = [];
+  const pageTexts: string[] = [];
   for (const page of body.layout_details ?? []) {
+    const lines: string[] = [];
     const elements = Array.isArray(page) ? page : [page];
     for (const el of elements) {
       if (typeof el?.content !== 'string') continue;
@@ -155,8 +157,11 @@ export function textFromLayout(body: LayoutResponse): string {
         if (text !== '') lines.push(text);
       }
     }
+    pageTexts.push(lines.join('\n'));
   }
-  return lines.join('\n');
+  // Keep page boundaries so a single scanned PDF containing multiple bills
+  // still reaches documentSplit with the same page structure as Poppler.
+  return pageTexts.join('\f');
 }
 
 const DEFAULT_URL = 'https://api.z.ai/api/paas/v4';
@@ -204,7 +209,36 @@ export function glmOcrHttpClient(apiKey: string, baseUrl = DEFAULT_URL): GlmOcrC
 export function glmOcrClientFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): GlmOcrClient | null {
-  const key = env.ZAI_API_KEY;
+  const direct = env.ZAI_API_KEY?.trim();
+  const key = direct && !direct.startsWith('#')
+    ? direct
+    : readGlmApiKeyFile(env.ZAI_API_KEY_FILE);
   if (!key) return null;
   return glmOcrHttpClient(key, env.ZAI_BASE_URL ?? DEFAULT_URL);
+}
+
+/** Read the optional secret file without ever including its contents in errors. */
+function readGlmApiKeyFile(fileName: string | undefined): string | null {
+  const path = fileName?.trim();
+  if (!path) return null;
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch {
+    throw new Error(`Could not read ZAI_API_KEY_FILE at ${path}`);
+  }
+
+  const lines = raw.split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+  if (lines.length !== 1) {
+    throw new Error('ZAI_API_KEY_FILE must contain one key or one ZAI_API_KEY assignment');
+  }
+  const match = lines[0]!.match(
+    /^(?:export\s+)?(?:ZAI_API_KEY\s*=\s*)?(?:Bearer\s+)?(.+?)\s*$/i);
+  const key = match?.[1]?.replace(/^(['"])(.*)\1$/, '$2')?.trim();
+  if (!key || /\s/.test(key)) {
+    throw new Error('ZAI_API_KEY_FILE format was not recognized');
+  }
+  return key;
 }

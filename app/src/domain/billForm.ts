@@ -69,7 +69,7 @@ const TRIGGERS: Array<{ field: FormField['field']; re: RegExp; ask: string }> = 
   },
   {
     field: 'partyId',
-    re: /no supplier is on file with GSTIN|no supplier on file is named on it/i,
+    re: /no supplier is on file with GSTIN|no supplier on file is named on (?:it|this)/i,
     ask: 'Which supplier this bill is from. If they are not on file yet, add '
        + 'the vendor first — a party carries a state and a ledger account.',
   },

@@ -1,5 +1,56 @@
 # Project status and handoff
 
+### Bills: business-or-personal question and Utility bill class (2026-10-20)
+
+- An electricity bill for a residential (domestic) connection, or one in a
+  name that does not match the client's, now carries a required question:
+  business expense or personal. Neither answer is pre-selected; the card will
+  not approve until it is answered, choosing "personal" disables approval and
+  links to setting the document aside, and `postProposal` refuses a personal
+  answer (PB-8). The reader also extracts the tariff category and the
+  connection holder (never the father/husband name field).
+- Inbox has a new `utility_bill` class ("Utility bill"). Migration
+  `071_utility_bill_document_class.sql` widens the class CHECK constraints on
+  `document_ai_classifications` and `document_class_reviews`; it was applied
+  to the configured local database on 2026-10-20 — apply it elsewhere with
+  `npm run migrate`. The classifier prompt names the class and its version is
+  now `document-class-v2`, so new suggestions are not served from v1 cache.
+  A confirmed utility bill continues to bill review. Older suggestions of
+  "other" with a utility/electricity subtype pre-select Utility bill; the
+  human still confirms.
+- Typecheck passed; full suite passed (71 files, 1,039 tests). Browser check
+  on a second local server: the question renders on the real bill, and the
+  unanswered / personal / business paths were exercised with stubbed network
+  calls. No supplier, class confirmation, or posting was written. The real
+  document had already been confirmed as "Other" by a user; that stays until
+  someone corrects it.
+
+### Bills: electricity bills and plain-language review (2026-10-20)
+
+- The bill reader now recognises an electricity bill from the document itself
+  (`app/src/parse/utilityBill.ts`). It must say "electricity bill", state one
+  current bill amount and charge no GST. Such a bill is booked as one expense
+  line at the current bill amount, with 0% GST and no input credit; its
+  payable amount, due date and billing period are display-only. This replaces
+  the "no GSTIN / no table header" refusal. Spec: BE-42 (draft, CA review
+  needed).
+- When the provider is not on file, the card offers one step: save the
+  supplier. The name comes from the head of the bill (editable) and Utility
+  Expenses is pre-selected when present. A supplier is created only on that
+  click. Such a card counts as "Need your input", not "Blocked".
+- Bill cards lead with the supplier, show plain-language notes, and keep the
+  original blocker/warning text under "Details for your CA". Unrecognised
+  messages are shown as written.
+- Fixed: the account chosen in the expense-only box was never sent with the
+  approval, so those bills posted to Purchases. The proposal view's tax figure
+  now uses exact paise instead of floating-point sums.
+- Typecheck passed; full suite passed (71 files, 1,030 tests). The real
+  electricity bill was re-read on a second local server (port 4322): the card
+  showed the expected figures, and the save-supplier/approve buttons were
+  checked with stubbed network calls. No supplier was created and nothing was
+  posted. No migration. This sits on top of the uncommitted OCR fallback work
+  in `billProposal.ts`.
+
 ### Nexus Ask screen handoff integration (2026-10-12)
 
 - Reworked `/nexus` into a three-pane workspace matching the Ask Nexus 11a

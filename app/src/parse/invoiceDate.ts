@@ -162,6 +162,7 @@ export function inferDayOrder(dates: DateCandidate[]): DayOrder {
 
 /** Labels that mark the date a bill is dated BY, in preference order. */
 const DATE_LABELS = [
+  /\bbill\s+date\b/i,
   /\b(?:tax\s+)?invoice\s+date\b/i,
   /\bbill\s+of\s+supply\s+date\b/i,
   /\bdate\s+of\s+issue\b/i,

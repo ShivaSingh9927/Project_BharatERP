@@ -315,6 +315,8 @@ export function rasterizePdf(buffer: Buffer, password?: string): Buffer[] {
 
 export interface PaddleDocument extends PaddleResult {
   pageCount: number;
+  /** OCR boxes grouped by source page, for page-scoped document candidates. */
+  pageBoxes: OcrBox[][];
 }
 
 /**
@@ -333,13 +335,14 @@ export function paddleOcrDocument(
 
   if (!isPdfInput) {
     const single = paddleOcrImage(bytes, opts.fileName);
-    return { ...single, pageCount: 1 };
+    return { ...single, pageCount: 1, pageBoxes: [single.boxes] };
   }
 
   const images = rasterizePdf(bytes, opts.password);
   const results = images.map((img, i) => paddleOcrImage(img, `page-${i + 1}`));
+  const pageBoxes = results.map((r) => r.boxes);
 
-  const canvas = pagesToCanvas(results.map((r) => r.boxes));
+  const canvas = pagesToCanvas(pageBoxes);
   const confidences = results.map((r) => r.meanConfidence);
 
   return {
@@ -356,5 +359,6 @@ export function paddleOcrDocument(
       ...new Set(results.flatMap((r) => r.warnings)),
     ],
     pageCount: images.length,
+    pageBoxes,
   };
 }

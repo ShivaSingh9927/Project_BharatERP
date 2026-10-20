@@ -979,6 +979,40 @@ both with the difference between them.
   restriction particular to the client's business. Both are judgements about
   the client rather than facts about the asset.
 
+**BE-42 — A utility bill is read as what it says it is, not as a broken tax
+invoice.** *(Draft, 2026-10-20 — needs CA review.)*
+
+An electricity bill states one current bill amount and charges no GST, because
+the supply of electrical energy is exempt. Reading it with the invoice-table
+machinery refused it twice — "no supplier GSTIN" and "no table header" — on
+the simplest bill a business pays.
+
+- **Declared, not guessed.** The template applies only when the document calls
+  itself an electricity bill, states exactly one "Current Bill Amount", and does
+  not say it charged GST. Anything else goes through the ordinary readers.
+  Electricity only for now; water and piped gas should be added from real
+  samples.
+- **Booked like a reviewer's expense-only choice:** one line at the current bill
+  amount, rate 0, no input credit. The payable amount, due date and billing
+  period are shown for payment and context but never posted — the payable can
+  include an earlier balance, a rebate or rupee rounding.
+- **The supplier is still a human's act.** The provider's name is read only from
+  the head of the bill and offered pre-filled; nothing is created until the
+  reviewer saves it. Later bills that print the same name match it.
+- **The expense account is suggested, not inferred.** "Utility Expenses" is
+  pre-selected when the chart has it; the reviewer can change it before
+  approval.
+- **Review screens use plain language.** Blockers and warnings are shown as a
+  next step for the reviewer, with the original rule text kept under
+  "Details for your CA".
+- **Is it the business's bill?** A residential (domestic) connection, or one in
+  a name that is not the client's, raises a required question: business
+  expense (for example a home office) or personal. Nothing is pre-selected.
+  "Personal" is refused at posting (PB-8) and the reviewer is pointed to
+  setting the document aside; the original is kept.
+- **Inbox has a Utility bill class** (electricity, water, piped gas). A
+  confirmed utility bill continues to bill review like a purchase bill.
+
 ---
 
 ## 5. Extraction — the AI pipeline

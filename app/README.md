@@ -64,6 +64,14 @@ workflow itself still performs its own parsing and review. Bill preview cards
 are cached in memory for display, but the original file is durable and the
 approval step reads it again from the workspace.
 
+Bill extraction uses Poppler text and word coordinates first. If those fail or
+the invoice table does not pass its checks, the app tries local PaddleOCR, then
+GLM-OCR when `ZAI_API_KEY` or `ZAI_API_KEY_FILE` is configured and the firm's
+extraction consent is enabled. GLM-OCR sends the original document to z.ai;
+password-protected PDFs are kept local. Scanned PDFs use page-scoped PaddleOCR
+tables so multiple invoices in one file remain separable. Excel statements are
+read from workbook cells and do not use this OCR chain.
+
 Implementation of [`specs/gl-engine.md`](../specs/gl-engine.md) and the
 immutability guarantees in [`specs/audit-trail.md`](../specs/audit-trail.md).
 

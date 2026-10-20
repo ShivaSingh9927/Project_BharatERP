@@ -159,7 +159,7 @@ const rowView = (r: {
   } : null,
 });
 
-const DOCUMENT_CLASSES = ['bank_statement','purchase_bill','sales_invoice','expense_receipt',
+const DOCUMENT_CLASSES = ['bank_statement','purchase_bill','utility_bill','sales_invoice','expense_receipt',
   'tds_document','gst_document','payroll','contract_legal','other','uncertain'] as const;
 
 /** Append an explicit human decision; AI suggestions are never treated as approval. */

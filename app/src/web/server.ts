@@ -491,7 +491,7 @@ async function handle(
         url.searchParams.get('document') ?? undefined,
         ['needs-review','with-ca','moved','set-aside'].includes(url.searchParams.get('status') ?? '')
           ? url.searchParams.get('status')! : 'all',
-        ['bank_statement','purchase_bill','sales_invoice','expense_receipt','tds_document',
+        ['bank_statement','purchase_bill','utility_bill','sales_invoice','expense_receipt','tds_document',
           'gst_document','payroll','contract_legal','other','uncertain'].includes(url.searchParams.get('type') ?? '')
           ? url.searchParams.get('type')! : 'all',
         openRequests, session.role === 'owner', inboxBankAccounts,
@@ -2355,7 +2355,8 @@ createServer((req, res) => {
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`\n  BharatERP review server`);
   console.log(`  http://127.0.0.1:${PORT}`);
-  const on = [readers.paddle && 'PaddleOCR', readers.docling && 'Docling', readers.llm && 'model',
+  const on = [readers.paddle && 'PaddleOCR', readers.glmOcr && 'GLM-OCR',
+              readers.docling && 'Docling', readers.llm && 'model',
               readers.gstinLookup && 'GSTIN lookup'].filter(Boolean);
   console.log(`  readers: ${on.length ? on.join(', ') : 'on-page only'}`);
   console.log(`  sign in at /login — set a password with ` +

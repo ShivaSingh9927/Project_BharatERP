@@ -22,6 +22,9 @@ import { splitDocuments } from '../src/parse/documentSplit.ts';
 import { wordsToRows, type Word, type WordPage } from '../src/parse/pdfWords.ts';
 import { gstinCheckDigit } from '../src/domain/gstin.ts';
 import { ownerPool, closePools } from '../src/db/pool.ts';
+import { createSupplier } from '../src/domain/suppliers.ts';
+import { proposalView } from '../src/domain/billReview.ts';
+import { formFor } from '../src/domain/billForm.ts';
 
 const gstin = (state: string, pan: string): string => {
   const first14 = `${state}${pan}1Z`;
@@ -1055,6 +1058,97 @@ describe('gross receipt expense without GST credit', () => {
     expect(posted.grandTotal).toBe('117.00');
     expect(posted.totalGst).toBe('0.00');
     expect(posted.itcEligibility).toBe('blocked');
+  });
+});
+
+/*
+ * An electricity bill is not a GST invoice with an unreadable table. It
+ * declares what it is, charges no GST, and states one current bill amount.
+ * Synthetic text; no real bill content.
+ */
+describe('an electricity bill', () => {
+  const provider = 'Sample Vidyut Nigam Ltd.';
+  const segment = (charges = '', holder = 'Name : SAMPLE CONSUMER') => splitDocuments([
+    `   ${provider}                     Printed On : 9/8/2026`,
+    '   Electricity Bill Cum Notice          Due Date : 16-AUG-2026',
+    holder,
+    'Bill Duration : 06-JUL-2026 To 09-AUG-2026',
+    'Bill No : 900-111-222-333',
+    'Bill Date : 09-AUG-2026',
+    'Energy Charges 989.00    Current Bill Amount 1264.61',
+    `Payable Amount 1264${charges}`,
+  ].join('\n'))[0]!;
+  // The provider's name is in the page geometry, which is where a supplier
+  // without a GSTIN is matched.
+  const pages = page([w(provider, 40, 60), w('unreadable', 40, 100)]);
+
+  it('asks only for the supplier, and suggests the name printed at the head', async () => {
+    const p = await propose(segment(), pages);
+    expect(p.readBy).toBe('utility');
+    expect(p.table.readable).toBe(true);
+    expect(p.table.sums.total).toBe('1264.61');
+    expect(p.blockers).toHaveLength(1);
+    expect(p.blockers[0]).toMatch(/no supplier on file is named on this electricity bill/);
+    // Not the GST-invoice refusals that used to bury it.
+    expect(p.blockers.join(' ')).not.toMatch(/gst_category|table could not be read/);
+    expect(p.needsSupplier).toBe(true);
+    expect(p.utility?.issuer).toBe(provider);
+    expect(p.warnings.join(' ')).toMatch(/exempt from GST/);
+    expect(formFor(p)).toMatchObject({ fields: [{ field: 'partyId' }], unfixable: [] });
+
+    const view = proposalView(p);
+    expect(view.status).toBe('needs_answer');
+    expect(view.supplierToConfirm).toEqual({ suggestedName: provider });
+    expect(view.utility).toMatchObject({
+      dueDate: '2026-08-16', payable: '1264.00',
+      period: { from: '2026-07-06', to: '2026-08-09' },
+    });
+  });
+
+  it('posts the current bill amount with no GST once the supplier is saved', async () => {
+    await createSupplier(t.firmId, {
+      clientId: t.clientId, name: provider, createdBy: t.userId });
+    const p = await propose(segment(), pages);
+    expect(p.partyName).toBe(provider);
+    expect(p.blockers).toEqual([]);
+    // In a person's name rather than the client's: asked, not assumed.
+    expect(proposalView(p).status).toBe('needs_answer');
+    expect(p.input?.lines).toHaveLength(1);
+    expect(p.input?.lines[0]).toMatchObject({
+      unitPrice: '1264.61', gstRate: '0',
+      description: 'Electricity charges 2026-07-06 to 2026-08-09',
+    });
+    // The utility note already says why no GST arises.
+    expect(p.warnings.join(' ')).not.toMatch(/s\.9\(4\)/);
+
+    const posted = await postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { business_use: 'business expense' } });
+    expect(posted.grandTotal).toBe('1264.61');
+    expect(posted.totalGst).toBe('0.00');
+  });
+
+  it('asks whether a home connection is a business expense, and will not book a personal one', async () => {
+    const p = await propose(segment('', 'Name : SAMPLE CONSUMER   Category : LMV1 Residential / Domestic'), pages);
+    const asked = p.confirmations.find((c) => c.field === 'business_use');
+    expect(asked?.question).toMatch(/residential \(domestic\) connection, in the name of SAMPLE CONSUMER/);
+    await expect(postProposal(t.firmId, p, { approvedBy: t.userId }))
+      .rejects.toThrow(/questions that have to be answered/);
+    await expect(postProposal(t.firmId, p, {
+      approvedBy: t.userId, confirm: { business_use: 'personal, do not book' } }))
+      .rejects.toThrow(/marked as personal, so it is not booked/);
+  });
+
+  it("does not ask about a non-residential connection in the client's own name", async () => {
+    const own = (await ownerPool.query<{ name: string }>(
+      'SELECT name FROM clients WHERE id = $1', [t.clientId])).rows[0]!.name;
+    const p = await propose(segment('', `Name : M/s ${own.toUpperCase()} PVT LTD   Category : Commercial`), pages);
+    expect(p.confirmations.find((c) => c.field === 'business_use')).toBeUndefined();
+  });
+
+  it('leaves a bill that says it charged GST to the ordinary readers', async () => {
+    const p = await propose(segment('\nCGST 9% 50.00 SGST 9% 50.00'), pages);
+    expect(p.readBy).not.toBe('utility');
+    expect(p.utility ?? null).toBeNull();
   });
 });
 
